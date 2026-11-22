@@ -1,0 +1,6 @@
+{
+  "name": "ChronoFlow — Task Workspace & Timeline Tracker",
+  "description": "ClickUp-style task management combined with ManicTime-inspired daily activity timelines, automatic idle detection, and AI-generated weekly progress reports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,1600 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  User,
+  onAuthStateChanged,
+  signInWithPopup,
+  signOut,
+} from 'firebase/auth';
+import {
+  ActiveTimerState,
+  ActivitySegment,
+  ApplicationUsageSegment,
+  DocumentUsageSegment,
+  IdleAlertState,
+  NavigationTab,
+  Task,
+  TimeBlock,
+  UserProfile,
+  WeeklyReport,
+  WorkCategory,
+  WorkspacePreferences,
+} from './types';
+import { AttributionRecord, WorkSession } from './engine/types';
+import {
+  DEFAULT_PREFERENCES,
+  createSeedDataset,
+  getRecentWeekDates,
+  inferAppCategory,
+} from './data/seedData';
+import { auth, googleProvider } from './firebase';
+import {
+  clearAndDeleteUserWorkspace,
+  createAppSegmentInCloud,
+  createDocSegmentInCloud,
+  createReportInCloud,
+  createTaskInCloud,
+  deleteTaskInCloud,
+  deleteTimeBlockInCloud,
+  ensureUserProfile,
+  saveActivitySegmentInCloud,
+  saveTimeBlockInCloud,
+  seedOrMigrateWorkspaceToCloud,
+  subscribeToUserWorkspace,
+  updateTaskInCloud,
+  updateUserProfile,
+} from './services/firestoreWorkspace';
+import { TopBar } from './components/TopBar';
+import { ActiveTimerBar } from './components/ActiveTimerBar';
+import { TimelineView } from './components/TimelineView';
+import { TaskWorkspaceView } from './components/TaskWorkspaceView';
+import { WeeklyReportView } from './components/WeeklyReportView';
+import { AnalyticsView } from './components/AnalyticsView';
+import { AutoTrackView } from './components/AutoTrackView';
+import { IdleReconcileModal } from './components/IdleReconcileModal';
+import { QuickLogModal } from './components/QuickLogModal';
+import { DataPreferencesModal } from './components/DataPreferencesModal';
+import { AccountModal } from './components/AccountModal';
+import { LandingPage } from './components/LandingPage';
+
+const STORAGE_KEYS = {
+  TASKS: 'chronoflow_tasks_v1',
+  BLOCKS: 'chronoflow_blocks_v1',
+  SEGMENTS: 'chronoflow_segments_v1',
+  APP_SEGMENTS: 'chronoflow_app_segments_v1',
+  DOC_SEGMENTS: 'chronoflow_doc_segments_v1',
+  REPORTS: 'chronoflow_reports_v1',
+  PREFS: 'chronoflow_prefs_v1',
+};
+
+function getCurrentMinuteOfDay(): number {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
+}
+
+export default function App() {
+  const weekDates = getRecentWeekDates();
+  const todayDate = weekDates[weekDates.length - 1];
+
+  const [activeTab, setActiveTab] = useState<NavigationTab>('timeline');
+  const [selectedDate, setSelectedDate] = useState<string>(todayDate);
+
+  // Workspace Persistent State
+  const [tasks, setTasks] = useState<Task[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.TASKS);
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // ignore
+    }
+    return createSeedDataset().tasks;
+  });
+
+  const [timeBlocks, setTimeBlocks] = useState<TimeBlock[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.BLOCKS);
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // ignore
+    }
+    return createSeedDataset().timeBlocks;
+  });
+
+  const [activitySegments, setActivitySegments] = useState<ActivitySegment[]>(
+    () => {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEYS.SEGMENTS);
+        if (saved) return JSON.parse(saved);
+      } catch {
+        // ignore
+      }
+      return createSeedDataset().activitySegments;
+    }
+  );
+
+  const [appSegments, setAppSegments] = useState<ApplicationUsageSegment[]>(
+    () => {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEYS.APP_SEGMENTS);
+        if (saved) return JSON.parse(saved);
+      } catch {
+        // ignore
+      }
+      return createSeedDataset().appSegments;
+    }
+  );
+
+  const [documentSegments, setDocumentSegments] = useState<
+    DocumentUsageSegment[]
+  >(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.DOC_SEGMENTS);
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // ignore
+    }
+    return createSeedDataset().documentSegments;
+  });
+
+  const [reports, setReports] = useState<WeeklyReport[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.REPORTS);
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // ignore
+    }
+    return createSeedDataset().reports;
+  });
+
+  const [preferences, setPreferences] = useState<WorkspacePreferences>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.PREFS);
+      if (saved) return { ...DEFAULT_PREFERENCES, ...JSON.parse(saved) };
+    } catch {
+      // ignore
+    }
+    return DEFAULT_PREFERENCES;
+  });
+
+  // Persist to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(tasks));
+    } catch {
+      // ignore
+    }
+  }, [tasks]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.BLOCKS, JSON.stringify(timeBlocks));
+    } catch {
+      // ignore
+    }
+  }, [timeBlocks]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        STORAGE_KEYS.SEGMENTS,
+        JSON.stringify(activitySegments)
+      );
+    } catch {
+      // ignore
+    }
+  }, [activitySegments]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        STORAGE_KEYS.APP_SEGMENTS,
+        JSON.stringify(appSegments)
+      );
+    } catch {
+      // ignore
+    }
+  }, [appSegments]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        STORAGE_KEYS.DOC_SEGMENTS,
+        JSON.stringify(documentSegments)
+      );
+    } catch {
+      // ignore
+    }
+  }, [documentSegments]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.REPORTS, JSON.stringify(reports));
+    } catch {
+      // ignore
+    }
+  }, [reports]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.PREFS, JSON.stringify(preferences));
+    } catch {
+      // ignore
+    }
+    document.documentElement.classList.toggle('dark', preferences.darkMode);
+  }, [preferences]);
+
+  // Live Active Task Stopwatch State
+  const [timer, setTimer] = useState<ActiveTimerState>({
+    isRunning: false,
+    isPaused: false,
+    taskId: 'tsk-101',
+    customTitle: 'Architect ManicTime-style timeline query indexer',
+    project: 'Core Platform',
+    category: 'deep_work',
+    tags: ['architecture', 'timeline-engine'],
+    isBillable: false,
+    startedAtMs: null,
+    accumulatedSeconds: 0,
+    startMinuteOfDay: getCurrentMinuteOfDay(),
+    activeAppName: 'VS Code',
+    activeDocumentTitle: 'src/engine/intervalTree.ts — ontrack',
+  });
+
+  const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
+
+  // Automatic Browser Activity & Idle Presence Tracking
+  const lastActivityMsRef = useRef<number>(Date.now());
+  const [idleSeconds, setIdleSeconds] = useState<number>(0);
+  const [idleAlert, setIdleAlert] = useState<IdleAlertState>({
+    isOpen: false,
+    idleStartedAtMs: 0,
+    idleDurationSeconds: 0,
+    activeTaskTitle: '',
+    startMinuteOfDay: 600,
+    endMinuteOfDay: 620,
+  });
+
+  // Quick Log & Preferences Modal States
+  const [quickLogOpen, setQuickLogOpen] = useState(false);
+  const [editingBlock, setEditingBlock] = useState<TimeBlock | null>(null);
+  const [quickLogRange, setQuickLogRange] = useState<{
+    startTime: number;
+    endTime: number;
+  } | null>(null);
+  const [quickLogTask, setQuickLogTask] = useState<Task | null>(null);
+  const [initialAppDoc, setInitialAppDoc] = useState<{
+    appName: string;
+    documentTitle: string;
+    startTime: number;
+    endTime: number;
+    linkedTaskId?: string | null;
+  } | null>(null);
+  const [prefsModalOpen, setPrefsModalOpen] = useState(false);
+  const [accountModalOpen, setAccountModalOpen] = useState(false);
+  const [toastBanner, setToastBanner] = useState<string | null>(null);
+
+  // Firebase Auth & User Account State
+  const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [showLanding, setShowLanding] = useState(true);
+  const [profileReadyUid, setProfileReadyUid] = useState<string | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<
+    'local' | 'syncing' | 'synced' | 'error'
+  >('local');
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  const showToast = useCallback((msg: string) => {
+    setToastBanner(msg);
+    setTimeout(() => {
+      setToastBanner((prev) => (prev === msg ? null : prev));
+    }, 3200);
+  }, []);
+
+  const [autoSyncToTimeline, setAutoSyncToTimeline] = useState<boolean>(true);
+  const handleSyncEngineSessionsToTimeline = useCallback(
+    (sessions: WorkSession[], attributions: AttributionRecord[]) => {
+      if (!autoSyncToTimeline || sessions.length === 0) return;
+      const attrMap = new Map(attributions.map((a) => [a.sessionId, a]));
+      const syncCandidates = sessions.filter((s) => {
+        const attr = attrMap.get(s.id);
+        return attr && (attr.status === 'confirmed' || attr.status === 'detected');
+      });
+      if (syncCandidates.length === 0) return;
+
+      const newBlocks: TimeBlock[] = [];
+      const newApps: ApplicationUsageSegment[] = [];
+      const newDocs: DocumentUsageSegment[] = [];
+
+      for (const s of syncCandidates) {
+        const attr = attrMap.get(s.id)!;
+        const startDateObj = new Date(s.startTimeUtc);
+        const endDateObj = new Date(s.endTimeUtc);
+        const startMin = Math.max(
+          0,
+          Math.min(1425, startDateObj.getHours() * 60 + startDateObj.getMinutes())
+        );
+        const rawDur = Math.max(
+          15,
+          Math.round((endDateObj.getTime() - startDateObj.getTime()) / 60000)
+        );
+        const endMin = Math.min(1440, startMin + rawDur);
+
+        newBlocks.push({
+          id: `blk-eng-sync-${s.id}`,
+          taskId: null,
+          title: attr.taskTitle || s.primaryTitle,
+          project: attr.clientName || s.entities.clientName || 'Accounting',
+          category: 'billable',
+          tags: ['auto-tracked', attr.status, s.osPlatform],
+          date: selectedDate,
+          startTime: startMin,
+          endTime: endMin,
+          durationMinutes: endMin - startMin,
+          source: 'reconciled',
+          isBillable: true,
+          notes: `${attr.reason} · ${s.primaryApp}`,
+          appName: s.primaryApp,
+          documentTitle: s.primaryTitle,
+        });
+        newApps.push({
+          id: `app-eng-sync-${s.id}`,
+          date: selectedDate,
+          startTime: startMin,
+          endTime: endMin,
+          appName: s.primaryApp,
+          appCategory: inferAppCategory(s.primaryApp),
+        });
+        newDocs.push({
+          id: `doc-eng-sync-${s.id}`,
+          date: selectedDate,
+          startTime: startMin,
+          endTime: endMin,
+          appName: s.primaryApp,
+          documentTitle: s.primaryTitle,
+          domainOrPath: s.primaryUrl || s.primaryPath || s.primaryApp,
+          linkedTaskId: null,
+        });
+      }
+
+      setTimeBlocks((prev) => {
+        const existing = new Set(prev.map((b) => b.id));
+        const toAdd = newBlocks.filter((b) => !existing.has(b.id));
+        if (toAdd.length === 0) return prev;
+        if (user && user.emailVerified) {
+          toAdd.forEach((b) => saveTimeBlockInCloud(user.uid, b, false).catch(console.error));
+        }
+        return [...prev, ...toAdd];
+      });
+      setAppSegments((prev) => {
+        const existing = new Set(prev.map((a) => a.id));
+        const toAdd = newApps.filter((a) => !existing.has(a.id));
+        if (toAdd.length === 0) return prev;
+        if (user && user.emailVerified) {
+          toAdd.forEach((a) => createAppSegmentInCloud(user.uid, a).catch(console.error));
+        }
+        return [...prev, ...toAdd];
+      });
+      setDocumentSegments((prev) => {
+        const existing = new Set(prev.map((d) => d.id));
+        const toAdd = newDocs.filter((d) => !existing.has(d.id));
+        if (toAdd.length === 0) return prev;
+        if (user && user.emailVerified) {
+          toAdd.forEach((d) => createDocSegmentInCloud(user.uid, d).catch(console.error));
+        }
+        return [...prev, ...toAdd];
+      });
+    },
+    [autoSyncToTimeline, selectedDate, user]
+  );
+
+  // Keep latest local dataset ref for initial account onboarding migration
+  const latestWorkspaceRef = useRef({
+    tasks,
+    timeBlocks,
+    activitySegments,
+    appSegments,
+    documentSegments,
+    reports,
+    preferences,
+  });
+  useEffect(() => {
+    latestWorkspaceRef.current = {
+      tasks,
+      timeBlocks,
+      activitySegments,
+      appSegments,
+      documentSegments,
+      reports,
+      preferences,
+    };
+  }, [
+    tasks,
+    timeBlocks,
+    activitySegments,
+    appSegments,
+    documentSegments,
+    reports,
+    preferences,
+  ]);
+
+  // Listen to Firebase Auth state changes
+  useEffect(() => {
+    const fallbackTimer = window.setTimeout(() => {
+      setAuthReady(true);
+    }, 2000);
+
+    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+      window.clearTimeout(fallbackTimer);
+      setUser(firebaseUser);
+      setAuthReady(true);
+
+      if (!firebaseUser) {
+        setProfileReadyUid(null);
+        setUserProfile(null);
+        setCloudSyncStatus('local');
+        return;
+      }
+
+      if (!firebaseUser.emailVerified) {
+        setProfileReadyUid(null);
+        setAuthError(
+          'Your Google account email is not marked verified; cloud sync requires a verified email.'
+        );
+        setCloudSyncStatus('error');
+        return;
+      }
+
+      setAuthError(null);
+      setShowLanding(false);
+      setCloudSyncStatus('syncing');
+      try {
+        const snap = latestWorkspaceRef.current;
+        const { profile, isNewAccount } = await ensureUserProfile(
+          firebaseUser,
+          snap.preferences
+        );
+        setUserProfile(profile);
+        setPreferences(profile.preferences);
+
+        if (isNewAccount) {
+          await seedOrMigrateWorkspaceToCloud(firebaseUser.uid, snap);
+          showToast('Account created & local workspace synced to Cloud.');
+        }
+        setProfileReadyUid(firebaseUser.uid);
+        setCloudSyncStatus('synced');
+      } catch (err) {
+        setCloudSyncStatus('error');
+        setAuthError(
+          err instanceof Error
+            ? err.message
+            : 'Unable to initialize cloud user profile.'
+        );
+      }
+    });
+
+    return () => {
+      window.clearTimeout(fallbackTimer);
+      unsub();
+    };
+  }, [showToast]);
+
+  // Attach Firestore real-time listeners strictly when auth is ready & user profile is initialized
+  useEffect(() => {
+    if (!authReady || !user || !user.emailVerified || profileReadyUid !== user.uid) {
+      return;
+    }
+
+    const unsub = subscribeToUserWorkspace(
+      user.uid,
+      {
+        onProfile: (profile) => {
+          setUserProfile(profile);
+          setPreferences(profile.preferences);
+          setCloudSyncStatus('synced');
+        },
+        onTasks: (cloudTasks) => {
+          if (cloudTasks.length > 0) setTasks(cloudTasks);
+        },
+        onTimeBlocks: (cloudBlocks) => {
+          if (cloudBlocks.length > 0) setTimeBlocks(cloudBlocks);
+        },
+        onActivitySegments: (cloudSegs) => {
+          if (cloudSegs.length > 0) setActivitySegments(cloudSegs);
+        },
+        onAppSegments: (cloudApps) => {
+          if (cloudApps.length > 0) setAppSegments(cloudApps);
+        },
+        onDocumentSegments: (cloudDocs) => {
+          if (cloudDocs.length > 0) setDocumentSegments(cloudDocs);
+        },
+        onReports: (cloudReports) => {
+          if (cloudReports.length > 0) setReports(cloudReports);
+        },
+      },
+      (err) => {
+        setCloudSyncStatus('error');
+        setAuthError(
+          err instanceof Error ? err.message : 'Cloud sync permission error.'
+        );
+      }
+    );
+
+    return () => unsub();
+  }, [authReady, user, profileReadyUid]);
+
+  // Auth & Account Management Handlers
+  const handleSignInWithGoogle = async () => {
+    setAuthError(null);
+    try {
+      await signInWithPopup(auth, googleProvider);
+      setShowLanding(false);
+      showToast('Signed in with Google.');
+    } catch (err: any) {
+      const code = err?.code || '';
+      if (code === 'auth/popup-closed-by-user') {
+        setAuthError('Google sign-in popup was closed before completion.');
+      } else {
+        setAuthError(err?.message || 'Google authentication failed.');
+      }
+    }
+  };
+
+  const handleSignOut = async () => {
+    await signOut(auth);
+    setUserProfile(null);
+    setCloudSyncStatus('local');
+    setAccountModalOpen(false);
+    setShowLanding(true);
+    showToast('Signed out.');
+  };
+
+  const handleSaveProfile = async (updates: {
+    displayName: string;
+    jobTitle: string;
+    hourlyRate: number;
+    currency: string;
+  }) => {
+    if (!user) return;
+    await updateUserProfile(user.uid, updates);
+    setUserProfile((prev) => (prev ? { ...prev, ...updates } : prev));
+    showToast('Account profile updated.');
+  };
+
+  const handleSyncLocalToCloud = async () => {
+    if (!user) return;
+    setCloudSyncStatus('syncing');
+    await seedOrMigrateWorkspaceToCloud(user.uid, latestWorkspaceRef.current);
+    setCloudSyncStatus('synced');
+    showToast('Workspace synchronized to Firestore.');
+  };
+
+  const handleDeleteCloudWorkspace = async () => {
+    if (!user) return;
+    await clearAndDeleteUserWorkspace(user.uid);
+    await signOut(auth);
+    setUserProfile(null);
+    setCloudSyncStatus('local');
+    showToast('Cloud workspace data removed and signed out.');
+  };
+
+  // Reset idle counter on user mouse/keyboard/focus activity (unless Idle Modal is open)
+  useEffect(() => {
+    const handleUserActivity = () => {
+      if (!idleAlert.isOpen) {
+        lastActivityMsRef.current = Date.now();
+        setIdleSeconds(0);
+      }
+    };
+
+    window.addEventListener('mousemove', handleUserActivity, { passive: true });
+    window.addEventListener('keydown', handleUserActivity, { passive: true });
+    window.addEventListener('mousedown', handleUserActivity, { passive: true });
+    window.addEventListener('scroll', handleUserActivity, { passive: true });
+
+    return () => {
+      window.removeEventListener('mousemove', handleUserActivity);
+      window.removeEventListener('keydown', handleUserActivity);
+      window.removeEventListener('mousedown', handleUserActivity);
+      window.removeEventListener('scroll', handleUserActivity);
+    };
+  }, [idleAlert.isOpen]);
+
+  // 1-second master ticker for Stopwatch & Idle Sensor
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+
+      // Update live stopwatch elapsed seconds
+      if (timer.isRunning && !timer.isPaused && timer.startedAtMs) {
+        const deltaSec = Math.floor((now - timer.startedAtMs) / 1000);
+        setElapsedSeconds(timer.accumulatedSeconds + deltaSec);
+      } else {
+        setElapsedSeconds(timer.accumulatedSeconds);
+      }
+
+      // Check idle sensor (only when inside workspace)
+      if (!idleAlert.isOpen && !(showLanding && !user)) {
+        const inactiveSec = Math.floor((now - lastActivityMsRef.current) / 1000);
+        setIdleSeconds(inactiveSec);
+
+        if (inactiveSec >= preferences.idleThresholdSeconds) {
+          const endMin = getCurrentMinuteOfDay();
+          const durationMin = Math.max(15, Math.round(inactiveSec / 60));
+          const startMin = Math.max(0, endMin - durationMin);
+          setIdleAlert({
+            isOpen: true,
+            idleStartedAtMs: lastActivityMsRef.current,
+            idleDurationSeconds: Math.max(inactiveSec, 15 * 60),
+            activeTaskTitle:
+              timer.customTitle || 'Active Workstation Session',
+            startMinuteOfDay: startMin,
+            endMinuteOfDay: endMin,
+          });
+        }
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [timer, idleAlert.isOpen, preferences.idleThresholdSeconds, showLanding, user]);
+
+  // Sync browser document.title with active work context (ManicTime-style live window capture)
+  useEffect(() => {
+    if (showLanding && !user) {
+      document.title = 'onTrack — Task Workspace & Timeline Tracker';
+      return;
+    }
+    const docLabel = timer.activeDocumentTitle || timer.customTitle || 'Workspace';
+    document.title = `${timer.isRunning && !timer.isPaused ? '● ' : ''}${timer.activeAppName} · ${docLabel} — onTrack`;
+  }, [timer.activeAppName, timer.activeDocumentTitle, timer.customTitle, timer.isRunning, timer.isPaused, showLanding, user]);
+
+  // Record in-app onTrack tab focus switches automatically after initial mount
+  const isFirstTabMountRef = useRef(true);
+  useEffect(() => {
+    if (isFirstTabMountRef.current) {
+      isFirstTabMountRef.current = false;
+      return;
+    }
+    const tabLabels: Record<NavigationTab, string> = {
+      timeline: `Day Timeline (${selectedDate}) — onTrack`,
+      tasks: 'Task Board & Backlog — onTrack',
+      autotrack: 'Automated Tracking & Attribution Engine — onTrack',
+      report: 'Weekly Executive Progress Report — onTrack',
+      analytics: 'Productivity & App Usage Analytics — onTrack',
+    };
+    const nowMin = Math.min(1440, Math.max(20, getCurrentMinuteOfDay()));
+    const startMin = Math.max(0, nowMin - 10);
+    const ts = Date.now();
+    const docTitle = tabLabels[activeTab];
+
+    const newAppSeg: ApplicationUsageSegment = {
+      id: `app-${ts}`,
+      date: todayDate,
+      startTime: startMin,
+      endTime: nowMin,
+      appName: 'onTrack Web',
+      appCategory: 'browser',
+    };
+    const newDocSeg: DocumentUsageSegment = {
+      id: `doc-${ts}`,
+      date: todayDate,
+      startTime: startMin,
+      endTime: nowMin,
+      appName: 'onTrack Web',
+      documentTitle: docTitle,
+      domainOrPath: `ontrack.local/${activeTab}`,
+      linkedTaskId: timer.taskId,
+    };
+
+    let addedApp = false;
+    setAppSegments((prev) => {
+      const recentSame = prev.find(
+        (s) =>
+          s.date === todayDate &&
+          s.appName === 'onTrack Web' &&
+          Math.abs(s.endTime - nowMin) <= 2
+      );
+      if (recentSame) return prev;
+      addedApp = true;
+      return [...prev, newAppSeg];
+    });
+    let addedDoc = false;
+    setDocumentSegments((prev) => {
+      const recentSame = prev.find(
+        (s) =>
+          s.date === todayDate &&
+          s.documentTitle === docTitle &&
+          Math.abs(s.endTime - nowMin) <= 2
+      );
+      if (recentSame) return prev;
+      addedDoc = true;
+      return [...prev, newDocSeg];
+    });
+
+    if (user && user.emailVerified) {
+      if (addedApp) {
+        createAppSegmentInCloud(user.uid, newAppSeg).catch(console.error);
+      }
+      if (addedDoc) {
+        createDocSegmentInCloud(user.uid, newDocSeg).catch(console.error);
+      }
+    }
+  }, [activeTab, selectedDate, todayDate, timer.taskId, user]);
+
+  // Timer Handlers
+  const handleStartTimer = (taskId?: string | null) => {
+    const targetId = taskId !== undefined ? taskId : timer.taskId;
+    const foundTask = tasks.find((t) => t.id === targetId);
+
+    setTimer((prev) => ({
+      isRunning: true,
+      isPaused: false,
+      taskId: foundTask ? foundTask.id : null,
+      customTitle: foundTask
+        ? foundTask.title
+        : prev.customTitle || 'Focused Work Session',
+      project: foundTask ? foundTask.project : prev.project,
+      category: foundTask ? foundTask.category : prev.category,
+      tags: foundTask ? foundTask.tags : prev.tags,
+      isBillable: foundTask ? foundTask.category === 'billable' : prev.isBillable,
+      startedAtMs: Date.now(),
+      accumulatedSeconds: 0,
+      startMinuteOfDay: getCurrentMinuteOfDay(),
+      activeAppName: prev.activeAppName || 'VS Code',
+      activeDocumentTitle:
+        prev.activeDocumentTitle ||
+        (foundTask ? `${foundTask.title} — Workspace` : 'Active Document'),
+    }));
+    setElapsedSeconds(0);
+    if (foundTask && foundTask.status === 'todo') {
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === foundTask.id ? { ...t, status: 'in_progress' } : t
+        )
+      );
+      if (user && user.emailVerified) {
+        updateTaskInCloud(user.uid, foundTask.id, { status: 'in_progress' }).catch(
+          console.error
+        );
+      }
+    }
+    showToast(
+      `Stopwatch started: ${
+        foundTask ? foundTask.title : timer.customTitle || 'Focused Session'
+      }`
+    );
+  };
+
+  const handlePauseTimer = () => {
+    if (!timer.isRunning || timer.isPaused) return;
+    const delta = timer.startedAtMs
+      ? Math.floor((Date.now() - timer.startedAtMs) / 1000)
+      : 0;
+    setTimer((prev) => ({
+      ...prev,
+      isPaused: true,
+      startedAtMs: null,
+      accumulatedSeconds: prev.accumulatedSeconds + delta,
+    }));
+  };
+
+  const handleResumeTimer = () => {
+    if (!timer.isRunning || !timer.isPaused) return;
+    setTimer((prev) => ({
+      ...prev,
+      isPaused: false,
+      startedAtMs: Date.now(),
+    }));
+  };
+
+  const handleStopAndSaveTimer = () => {
+    if (!timer.isRunning) return;
+    const totalSec =
+      timer.accumulatedSeconds +
+      (timer.startedAtMs && !timer.isPaused
+        ? Math.floor((Date.now() - timer.startedAtMs) / 1000)
+        : 0);
+
+    // Ensure at least 15m visible block on the day timeline (or exact minutes if > 15m)
+    const durationMinutes = Math.max(15, Math.round(totalSec / 60));
+    const endMin = Math.min(1440, Math.max(60, getCurrentMinuteOfDay()));
+    const startMin = Math.max(0, endMin - durationMinutes);
+    const ts = Date.now();
+
+    const newBlock: TimeBlock = {
+      id: `blk-${ts}`,
+      taskId: timer.taskId,
+      title: timer.customTitle || 'Focused Task Session',
+      project: timer.project,
+      category: timer.category,
+      tags: timer.tags.length > 0 ? timer.tags : ['focus'],
+      date: selectedDate,
+      startTime: startMin,
+      endTime: endMin,
+      durationMinutes,
+      source: 'timer',
+      isBillable: timer.isBillable,
+      notes: 'Logged directly via onTrack active stopwatch.',
+      appName: timer.activeAppName || 'VS Code',
+      documentTitle: timer.activeDocumentTitle || undefined,
+    };
+
+    const activeApp = timer.activeAppName || 'VS Code';
+    const activeDoc =
+      timer.activeDocumentTitle?.trim() || `${newBlock.title} — Workspace`;
+
+    const newAppSeg: ApplicationUsageSegment = {
+      id: `app-${ts}`,
+      date: selectedDate,
+      startTime: startMin,
+      endTime: endMin,
+      appName: activeApp,
+      appCategory: inferAppCategory(activeApp),
+    };
+
+    const newDocSeg: DocumentUsageSegment = {
+      id: `doc-${ts}`,
+      date: selectedDate,
+      startTime: startMin,
+      endTime: endMin,
+      appName: activeApp,
+      documentTitle: activeDoc,
+      domainOrPath: activeApp === 'Google Chrome' ? 'app.browser/session' : `~/workspace/${activeApp.toLowerCase().replace(/\s+/g, '-')}`,
+      linkedTaskId: timer.taskId,
+    };
+
+    setTimeBlocks((prev) => [...prev, newBlock]);
+    setAppSegments((prev) => [...prev, newAppSeg]);
+    setDocumentSegments((prev) => [...prev, newDocSeg]);
+    if (user && user.emailVerified) {
+      saveTimeBlockInCloud(user.uid, newBlock, false).catch(console.error);
+      createAppSegmentInCloud(user.uid, newAppSeg).catch(console.error);
+      createDocSegmentInCloud(user.uid, newDocSeg).catch(console.error);
+    }
+    setTimer((prev) => ({
+      ...prev,
+      isRunning: false,
+      isPaused: false,
+      startedAtMs: null,
+      accumulatedSeconds: 0,
+    }));
+    setElapsedSeconds(0);
+    showToast(
+      `Saved ${durationMinutes}m block + ${activeApp} document trace for "${newBlock.title}".`
+    );
+  };
+
+  // Manual or Live App + Document Window Switch Logger (ManicTime Track 2 & 3)
+  const handleLogAppDocSwitch = (appName: string, documentTitle: string) => {
+    const cleanApp = appName.trim() || 'VS Code';
+    const cleanDoc = documentTitle.trim() || `${cleanApp} Active Window`;
+    const nowMin = Math.min(
+      preferences.workdayEndHour * 60,
+      Math.max(preferences.workdayStartHour * 60 + 15, getCurrentMinuteOfDay())
+    );
+    const startMin = Math.max(0, nowMin - 15);
+    const ts = Date.now();
+
+    const newAppSeg: ApplicationUsageSegment = {
+      id: `app-${ts}`,
+      date: selectedDate,
+      startTime: startMin,
+      endTime: nowMin,
+      appName: cleanApp,
+      appCategory: inferAppCategory(cleanApp),
+    };
+
+    const newDocSeg: DocumentUsageSegment = {
+      id: `doc-${ts}`,
+      date: selectedDate,
+      startTime: startMin,
+      endTime: nowMin,
+      appName: cleanApp,
+      documentTitle: cleanDoc,
+      domainOrPath:
+        cleanApp === 'Google Chrome' || cleanApp === 'onTrack Web'
+          ? 'browser.active/tab'
+          : `~/workspace/${cleanDoc.split(' ')[0].replace(/[^a-zA-Z0-9._/-]/g, '')}`,
+      linkedTaskId: timer.taskId,
+    };
+
+    setAppSegments((prev) => [...prev, newAppSeg]);
+    setDocumentSegments((prev) => [...prev, newDocSeg]);
+    if (user && user.emailVerified) {
+      createAppSegmentInCloud(user.uid, newAppSeg).catch(console.error);
+      createDocSegmentInCloud(user.uid, newDocSeg).catch(console.error);
+    }
+    showToast(`Recorded ${cleanApp} session: "${cleanDoc}"`);
+  };
+
+  // Simulate Idle Prompt (for immediate testing)
+  const handleSimulateIdle = () => {
+    const startMin = 15 * 60 + 45; // 15:45
+    const endMin = 16 * 60 + 10; // 16:10 (25m idle gap)
+    setIdleAlert({
+      isOpen: true,
+      idleStartedAtMs: Date.now() - 25 * 60 * 1000,
+      idleDurationSeconds: 25 * 60,
+      activeTaskTitle:
+        timer.customTitle || 'Architect ManicTime-style timeline query indexer',
+      startMinuteOfDay: startMin,
+      endMinuteOfDay: endMin,
+    });
+  };
+
+  // Idle Reconciliation Actions
+  const handleDiscardIdle = () => {
+    const deductSec = idleAlert.idleDurationSeconds;
+    if (timer.isRunning) {
+      setTimer((prev) => ({
+        ...prev,
+        accumulatedSeconds: Math.max(0, prev.accumulatedSeconds - deductSec),
+        startedAtMs: prev.isPaused ? null : Date.now(),
+      }));
+    }
+    const newSeg: ActivitySegment = {
+      id: `seg-${Date.now()}`,
+      date: selectedDate,
+      startTime: idleAlert.startMinuteOfDay,
+      endTime: idleAlert.endMinuteOfDay,
+      state: 'away',
+      label: 'Trimmed Idle Time (Marked Away)',
+      reconciled: true,
+    };
+    setActivitySegments((prev) => [
+      ...prev.map((s) =>
+        s.date === selectedDate && !s.reconciled ? { ...s, reconciled: true } : s
+      ),
+      newSeg,
+    ]);
+    if (user && user.emailVerified) {
+      saveActivitySegmentInCloud(user.uid, newSeg, false).catch(console.error);
+      activitySegments
+        .filter((s) => s.date === selectedDate && !s.reconciled)
+        .forEach((s) =>
+          saveActivitySegmentInCloud(
+            user.uid,
+            { ...s, reconciled: true },
+            true
+          ).catch(console.error)
+        );
+    }
+    lastActivityMsRef.current = Date.now();
+    setIdleSeconds(0);
+    setIdleAlert((prev) => ({ ...prev, isOpen: false }));
+    showToast('Idle interval trimmed and marked as Away on Track 1.');
+  };
+
+  const handleKeepIdleAsActive = () => {
+    const newSeg: ActivitySegment = {
+      id: `seg-${Date.now()}`,
+      date: selectedDate,
+      startTime: idleAlert.startMinuteOfDay,
+      endTime: idleAlert.endMinuteOfDay,
+      state: 'active',
+      label: 'Confirmed Active Desk Session',
+      reconciled: true,
+    };
+    setActivitySegments((prev) => [
+      ...prev.map((s) =>
+        s.date === selectedDate && !s.reconciled ? { ...s, reconciled: true } : s
+      ),
+      newSeg,
+    ]);
+    if (user && user.emailVerified) {
+      saveActivitySegmentInCloud(user.uid, newSeg, false).catch(console.error);
+      activitySegments
+        .filter((s) => s.date === selectedDate && !s.reconciled)
+        .forEach((s) =>
+          saveActivitySegmentInCloud(
+            user.uid,
+            { ...s, reconciled: true },
+            true
+          ).catch(console.error)
+        );
+    }
+    lastActivityMsRef.current = Date.now();
+    setIdleSeconds(0);
+    setIdleAlert((prev) => ({ ...prev, isOpen: false }));
+    showToast('Idle interval confirmed as active work time.');
+  };
+
+  const handleReassignIdle = (payload: {
+    title: string;
+    project: string;
+    category: WorkCategory;
+    notes: string;
+  }) => {
+    const durationMinutes = Math.max(
+      15,
+      idleAlert.endMinuteOfDay - idleAlert.startMinuteOfDay
+    );
+    const reconciledBlock: TimeBlock = {
+      id: `blk-${Date.now()}`,
+      taskId: null,
+      title: payload.title,
+      project: payload.project,
+      category: payload.category,
+      tags: ['reconciled', 'offline-sync'],
+      date: selectedDate,
+      startTime: idleAlert.startMinuteOfDay,
+      endTime: idleAlert.startMinuteOfDay + durationMinutes,
+      durationMinutes,
+      source: 'reconciled',
+      isBillable: payload.category === 'billable',
+      notes: payload.notes,
+    };
+
+    setTimeBlocks((prev) => [...prev, reconciledBlock]);
+    setActivitySegments((prev) =>
+      prev.map((s) =>
+        s.date === selectedDate && !s.reconciled
+          ? { ...s, state: 'active', reconciled: true, label: payload.title }
+          : s
+      )
+    );
+    if (user && user.emailVerified) {
+      saveTimeBlockInCloud(user.uid, reconciledBlock, false).catch(console.error);
+      activitySegments
+        .filter((s) => s.date === selectedDate && !s.reconciled)
+        .forEach((s) =>
+          saveActivitySegmentInCloud(
+            user.uid,
+            { ...s, state: 'active', reconciled: true, label: payload.title },
+            true
+          ).catch(console.error)
+        );
+    }
+    lastActivityMsRef.current = Date.now();
+    setIdleSeconds(0);
+    setIdleAlert((prev) => ({ ...prev, isOpen: false }));
+    showToast(`Reconciled away interval into "${payload.title}".`);
+  };
+
+  // Save or Update Timeline Block from QuickLogModal
+  const handleSaveTimeBlock = (
+    blockData: Omit<TimeBlock, 'id'>,
+    existingId?: string
+  ) => {
+    if (existingId) {
+      const updatedBlock: TimeBlock = { ...blockData, id: existingId };
+      setTimeBlocks((prev) =>
+        prev.map((b) => (b.id === existingId ? updatedBlock : b))
+      );
+      if (user && user.emailVerified) {
+        saveTimeBlockInCloud(user.uid, updatedBlock, true).catch(console.error);
+      }
+      showToast(`Updated timeline block "${blockData.title}".`);
+    } else {
+      const created: TimeBlock = {
+        ...blockData,
+        id: `blk-${Date.now()}`,
+      };
+      setTimeBlocks((prev) => [...prev, created]);
+      setSelectedDate(blockData.date);
+      if (user && user.emailVerified) {
+        saveTimeBlockInCloud(user.uid, created, false).catch(console.error);
+      }
+      showToast(`Logged ${blockData.durationMinutes}m to ${blockData.date}.`);
+    }
+  };
+
+  const handleDeleteTimeBlock = (blockId: string) => {
+    setTimeBlocks((prev) => prev.filter((b) => b.id !== blockId));
+    if (user && user.emailVerified) {
+      deleteTimeBlockInCloud(user.uid, blockId).catch(console.error);
+    }
+    showToast('Timeline block removed.');
+  };
+
+  // Task CRUD Handlers
+  const handleCreateTask = (newTaskData: Omit<Task, 'id' | 'createdAt'>) => {
+    const created: Task = {
+      ...newTaskData,
+      id: `tsk-${Date.now()}`,
+      createdAt: todayDate,
+    };
+    setTasks((prev) => [created, ...prev]);
+    if (user && user.emailVerified) {
+      createTaskInCloud(user.uid, created).catch(console.error);
+    }
+    showToast(`Task "${created.title}" added to ${created.project}.`);
+  };
+
+  const handleUpdateTask = (taskId: string, updates: Partial<Task>) => {
+    setTasks((prev) =>
+      prev.map((t) => (t.id === taskId ? { ...t, ...updates } : t))
+    );
+    if (user && user.emailVerified) {
+      updateTaskInCloud(user.uid, taskId, updates).catch(console.error);
+    }
+  };
+
+  const handleDeleteTask = (taskId: string) => {
+    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    if (user && user.emailVerified) {
+      deleteTaskInCloud(user.uid, taskId).catch(console.error);
+    }
+    showToast('Task deleted.');
+  };
+
+  // JSON Export & Import Handlers
+  const handleExportJson = () => {
+    const payload = {
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      tasks,
+      timeBlocks,
+      activitySegments,
+      appSegments,
+      documentSegments,
+      reports,
+      preferences,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ontrack-workspace-backup-${todayDate}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Exported JSON workspace backup.');
+  };
+
+  const handleImportJson = (jsonText: string): boolean => {
+    try {
+      const parsed = JSON.parse(jsonText);
+      if (Array.isArray(parsed.tasks) && Array.isArray(parsed.timeBlocks)) {
+        const nextActivity = Array.isArray(parsed.activitySegments)
+          ? parsed.activitySegments
+          : activitySegments;
+        const nextApp = Array.isArray(parsed.appSegments)
+          ? parsed.appSegments
+          : appSegments;
+        const nextDoc = Array.isArray(parsed.documentSegments)
+          ? parsed.documentSegments
+          : documentSegments;
+        const nextReports = Array.isArray(parsed.reports)
+          ? parsed.reports
+          : reports;
+
+        setTasks(parsed.tasks);
+        setTimeBlocks(parsed.timeBlocks);
+        setActivitySegments(nextActivity);
+        setAppSegments(nextApp);
+        setDocumentSegments(nextDoc);
+        setReports(nextReports);
+
+        if (user && user.emailVerified) {
+          seedOrMigrateWorkspaceToCloud(user.uid, {
+            tasks: parsed.tasks,
+            timeBlocks: parsed.timeBlocks,
+            activitySegments: nextActivity,
+            appSegments: nextApp,
+            documentSegments: nextDoc,
+            reports: nextReports,
+          }).catch(console.error);
+        }
+
+        showToast('Workspace state restored from JSON backup.');
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleResetToSeed = () => {
+    const seed = createSeedDataset();
+    setTasks(seed.tasks);
+    setTimeBlocks(seed.timeBlocks);
+    setActivitySegments(seed.activitySegments);
+    setAppSegments(seed.appSegments);
+    setDocumentSegments(seed.documentSegments);
+    setReports(seed.reports);
+    if (user && user.emailVerified) {
+      seedOrMigrateWorkspaceToCloud(user.uid, seed).catch(console.error);
+    }
+    showToast('Workspace reset to default 7-day sample data.');
+  };
+
+  if (!authReady) {
+    return (
+      <div className={preferences.darkMode ? 'dark' : ''}>
+        <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex items-center justify-center px-6">
+          <div className="text-center space-y-2">
+            <div className="font-display text-lg font-bold tracking-tight">onTrack</div>
+            <div className="text-xs text-slate-500 dark:text-slate-400">
+              Initializing workspace session...
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (showLanding && !user) {
+    return (
+      <LandingPage
+        authReady={authReady}
+        authError={authError}
+        darkMode={preferences.darkMode}
+        onToggleTheme={() =>
+          setPreferences((prev) => ({ ...prev, darkMode: !prev.darkMode }))
+        }
+        onSignInWithGoogle={handleSignInWithGoogle}
+        onContinueLocal={() => {
+          lastActivityMsRef.current = Date.now();
+          setIdleSeconds(0);
+          setShowLanding(false);
+        }}
+      />
+    );
+  }
+
+  return (
+    <div className={preferences.darkMode ? 'dark' : ''}>
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col">
+        {/* Strict 3-Zone Top Bar Contract */}
+        <TopBar
+          activeTab={activeTab}
+          onSelectTab={setActiveTab}
+          onOpenQuickLog={() => {
+            setEditingBlock(null);
+            setQuickLogRange(null);
+            setQuickLogTask(null);
+            setInitialAppDoc(null);
+            setQuickLogOpen(true);
+          }}
+          user={user}
+          userProfile={userProfile}
+          onOpenAccount={() => setAccountModalOpen(true)}
+        />
+
+        {/* Global Active Task Timer & ManicTime Presence Sensor Strip */}
+        <ActiveTimerBar
+          timer={timer}
+          elapsedSeconds={elapsedSeconds}
+          tasks={tasks}
+          selectedDate={selectedDate}
+          weekDates={weekDates}
+          idleSeconds={idleSeconds}
+          preferences={preferences}
+          onSelectDate={setSelectedDate}
+          onStartTimer={handleStartTimer}
+          onPauseTimer={handlePauseTimer}
+          onResumeTimer={handleResumeTimer}
+          onStopAndSaveTimer={handleStopAndSaveTimer}
+          onUpdateTimerMeta={(updates) =>
+            setTimer((prev) => ({ ...prev, ...updates }))
+          }
+          onLogAppDocSwitch={handleLogAppDocSwitch}
+          onSimulateIdle={handleSimulateIdle}
+          onOpenPreferences={() => setPrefsModalOpen(true)}
+          onToggleTheme={() => {
+            setPreferences((prev) => {
+              const next = { ...prev, darkMode: !prev.darkMode };
+              if (user && user.emailVerified) {
+                updateUserProfile(user.uid, { preferences: next }).catch(
+                  console.error
+                );
+              }
+              return next;
+            });
+          }}
+        />
+
+        {/* Toast Notification Banner */}
+        {toastBanner && (
+          <div className="no-print fixed bottom-5 right-5 z-40 bg-slate-900 dark:bg-indigo-600 text-white text-xs font-medium px-4 py-2.5 rounded-lg shadow-lg border border-slate-700">
+            {toastBanner}
+          </div>
+        )}
+
+        {/* Main 1440px Workspace Viewport */}
+        <main className="flex-1 w-full max-w-[1440px] mx-auto px-6 py-6">
+          {activeTab === 'timeline' && (
+            <TimelineView
+              selectedDate={selectedDate}
+              weekDates={weekDates}
+              timeBlocks={timeBlocks}
+              activitySegments={activitySegments}
+              appSegments={appSegments}
+              documentSegments={documentSegments}
+              tasks={tasks}
+              onSelectDate={setSelectedDate}
+              onOpenQuickLogWithRange={(startTime, endTime) => {
+                setEditingBlock(null);
+                setQuickLogTask(null);
+                setInitialAppDoc(null);
+                setQuickLogRange({ startTime, endTime });
+                setQuickLogOpen(true);
+              }}
+              onConvertAppDocToBlock={(doc) => {
+                setEditingBlock(null);
+                setQuickLogTask(null);
+                setQuickLogRange(null);
+                setInitialAppDoc(doc);
+                setQuickLogOpen(true);
+              }}
+              onEditTimeBlock={(block) => {
+                setEditingBlock(block);
+                setQuickLogRange(null);
+                setQuickLogTask(null);
+                setInitialAppDoc(null);
+                setQuickLogOpen(true);
+              }}
+              onDeleteTimeBlock={handleDeleteTimeBlock}
+              onStartTimerForTask={(taskId) => handleStartTimer(taskId)}
+              onReconcileSegment={(segment) => {
+                setIdleAlert({
+                  isOpen: true,
+                  idleStartedAtMs: Date.now() - 15 * 60 * 1000,
+                  idleDurationSeconds:
+                    (segment.endTime - segment.startTime) * 60,
+                  activeTaskTitle: segment.label,
+                  startMinuteOfDay: segment.startTime,
+                  endMinuteOfDay: segment.endTime,
+                });
+              }}
+            />
+          )}
+
+          {activeTab === 'tasks' && (
+            <TaskWorkspaceView
+              tasks={tasks}
+              timeBlocks={timeBlocks}
+              selectedDate={selectedDate}
+              activeTimerTaskId={timer.taskId}
+              isTimerRunning={timer.isRunning && !timer.isPaused}
+              onStartTimerForTask={(taskId) => handleStartTimer(taskId)}
+              onPauseTimer={handlePauseTimer}
+              onCreateTask={handleCreateTask}
+              onUpdateTask={handleUpdateTask}
+              onDeleteTask={handleDeleteTask}
+              onOpenQuickLogForTask={(task) => {
+                setEditingBlock(null);
+                setQuickLogRange(null);
+                setInitialAppDoc(null);
+                setQuickLogTask(task);
+                setQuickLogOpen(true);
+              }}
+              onOpenQuickLogForDate={(date) => {
+                setSelectedDate(date);
+                setEditingBlock(null);
+                setQuickLogTask(null);
+                setInitialAppDoc(null);
+                setQuickLogRange({ startTime: 9 * 60, endTime: 10 * 60 });
+                setQuickLogOpen(true);
+              }}
+              onJumpToTimelineDate={(date) => {
+                setSelectedDate(date);
+                setActiveTab('timeline');
+              }}
+            />
+          )}
+
+          {activeTab === 'autotrack' && (
+            <AutoTrackView
+              selectedDate={selectedDate}
+              firebaseUser={user}
+              autoSyncToTimeline={autoSyncToTimeline}
+              onToggleAutoSyncToTimeline={setAutoSyncToTimeline}
+              onSyncEngineSessionsToTimeline={handleSyncEngineSessionsToTimeline}
+              onNotify={showToast}
+              onPushConfirmedToTimeline={({ session, title, project, category, notes }) => {
+                const startDateObj = new Date(session.startTimeUtc);
+                const endDateObj = new Date(session.endTimeUtc);
+                const startMin = Math.max(
+                  0,
+                  Math.min(1425, startDateObj.getHours() * 60 + startDateObj.getMinutes())
+                );
+                const rawDur = Math.max(
+                  15,
+                  Math.round((endDateObj.getTime() - startDateObj.getTime()) / 60000)
+                );
+                const endMin = Math.min(1440, startMin + rawDur);
+                const ts = Date.now();
+                const dateStr = selectedDate;
+
+                const newBlock: TimeBlock = {
+                  id: `blk-eng-${ts}`,
+                  taskId: null,
+                  title,
+                  project,
+                  category,
+                  tags: ['auto-tracked', session.osPlatform],
+                  date: dateStr,
+                  startTime: startMin,
+                  endTime: endMin,
+                  durationMinutes: endMin - startMin,
+                  source: 'reconciled',
+                  isBillable: category === 'billable',
+                  notes,
+                  appName: session.primaryApp,
+                  documentTitle: session.primaryTitle,
+                };
+                const newAppSeg: ApplicationUsageSegment = {
+                  id: `app-eng-${ts}`,
+                  date: dateStr,
+                  startTime: startMin,
+                  endTime: endMin,
+                  appName: session.primaryApp,
+                  appCategory: inferAppCategory(session.primaryApp),
+                };
+                const newDocSeg: DocumentUsageSegment = {
+                  id: `doc-eng-${ts}`,
+                  date: dateStr,
+                  startTime: startMin,
+                  endTime: endMin,
+                  appName: session.primaryApp,
+                  documentTitle: session.primaryTitle,
+                  domainOrPath:
+                    session.primaryUrl || session.primaryPath || session.primaryApp,
+                  linkedTaskId: null,
+                };
+
+                setTimeBlocks((prev) => [...prev, newBlock]);
+                setAppSegments((prev) => [...prev, newAppSeg]);
+                setDocumentSegments((prev) => [...prev, newDocSeg]);
+                if (user && user.emailVerified) {
+                  saveTimeBlockInCloud(user.uid, newBlock, false).catch(console.error);
+                  createAppSegmentInCloud(user.uid, newAppSeg).catch(console.error);
+                  createDocSegmentInCloud(user.uid, newDocSeg).catch(console.error);
+                }
+                showToast(`Pushed "${title}" (${endMin - startMin}m) to Day Timeline.`);
+              }}
+            />
+          )}
+
+          {activeTab === 'report' && (
+            <WeeklyReportView
+              weekDates={weekDates}
+              tasks={tasks}
+              timeBlocks={timeBlocks}
+              appSegments={appSegments}
+              documentSegments={documentSegments}
+              reports={reports}
+              onSaveReport={(newReport) => {
+                setReports((prev) => [newReport, ...prev]);
+                if (user && user.emailVerified) {
+                  createReportInCloud(user.uid, newReport).catch(console.error);
+                }
+              }}
+            />
+          )}
+
+          {activeTab === 'analytics' && (
+            <AnalyticsView
+              weekDates={weekDates}
+              tasks={tasks}
+              timeBlocks={timeBlocks}
+              activitySegments={activitySegments}
+              appSegments={appSegments}
+              documentSegments={documentSegments}
+              onSelectDateAndGoToTimeline={(date) => {
+                setSelectedDate(date);
+                setActiveTab('timeline');
+              }}
+            />
+          )}
+        </main>
+
+        {/* Quiet Utilitarian Footer */}
+        <footer className="no-print border-t border-slate-200 dark:border-slate-800 px-6 py-4 text-xs text-slate-500 dark:text-slate-400">
+          <div className="max-w-[1440px] mx-auto flex flex-wrap items-center justify-between gap-4">
+            <span>
+              onTrack Workspace ·{' '}
+              {user
+                ? `Cloud synced as ${user.email}`
+                : 'Local browser mode (Sign in to sync across devices)'}
+            </span>
+            <div className="flex items-center gap-4">
+              {!user && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setShowLanding(true)}
+                    className="hover:text-slate-900 dark:hover:text-white underline cursor-pointer"
+                  >
+                    Landing Page
+                  </button>
+                  <span>·</span>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => setAccountModalOpen(true)}
+                className="hover:text-slate-900 dark:hover:text-white underline cursor-pointer"
+              >
+                {user ? 'Account Settings' : 'Sign In & Sync'}
+              </button>
+              <span>·</span>
+              <button
+                type="button"
+                onClick={handleExportJson}
+                className="hover:text-slate-900 dark:hover:text-white underline cursor-pointer"
+              >
+                Export JSON Backup
+              </button>
+              <span>·</span>
+              <button
+                type="button"
+                onClick={() => setPrefsModalOpen(true)}
+                className="hover:text-slate-900 dark:hover:text-white underline cursor-pointer"
+              >
+                Idle Sensor Settings
+              </button>
+            </div>
+          </div>
+        </footer>
+
+        {/* Modals */}
+        <IdleReconcileModal
+          idleAlert={idleAlert}
+          onDiscardIdle={handleDiscardIdle}
+          onKeepAsActive={handleKeepIdleAsActive}
+          onReassignIdle={handleReassignIdle}
+          onClose={() => setIdleAlert((prev) => ({ ...prev, isOpen: false }))}
+        />
+
+        <QuickLogModal
+          isOpen={quickLogOpen}
+          selectedDate={selectedDate}
+          weekDates={weekDates}
+          tasks={tasks}
+          initialBlock={editingBlock}
+          initialRange={quickLogRange}
+          initialTask={quickLogTask}
+          initialAppDoc={initialAppDoc}
+          onSaveBlock={handleSaveTimeBlock}
+          onClose={() => setQuickLogOpen(false)}
+        />
+
+        <DataPreferencesModal
+          isOpen={prefsModalOpen}
+          preferences={preferences}
+          onUpdatePreferences={(updates) => {
+            setPreferences((prev) => {
+              const next = { ...prev, ...updates };
+              if (user && user.emailVerified) {
+                updateUserProfile(user.uid, { preferences: next }).catch(
+                  console.error
+                );
+              }
+              return next;
+            });
+          }}
+          onExportJson={handleExportJson}
+          onImportJson={handleImportJson}
+          onResetToSeed={handleResetToSeed}
+          onClose={() => setPrefsModalOpen(false)}
+        />
+
+        <AccountModal
+          isOpen={accountModalOpen}
+          user={user}
+          userProfile={userProfile}
+          authReady={authReady}
+          cloudSyncStatus={cloudSyncStatus}
+          authError={authError}
+          onSignInWithGoogle={handleSignInWithGoogle}
+          onSignOut={handleSignOut}
+          onSaveProfile={handleSaveProfile}
+          onSyncLocalToCloud={handleSyncLocalToCloud}
+          onDeleteCloudWorkspace={handleDeleteCloudWorkspace}
+          onExportJson={handleExportJson}
+          onOpenPreferences={() => setPrefsModalOpen(true)}
+          onClose={() => setAccountModalOpen(false)}
+        />
+      </div>
+    </div>
+  );
+}

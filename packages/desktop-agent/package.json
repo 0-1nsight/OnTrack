@@ -1,0 +1,10 @@
+{
+  "name": "ontrack-desktop-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cross-platform (Windows, macOS, Linux, VDI) metadata-only activity collector and offline sync agent for onTrack.",
+  "scripts": {
+    "start": "node --experimental-strip-types src/agent.ts"
+  }
+}

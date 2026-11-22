@@ -1,0 +1,560 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated ChronoFlow user account profile, billing rate, and workspace preferences.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "jobTitle": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "hourlyRate": {
+          "type": "number"
+        },
+        "currency": {
+          "type": "string",
+          "maxLength": 8
+        },
+        "preferences": {
+          "type": "object",
+          "description": "Workspace idle sensor, workday bounds, and theme settings."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "email",
+        "displayName",
+        "preferences",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TaskItem": {
+      "title": "TaskItem",
+      "description": "ClickUp-style task card with estimate, priority, category, tags, and subtasks.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "status": {
+          "type": "string",
+          "enum": ["in_progress", "todo", "blocked", "completed"]
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["urgent", "high", "medium", "low"]
+        },
+        "category": {
+          "type": "string",
+          "enum": ["deep_work", "collaborative", "billable", "admin"]
+        },
+        "tags": {
+          "type": "array"
+        },
+        "estimatedMinutes": {
+          "type": "number"
+        },
+        "blockerNote": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "subtasks": {
+          "type": "array"
+        },
+        "createdDate": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "startDate": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "dueDate": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "completedDate": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "title",
+        "description",
+        "project",
+        "status",
+        "priority",
+        "category",
+        "tags",
+        "estimatedMinutes",
+        "subtasks",
+        "createdDate",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TimeBlock": {
+      "title": "TimeBlock",
+      "description": "ManicTime timeline block linked to a task or work session.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "taskId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "category": {
+          "type": "string",
+          "enum": ["deep_work", "collaborative", "billable", "admin"]
+        },
+        "tags": {
+          "type": "array"
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "maxLength": 10
+        },
+        "startTime": {
+          "type": "number"
+        },
+        "endTime": {
+          "type": "number"
+        },
+        "durationMinutes": {
+          "type": "number"
+        },
+        "source": {
+          "type": "string",
+          "enum": ["timer", "manual", "reconciled"]
+        },
+        "isBillable": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "appName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "documentTitle": {
+          "type": "string",
+          "maxLength": 250
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "title",
+        "project",
+        "category",
+        "tags",
+        "date",
+        "startTime",
+        "endTime",
+        "durationMinutes",
+        "source",
+        "isBillable",
+        "notes",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ActivitySegment": {
+      "title": "ActivitySegment",
+      "description": "Automatic browser presence segment (active, idle, away) on Track 1.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "maxLength": 10
+        },
+        "startTime": {
+          "type": "number"
+        },
+        "endTime": {
+          "type": "number"
+        },
+        "state": {
+          "type": "string",
+          "enum": ["active", "idle", "away"]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "reconciled": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "date",
+        "startTime",
+        "endTime",
+        "state",
+        "label",
+        "reconciled",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ApplicationUsageSegment": {
+      "title": "ApplicationUsageSegment",
+      "description": "Foreground application usage interval captured on Track 2.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "maxLength": 10
+        },
+        "startTime": {
+          "type": "number"
+        },
+        "endTime": {
+          "type": "number"
+        },
+        "appName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "appCategory": {
+          "type": "string",
+          "enum": ["code", "browser", "design", "comms", "docs"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "date",
+        "startTime",
+        "endTime",
+        "appName",
+        "appCategory",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DocumentUsageSegment": {
+      "title": "DocumentUsageSegment",
+      "description": "Document, file, or browser tab interval captured on Track 3.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "maxLength": 10
+        },
+        "startTime": {
+          "type": "number"
+        },
+        "endTime": {
+          "type": "number"
+        },
+        "appName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "documentTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 250
+        },
+        "domainOrPath": {
+          "type": "string",
+          "maxLength": 250
+        },
+        "linkedTaskId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "date",
+        "startTime",
+        "endTime",
+        "appName",
+        "documentTitle",
+        "domainOrPath",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "WeeklyReport": {
+      "title": "WeeklyReport",
+      "description": "AI-generated or synthesized weekly progress report snapshot.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "weekStartDate": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "weekEndDate": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "generatedAt": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "tone": {
+          "type": "string",
+          "enum": ["executive", "standup", "client"]
+        },
+        "executiveSummary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "accomplishments": {
+          "type": "array"
+        },
+        "blockersAndRisks": {
+          "type": "array"
+        },
+        "velocityInsights": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "nextWeekFocus": {
+          "type": "array"
+        },
+        "metricsSnapshot": {
+          "type": "object"
+        },
+        "isAiGenerated": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "weekStartDate",
+        "weekEndDate",
+        "generatedAt",
+        "tone",
+        "executiveSummary",
+        "accomplishments",
+        "blockersAndRisks",
+        "velocityInsights",
+        "nextWeekFocus",
+        "metricsSnapshot",
+        "isAiGenerated",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user account profile and workspace preferences (strictly readable/writable only by ownerId == request.auth.uid)."
+    },
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/TaskItem" },
+      "description": "User's private ClickUp-style tasks."
+    },
+    "/users/{userId}/timeBlocks/{blockId}": {
+      "schema": { "$ref": "#/entities/TimeBlock" },
+      "description": "User's private ManicTime timeline blocks."
+    },
+    "/users/{userId}/activitySegments/{segmentId}": {
+      "schema": { "$ref": "#/entities/ActivitySegment" },
+      "description": "User's private presence & idle segments."
+    },
+    "/users/{userId}/appSegments/{appSegmentId}": {
+      "schema": { "$ref": "#/entities/ApplicationUsageSegment" },
+      "description": "User's private foreground application usage segments."
+    },
+    "/users/{userId}/documentSegments/{docSegmentId}": {
+      "schema": { "$ref": "#/entities/DocumentUsageSegment" },
+      "description": "User's private document/file/tab usage segments."
+    },
+    "/users/{userId}/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/WeeklyReport" },
+      "description": "User's private generated weekly progress reports."
+    }
+  }
+}
