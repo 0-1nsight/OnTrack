@@ -13,8 +13,10 @@ import { appConfig } from './server/config.ts';
 import { EngineSQLStore } from './server/engineStore.ts';
 import { centralErrorHandler, HttpError } from './server/errors.ts';
 import { logger } from './server/logger.ts';
+import { PortalSQLStore } from './server/portalStore.ts';
 import { createAuthRouter } from './server/routes/authRoutes.ts';
 import { createEngineRouter } from './server/routes/engineRoutes.ts';
+import { createPortalRouter } from './server/routes/portalRoutes.ts';
 import { createReportsRouter } from './server/routes/reportsRoutes.ts';
 import { EngineWsGateway } from './server/wsGateway.ts';
 
@@ -41,6 +43,7 @@ export async function createOnTrackServer(options?: CreateServerOptions) {
 
   const authStore = new AuthStore(engineStore.db);
   await authStore.ensureEnvBootstrapAdmin();
+  const portalStore = new PortalSQLStore(engineStore);
 
   const wsGateway = new EngineWsGateway(server, engineStore, authStore);
 
@@ -185,6 +188,16 @@ export async function createOnTrackServer(options?: CreateServerOptions) {
     createEngineRouter({
       authStore,
       engineStore,
+      wsGateway,
+    })
+  );
+
+  app.use(
+    '/api/portal',
+    createPortalRouter({
+      authStore,
+      engineStore,
+      portalStore,
       wsGateway,
     })
   );

@@ -7,7 +7,6 @@ import {
   CheckSquare,
   Square,
   AlertOctagon,
-  Clock,
   LayoutList,
   Columns3,
   GanttChartSquare,

@@ -154,4 +154,12 @@ export interface UserProfile {
   preferences: WorkspacePreferences;
 }
 
-export type NavigationTab = 'timeline' | 'tasks' | 'autotrack' | 'report' | 'analytics';
+export type NavigationTab =
+  | 'overview'
+  | 'timeline'
+  | 'tasks'
+  | 'autotrack'
+  | 'portal'
+  | 'admin'
+  | 'report'
+  | 'analytics';

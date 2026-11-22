@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { X, Clock } from 'lucide-react';
 import { Task, TimeBlock, WorkCategory } from '../types';
 import {
@@ -32,10 +32,88 @@ interface QuickLogModalProps {
   onClose: () => void;
 }
 
+function buildInitialQuickLog(params: {
+  selectedDate: string;
+  tasks: Task[];
+  initialBlock: TimeBlock | null;
+  initialRange: { startTime: number; endTime: number } | null;
+  initialTask: Task | null;
+  initialAppDoc?: QuickLogModalProps['initialAppDoc'];
+}) {
+  const { selectedDate, tasks, initialBlock, initialRange, initialTask, initialAppDoc } = params;
+  if (initialBlock) {
+    return {
+      taskId: initialBlock.taskId || '',
+      title: initialBlock.title,
+      project: initialBlock.project,
+      category: initialBlock.category,
+      date: initialBlock.date,
+      startHHMM: formatMinutesToHHMM(initialBlock.startTime),
+      endHHMM: formatMinutesToHHMM(initialBlock.endTime),
+      tagsText: initialBlock.tags.join(', '),
+      isBillable: initialBlock.isBillable,
+      notes: initialBlock.notes,
+      appName: initialBlock.appName || 'VS Code',
+      documentTitle: initialBlock.documentTitle || '',
+    };
+  }
+  if (initialAppDoc) {
+    const linked = initialAppDoc.linkedTaskId
+      ? tasks.find((t) => t.id === initialAppDoc.linkedTaskId)
+      : null;
+    return {
+      taskId: linked ? linked.id : '',
+      title: linked ? linked.title : initialAppDoc.documentTitle,
+      project: linked ? linked.project : 'Core Platform',
+      category: linked ? linked.category : ('deep_work' as WorkCategory),
+      date: selectedDate,
+      startHHMM: formatMinutesToHHMM(initialAppDoc.startTime),
+      endHHMM: formatMinutesToHHMM(initialAppDoc.endTime),
+      tagsText: linked ? linked.tags.join(', ') : 'captured-window',
+      isBillable: linked ? linked.category === 'billable' : false,
+      notes: `Captured from ${initialAppDoc.appName}: ${initialAppDoc.documentTitle}`,
+      appName: initialAppDoc.appName,
+      documentTitle: initialAppDoc.documentTitle,
+    };
+  }
+  if (initialTask) {
+    return {
+      taskId: initialTask.id,
+      title: initialTask.title,
+      project: initialTask.project,
+      category: initialTask.category,
+      date: selectedDate,
+      startHHMM: '10:00',
+      endHHMM: '11:00',
+      tagsText: initialTask.tags.join(', '),
+      isBillable: initialTask.category === 'billable',
+      notes: '',
+      appName: 'VS Code',
+      documentTitle: '',
+    };
+  }
+  const sMin = initialRange ? initialRange.startTime : 9 * 60;
+  const eMin = initialRange ? initialRange.endTime : 10 * 60;
+  return {
+    taskId: '',
+    title: '',
+    project: 'Core Platform',
+    category: 'deep_work' as WorkCategory,
+    date: selectedDate,
+    startHHMM: formatMinutesToHHMM(sMin),
+    endHHMM: formatMinutesToHHMM(eMin),
+    tagsText: 'focus',
+    isBillable: false,
+    notes: '',
+    appName: 'VS Code',
+    documentTitle: '',
+  };
+}
+
 export const QuickLogModal: React.FC<QuickLogModalProps> = ({
   isOpen,
   selectedDate,
-  weekDates,
+  weekDates: _weekDates,
   tasks,
   initialBlock,
   initialRange,
@@ -44,80 +122,28 @@ export const QuickLogModal: React.FC<QuickLogModalProps> = ({
   onSaveBlock,
   onClose,
 }) => {
-  const [taskId, setTaskId] = useState<string>('');
-  const [title, setTitle] = useState<string>('');
-  const [project, setProject] = useState<string>('Core Platform');
-  const [category, setCategory] = useState<WorkCategory>('deep_work');
-  const [date, setDate] = useState<string>(selectedDate);
-  const [startHHMM, setStartHHMM] = useState<string>('09:00');
-  const [endHHMM, setEndHHMM] = useState<string>('10:30');
-  const [tagsText, setTagsText] = useState<string>('deep-work, engineering');
-  const [isBillable, setIsBillable] = useState<boolean>(false);
-  const [notes, setNotes] = useState<string>('');
-  const [appName, setAppName] = useState<string>('VS Code');
-  const [documentTitle, setDocumentTitle] = useState<string>('');
-
-  useEffect(() => {
-    if (!isOpen) return;
-    if (initialBlock) {
-      setTaskId(initialBlock.taskId || '');
-      setTitle(initialBlock.title);
-      setProject(initialBlock.project);
-      setCategory(initialBlock.category);
-      setDate(initialBlock.date);
-      setStartHHMM(formatMinutesToHHMM(initialBlock.startTime));
-      setEndHHMM(formatMinutesToHHMM(initialBlock.endTime));
-      setTagsText(initialBlock.tags.join(', '));
-      setIsBillable(initialBlock.isBillable);
-      setNotes(initialBlock.notes);
-      setAppName(initialBlock.appName || 'VS Code');
-      setDocumentTitle(initialBlock.documentTitle || '');
-    } else if (initialAppDoc) {
-      const linked = initialAppDoc.linkedTaskId
-        ? tasks.find((t) => t.id === initialAppDoc.linkedTaskId)
-        : null;
-      setTaskId(linked ? linked.id : '');
-      setTitle(linked ? linked.title : initialAppDoc.documentTitle);
-      setProject(linked ? linked.project : 'Core Platform');
-      setCategory(linked ? linked.category : 'deep_work');
-      setDate(selectedDate);
-      setStartHHMM(formatMinutesToHHMM(initialAppDoc.startTime));
-      setEndHHMM(formatMinutesToHHMM(initialAppDoc.endTime));
-      setTagsText(linked ? linked.tags.join(', ') : 'captured-window');
-      setIsBillable(linked ? linked.category === 'billable' : false);
-      setNotes(`Captured from ${initialAppDoc.appName}: ${initialAppDoc.documentTitle}`);
-      setAppName(initialAppDoc.appName);
-      setDocumentTitle(initialAppDoc.documentTitle);
-    } else if (initialTask) {
-      setTaskId(initialTask.id);
-      setTitle(initialTask.title);
-      setProject(initialTask.project);
-      setCategory(initialTask.category);
-      setDate(selectedDate);
-      setStartHHMM('10:00');
-      setEndHHMM('11:00');
-      setTagsText(initialTask.tags.join(', '));
-      setIsBillable(initialTask.category === 'billable');
-      setNotes('');
-      setAppName('VS Code');
-      setDocumentTitle('');
-    } else {
-      const sMin = initialRange ? initialRange.startTime : 9 * 60;
-      const eMin = initialRange ? initialRange.endTime : 10 * 60;
-      setTaskId('');
-      setTitle('');
-      setProject('Core Platform');
-      setCategory('deep_work');
-      setDate(selectedDate);
-      setStartHHMM(formatMinutesToHHMM(sMin));
-      setEndHHMM(formatMinutesToHHMM(eMin));
-      setTagsText('focus');
-      setIsBillable(false);
-      setNotes('');
-      setAppName('VS Code');
-      setDocumentTitle('');
-    }
-  }, [isOpen, initialBlock, initialRange, initialTask, initialAppDoc, selectedDate, tasks]);
+  const [init] = useState(() =>
+    buildInitialQuickLog({
+      selectedDate,
+      tasks,
+      initialBlock,
+      initialRange,
+      initialTask,
+      initialAppDoc,
+    })
+  );
+  const [taskId, setTaskId] = useState<string>(init.taskId);
+  const [title, setTitle] = useState<string>(init.title);
+  const [project, setProject] = useState<string>(init.project);
+  const [category, setCategory] = useState<WorkCategory>(init.category);
+  const [date, setDate] = useState<string>(init.date);
+  const [startHHMM, setStartHHMM] = useState<string>(init.startHHMM);
+  const [endHHMM, setEndHHMM] = useState<string>(init.endHHMM);
+  const [tagsText, setTagsText] = useState<string>(init.tagsText);
+  const [isBillable, setIsBillable] = useState<boolean>(init.isBillable);
+  const [notes, setNotes] = useState<string>(init.notes);
+  const [appName, setAppName] = useState<string>(init.appName);
+  const [documentTitle, setDocumentTitle] = useState<string>(init.documentTitle);
 
   if (!isOpen) return null;
 

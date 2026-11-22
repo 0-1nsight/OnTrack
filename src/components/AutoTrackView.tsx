@@ -77,9 +77,15 @@ import {
   uploadPortableFileApi,
 } from '../services/engineClient';
 
+export type AutoTrackSubTab = 'review' | 'capture' | 'dictionaries' | 'packages';
+
 interface AutoTrackViewProps {
   selectedDate: string;
   currentUser: AuthUser | null;
+  forcedRole?: UserRole;
+  initialSubTab?: AutoTrackSubTab;
+  initialTargetUserId?: string;
+  initialDrilldown?: boolean;
   autoSyncToTimeline: boolean;
   onToggleAutoSyncToTimeline: (enabled: boolean) => void;
   onSyncEngineSessionsToTimeline?: (
@@ -97,14 +103,16 @@ interface AutoTrackViewProps {
   onOpenAccount?: () => void;
 }
 
-type SubTab = 'review' | 'capture' | 'dictionaries' | 'packages';
+type SubTab = AutoTrackSubTab;
 type ConfidenceFilter = 'all' | 'review_tray' | 'suggested' | 'detected' | 'confirmed';
 
 const DEMO_STAFF_OPTIONS = [
   { id: 'demo_u_acc_01', label: 'Maya Patel · 8-5 Audit' },
   { id: 'demo_u_acc_02', label: 'Devon Brooks · 5-9 Shift' },
   { id: 'demo_u_acc_03', label: 'Elena Gomez · Remote Tax' },
-  { id: 'demo_u_lead_01', label: 'Marcus Chen · Team Lead' },
+  { id: 'demo_u_acc_04', label: 'Samira Al-Mansoor · Weekend Audit' },
+  { id: 'demo_u_lead_01', label: 'Marcus Chen · Audit Team Lead' },
+  { id: 'demo_u_lead_02', label: 'Hannah Kim · Tax Team Lead' },
 ];
 
 const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
@@ -122,7 +130,8 @@ Bluewater Retail Group,Bluewater|BRG,BRG-210,Clients\\Bluewater,bluewater-pos.ex
 
 const SAMPLE_STAFF_CSV = `name,email,role,shift_pattern,team_id
 Priya Nair,priya.nair@apex-cpa.example,accountant,8-5,team_audit
-Jordan Lee,jordan.lee@apex-cpa.example,team_lead,remote,team_tax`;
+Jordan Lee,jordan.lee@apex-cpa.example,team_lead,remote,team_tax
+Liam Scott,liam.scott@apex-cpa.example,accountant,weekend,team_audit`;
 
 function formatUtcRange(startIso: string, endIso: string): string {
   const s = new Date(startIso);
@@ -143,6 +152,10 @@ function formatDurationSeconds(sec: number): string {
 
 export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
   currentUser,
+  forcedRole,
+  initialSubTab,
+  initialTargetUserId,
+  initialDrilldown,
   autoSyncToTimeline,
   onToggleAutoSyncToTimeline,
   onSyncEngineSessionsToTimeline,
@@ -151,28 +164,25 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
   onOpenAccount,
 }) => {
   const isAuthenticated = Boolean(currentUser);
-  const [tenantMode, setTenantMode] = useState<'firm_demo' | 'live'>(
-    isAuthenticated ? 'live' : 'firm_demo'
-  );
-
-  useEffect(() => {
-    if (isAuthenticated) {
-      setTenantMode('live');
-    } else {
-      setTenantMode('firm_demo');
-    }
-  }, [isAuthenticated]);
+  const [tenantModeOverride, setTenantModeOverride] = useState<'firm_demo' | 'live' | null>(null);
+  const tenantMode: 'firm_demo' | 'live' = tenantModeOverride ?? (isAuthenticated ? 'live' : 'firm_demo');
+  const setTenantMode = (mode: 'firm_demo' | 'live') => setTenantModeOverride(mode);
 
   const tenantId =
     tenantMode === 'live' && currentUser ? currentUser.tenantId : 'firm_demo';
 
-  const [subTab, setSubTab] = useState<SubTab>('review');
+  const [subTab, setSubTab] = useState<SubTab>(initialSubTab || 'review');
   const [snapshot, setSnapshot] = useState<EngineSnapshot | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [syncState, setSyncState] = useState<'ws' | 'poll' | 'syncing' | 'offline'>('ws');
+  const [wsSyncState, setWsSyncState] = useState<'ws' | 'poll' | 'syncing'>('ws');
   const [offlineMode, setOfflineMode] = useState<boolean>(false);
   const [forcePollingFallback, setForcePollingFallback] = useState<boolean>(false);
+  const syncState: 'ws' | 'poll' | 'syncing' | 'offline' = offlineMode
+    ? 'offline'
+    : forcePollingFallback
+    ? 'poll'
+    : wsSyncState;
   const [queuedCount, setQueuedCount] = useState<number>(() => loadLocalQueue().length);
   const [droppedPrivacyCount, setDroppedPrivacyCount] = useState<number>(0);
 
@@ -181,31 +191,44 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
   const [liveBrowserCollector, setLiveBrowserCollector] = useState<boolean>(false);
 
   // Role & Visibility Controls (VIS-1 & VIS-2)
-  const [viewerRole, setViewerRole] = useState<UserRole>('accountant');
-  const [targetUserId, setTargetUserId] = useState<string>('demo_u_acc_01');
-  const [drilldownGranted, setDrilldownGranted] = useState<boolean>(false);
+  const [viewerRoleDraft, setViewerRoleDraft] = useState<UserRole>(forcedRole || 'accountant');
+  const viewerRole: UserRole =
+    isAuthenticated && currentUser && currentUser.role !== 'admin_it'
+      ? currentUser.role
+      : forcedRole && tenantId === 'firm_demo'
+      ? forcedRole
+      : viewerRoleDraft;
+  const setViewerRole = (r: UserRole) => setViewerRoleDraft(r);
 
-  useEffect(() => {
+  const [targetUserIdDraft, setTargetUserIdDraft] = useState<string | null>(
+    initialTargetUserId || null
+  );
+  const targetUserId = useMemo(() => {
     if (tenantId === 'firm_demo') {
-      setTargetUserId((prev) =>
-        prev.startsWith('demo_') ? prev : 'demo_u_acc_01'
-      );
-    } else if (snapshot?.visibility.viewerUserId) {
-      setTargetUserId(snapshot.visibility.viewerUserId);
+      if (targetUserIdDraft && targetUserIdDraft.startsWith('demo_')) return targetUserIdDraft;
+      return 'demo_u_acc_01';
     }
-  }, [tenantId, snapshot?.visibility.viewerUserId]);
+    if (targetUserIdDraft) return targetUserIdDraft;
+    return snapshot?.visibility.viewerUserId || currentUser?.userId || 'demo_u_acc_01';
+  }, [tenantId, targetUserIdDraft, snapshot?.visibility.viewerUserId, currentUser?.userId]);
+  const setTargetUserId = (next: string) => setTargetUserIdDraft(next);
 
-  const viewerUserId = useMemo(() => {
-    if (tenantMode === 'live' && snapshot?.authMode === 'session') {
-      return snapshot.visibility.viewerUserId;
-    }
-    if (viewerRole === 'team_lead' || viewerRole === 'line_manager' || viewerRole === 'executive') {
-      return 'demo_u_lead_01';
-    }
-    if (viewerRole === 'admin_it') return 'demo_u_admin_01';
-    if (viewerRole === 'client') return 'demo_u_client_ext';
-    return 'demo_u_acc_01';
-  }, [tenantMode, viewerRole, snapshot?.authMode, snapshot?.visibility.viewerUserId]);
+  const [drilldownGranted, setDrilldownGranted] = useState<boolean>(Boolean(initialDrilldown));
+
+  const viewerUserId =
+    tenantMode === 'live' && snapshot?.authMode === 'session'
+      ? snapshot.visibility.viewerUserId
+      : viewerRole === 'team_lead'
+      ? 'demo_u_lead_01'
+      : viewerRole === 'line_manager'
+      ? 'demo_u_mgr_01'
+      : viewerRole === 'executive'
+      ? 'demo_u_exec_01'
+      : viewerRole === 'admin_it'
+      ? 'demo_u_admin_01'
+      : viewerRole === 'client'
+      ? 'demo_u_client_01'
+      : 'demo_u_acc_01';
 
   const deviceId = useMemo(() => getOrCreateLocalDeviceId(), []);
   const wsRef = useRef<WebSocket | null>(null);
@@ -300,8 +323,39 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
   );
 
   useEffect(() => {
-    loadSnapshot(false);
-  }, [loadSnapshot]);
+    let active = true;
+    fetchEngineSnapshot({
+      tenantId,
+      viewerUserId,
+      viewerRole,
+      targetUserId,
+      drilldownGranted,
+    })
+      .then((data) => {
+        if (!active) return;
+        setLoadError(null);
+        setSnapshot(data);
+        if (data.tasks.length > 0) {
+          setSelectedTaskIdForChecklist((prev) =>
+            data.tasks.some((t) => t.id === prev) ? prev : data.tasks[0].id
+          );
+        }
+        if (data.clients.length > 0) {
+          setNewTaskClientId((prev) =>
+            data.clients.some((c) => c.id === prev) ? prev : data.clients[0].id
+          );
+        }
+      })
+      .catch((err: any) => {
+        if (active) setLoadError(err?.message || 'Unable to load tracking snapshot');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [tenantId, viewerUserId, viewerRole, targetUserId, drilldownGranted]);
 
   // Trigger optional automatic Engine-to-Timeline synchronization
   useEffect(() => {
@@ -337,7 +391,7 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
       setQueuedCount(0);
       return;
     }
-    setSyncState('syncing');
+    setWsSyncState('syncing');
     try {
       const res = await flushQueuedEventsOverHttp({
         tenantId,
@@ -345,7 +399,7 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
         deviceId,
       });
       setQueuedCount(0);
-      setSyncState(forcePollingFallback ? 'poll' : 'ws');
+      setWsSyncState(forcePollingFallback ? 'poll' : 'ws');
       await loadSnapshot(false);
       if (res.conflictsCreated.length > 0) {
         onNotify(`Synced queue · ${res.conflictsCreated.length} conflict requires review.`);
@@ -353,14 +407,13 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
         onNotify(`Synced ${res.acceptedCount} buffered event(s) cleanly.`);
       }
     } catch {
-      setSyncState('offline');
+      setWsSyncState('poll');
     }
   }, [tenantId, targetUserId, deviceId, forcePollingFallback, loadSnapshot, onNotify]);
 
-  // WebSocket + HTTPS Polling Fallback Manager (authenticates via Firebase JWT)
+  // WebSocket + HTTPS Polling Fallback Manager (authenticates via session cookie)
   useEffect(() => {
     if (offlineMode) {
-      setSyncState('offline');
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
@@ -369,13 +422,12 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
     }
 
     if (forcePollingFallback) {
-      setSyncState('poll');
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
       }
       const interval = setInterval(() => {
-        loadSnapshot(true);
+        void loadSnapshot(true);
       }, 5000);
       return () => clearInterval(interval);
     }
@@ -398,7 +450,7 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
       wsRef.current = ws;
 
       ws.onopen = () => {
-        setSyncState('ws');
+        setWsSyncState('ws');
         void flushQueue();
       };
 
@@ -418,12 +470,12 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
       };
 
       ws.onerror = () => {
-        setSyncState('poll');
+        setWsSyncState('poll');
       };
 
       ws.onclose = () => {
         if (!offlineMode && !cancelled) {
-          setSyncState('poll');
+          setWsSyncState('poll');
           pollTimer = window.setInterval(() => {
             void loadSnapshot(true);
           }, 5000);
@@ -2592,7 +2644,7 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
                   setNewActType('');
                   await loadSnapshot(false);
                 }}
-                className="grid grid-cols-3 gap-1.5 text-xs pt-1"
+                className="grid grid-cols-4 gap-1.5 text-xs pt-1"
               >
                 <input
                   type="text"
@@ -2608,6 +2660,20 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
                   placeholder="Activity Type"
                   className="px-2 py-1.5 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
                 />
+                <select
+                  value={newActCategory}
+                  onChange={(e) =>
+                    setNewActCategory(
+                      e.target.value as 'billable' | 'deep_work' | 'collaborative' | 'admin'
+                    )
+                  }
+                  className="px-2 py-1.5 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                >
+                  <option value="billable">Billable</option>
+                  <option value="deep_work">Deep Work</option>
+                  <option value="collaborative">Collaborative</option>
+                  <option value="admin">Admin</option>
+                </select>
                 <button
                   type="submit"
                   className="px-2.5 py-1.5 bg-slate-900 dark:bg-indigo-600 text-white rounded cursor-pointer"

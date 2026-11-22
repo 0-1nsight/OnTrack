@@ -25,6 +25,17 @@ export interface BootstrapStatus {
   hasOidcTenants: boolean;
 }
 
+export interface DemoAccountSummary {
+  userId: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  teamId: string;
+  shiftPattern: ShiftPattern;
+  clientId: string | null;
+  canDrilldownTimeline: boolean;
+}
+
 export interface SessionInfo {
   id: string;
   principalType: 'staff' | 'client';
@@ -97,6 +108,28 @@ export async function loginWithPassword(payload: {
       totpCode: payload.totpCode,
       backupCode: payload.backupCode,
     }),
+  });
+  return parseJsonOrThrow(res);
+}
+
+export async function fetchDemoAccounts(): Promise<{
+  demoModeEnabled: boolean;
+  accounts: DemoAccountSummary[];
+}> {
+  const res = await fetch('/api/auth/demo-accounts', {
+    credentials: 'include',
+  });
+  return parseJsonOrThrow(res);
+}
+
+export async function loginWithDemoAccount(
+  userId: string
+): Promise<{ user: AuthUser }> {
+  const res = await fetch('/api/auth/demo-login', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId }),
   });
   return parseJsonOrThrow(res);
 }

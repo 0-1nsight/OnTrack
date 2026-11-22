@@ -1,6 +1,5 @@
 import React, { useState, useMemo } from 'react';
 import {
-  FileText,
   Copy,
   Check,
   Printer,
@@ -9,7 +8,6 @@ import {
   AlertTriangle,
   CheckCircle2,
   ArrowUpRight,
-  Clock,
 } from 'lucide-react';
 import {
   ApplicationUsageSegment,

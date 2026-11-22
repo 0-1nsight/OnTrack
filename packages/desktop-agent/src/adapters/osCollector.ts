@@ -79,7 +79,7 @@ async function sampleMacOS(): Promise<Partial<WindowSample>> {
   const { stdout } = await execFileAsync('osascript', ['-e', script], { timeout: 2000 });
   const [appRaw = 'Unknown', titleRaw = ''] = stdout.trim().split('||');
 
-  let idleSeconds = 0;
+  let idleSeconds: number;
   try {
     const { stdout: ioOut } = await execFileAsync(
       'sh',
@@ -106,7 +106,7 @@ async function sampleLinux(): Promise<Partial<WindowSample>> {
   );
   const title = stdout.trim() || 'Linux Workspace';
 
-  let idleSeconds = 0;
+  let idleSeconds: number;
   try {
     const { stdout: idleOut } = await execFileAsync(
       'sh',
@@ -142,7 +142,7 @@ export async function captureForegroundMetadata(): Promise<WindowSample> {
     ? 'macos'
     : 'linux';
 
-  let partial: Partial<WindowSample> = {};
+  let partial: Partial<WindowSample>;
   try {
     if (platform === 'win32') partial = await sampleWindows();
     else if (platform === 'darwin') partial = await sampleMacOS();

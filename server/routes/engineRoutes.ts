@@ -12,6 +12,7 @@ import {
   readPortableFileFromDisk,
   savePortableFileToDisk,
 } from '../fileStorage.ts';
+import { buildRoleOverview } from '../roleOverview.ts';
 import { EngineWsGateway } from '../wsGateway.ts';
 import { normalizeRole, resolveHttpAuthContext } from './authMiddleware.ts';
 
@@ -24,7 +25,7 @@ const StaffRolePatchSchema = z.object({
     'client',
     'admin_it',
   ]),
-  shiftPattern: z.enum(['8-5', '5-9', 'remote']).optional(),
+  shiftPattern: z.enum(['8-5', '5-9', 'remote', 'weekend']).optional(),
   onLeave: z.boolean().optional(),
   canDrilldownTimeline: z.boolean().optional(),
 });
@@ -47,6 +48,21 @@ const FileUploadSchema = z.object({
     .enum(['dictionary_import', 'branding_asset', 'portal_document', 'policy_doc'])
     .default('portal_document'),
   contentBase64: z.string().min(1),
+});
+
+const PortalBrandingPatchSchema = z.object({
+  accentTheme: z.enum(['indigo', 'emerald', 'blue', 'slate', 'amber', 'rose']).optional(),
+  portalTitle: z.string().trim().min(2).max(120).optional(),
+  customDomain: z.string().trim().max(120).optional(),
+  supportNotice: z.string().trim().max(240).optional(),
+  welcomeMessage: z.string().trim().max(400).optional(),
+  logoText: z.string().trim().max(6).optional(),
+  logoFileId: z.string().trim().nullable().optional(),
+});
+
+const TemplateUpdateSchema = z.object({
+  name: z.string().trim().min(2).max(160).optional(),
+  milestoneNames: z.array(z.string().trim().min(1).max(200)).min(1).max(12).optional(),
 });
 
 export function createEngineRouter(deps: {
@@ -73,7 +89,8 @@ export function createEngineRouter(deps: {
     asyncHandler(async (req, res) => {
       const authCtx = await requireStaff(req);
       const targetUserId = String(req.query.targetUserId || authCtx.userId);
-      const drilldownGranted = req.query.drilldown === 'true';
+      const drilldownGranted =
+        req.query.drilldown === 'true' || req.query.drilldownGranted === 'true';
 
       const snapshot = await deps.engineStore.getEngineSnapshot({
         tenantId: authCtx.tenantId,
@@ -95,7 +112,8 @@ export function createEngineRouter(deps: {
     asyncHandler(async (req, res) => {
       const authCtx = await requireStaff(req);
       const targetUserId = String(req.query.targetUserId || authCtx.userId);
-      const drilldownGranted = req.query.drilldown === 'true';
+      const drilldownGranted =
+        req.query.drilldown === 'true' || req.query.drilldownGranted === 'true';
 
       const snapshot = await deps.engineStore.getEngineSnapshot({
         tenantId: authCtx.tenantId,
@@ -113,6 +131,21 @@ export function createEngineRouter(deps: {
         serverTimeUtc: new Date().toISOString(),
         ...snapshot,
       });
+    })
+  );
+
+  router.get(
+    '/role-overview',
+    asyncHandler(async (req, res) => {
+      const authCtx = await requireStaff(req);
+      const overview = await buildRoleOverview({
+        engineStore: deps.engineStore,
+        tenantId: authCtx.tenantId,
+        viewerUserId: authCtx.userId,
+        viewerRole: authCtx.role,
+        viewerTeamId: authCtx.teamId,
+      });
+      res.json(overview);
     })
   );
 
@@ -535,6 +568,80 @@ export function createEngineRouter(deps: {
         eventType: 'state:updated',
       });
       res.json({ config: updated });
+    })
+  );
+
+  router.get(
+    '/branding',
+    asyncHandler(async (req, res) => {
+      const authCtx = await requireStaff(req);
+      const [branding, templates] = await Promise.all([
+        deps.engineStore.getPortalBranding(authCtx.tenantId),
+        deps.engineStore.getTemplates(authCtx.tenantId),
+      ]);
+      res.json({ branding, templates });
+    })
+  );
+
+  router.put(
+    '/branding',
+    asyncHandler(async (req, res) => {
+      const authCtx = await requireStaff(req);
+      if (authCtx.role !== 'admin_it') {
+        throw new HttpError(403, 'FORBIDDEN', 'Only Admin/IT can update client portal branding.');
+      }
+      const parsed = PortalBrandingPatchSchema.parse(req.body || {});
+      const branding = await deps.engineStore.updatePortalBranding(authCtx.tenantId, parsed);
+      await deps.engineStore.recordAuditLog({
+        tenantId: authCtx.tenantId,
+        actorUserId: authCtx.userId,
+        actorRole: authCtx.role,
+        targetUserId: null,
+        action: 'portal.branding_updated',
+        details: `Updated portal branding (title="${branding.portalTitle}", theme=${branding.accentTheme})`,
+      });
+      await deps.wsGateway.publish({
+        tenantId: authCtx.tenantId,
+        affectedUserId: authCtx.userId,
+        eventType: 'portal:updated',
+        meta: { portalVisible: true, broadcastTenantBranding: true, kind: 'branding_updated' },
+      });
+      res.json({ branding });
+    })
+  );
+
+  router.put(
+    '/templates/:templateId',
+    asyncHandler(async (req, res) => {
+      const authCtx = await requireStaff(req);
+      if (authCtx.role !== 'admin_it' && authCtx.role !== 'line_manager') {
+        throw new HttpError(
+          403,
+          'FORBIDDEN',
+          'Only Admin/IT or Line Manager can edit template milestone names.'
+        );
+      }
+      const parsed = TemplateUpdateSchema.parse(req.body || {});
+      const template = await deps.engineStore.updateTaskTemplate(
+        authCtx.tenantId,
+        req.params.templateId,
+        parsed
+      );
+      await deps.engineStore.recordAuditLog({
+        tenantId: authCtx.tenantId,
+        actorUserId: authCtx.userId,
+        actorRole: authCtx.role,
+        targetUserId: null,
+        action: 'portal.template_milestones_updated',
+        details: `Updated template "${template.name}" (${template.steps.length} milestone names)`,
+      });
+      await deps.wsGateway.publish({
+        tenantId: authCtx.tenantId,
+        affectedUserId: authCtx.userId,
+        eventType: 'portal:updated',
+        meta: { portalVisible: true, broadcastTenantBranding: true, kind: 'template_updated' },
+      });
+      res.json({ template });
     })
   );
 

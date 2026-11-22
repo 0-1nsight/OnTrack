@@ -64,7 +64,13 @@ export function isSubscriberPermittedForEvent(
     if (msg.eventType === 'state:updated' && msg.meta?.portalVisible !== true) {
       return false;
     }
-    if (msg.affectedClientId && sub.clientId && msg.affectedClientId !== sub.clientId) {
+    if (msg.meta?.broadcastTenantBranding === true) {
+      return true;
+    }
+    if (!msg.affectedClientId) {
+      return false;
+    }
+    if (sub.clientId && msg.affectedClientId !== sub.clientId) {
       return false;
     }
     return true;
@@ -209,9 +215,24 @@ export class EngineWsGateway {
               ? previewUserId
               : demoRole === 'team_lead'
               ? 'demo_u_lead_01'
+              : demoRole === 'line_manager'
+              ? 'demo_u_mgr_01'
+              : demoRole === 'executive'
+              ? 'demo_u_exec_01'
               : demoRole === 'admin_it'
               ? 'demo_u_admin_01'
+              : demoRole === 'client'
+              ? 'demo_u_client_01'
               : 'demo_u_acc_01';
+
+          const demoClientId =
+            demoRole !== 'client'
+              ? null
+              : demoUser === 'demo_u_client_02'
+              ? 'demo_cli-northstar'
+              : demoUser === 'demo_u_client_03'
+              ? 'demo_cli-harbor'
+              : 'demo_cli-acme';
 
           authCtx = {
             mode: 'demo',
@@ -222,7 +243,7 @@ export class EngineWsGateway {
             userName: 'Demo Preview User',
             role: demoRole,
             teamId: 'team_audit',
-            clientId: demoRole === 'client' ? 'demo_cli-acme' : null,
+            clientId: demoClientId,
             canDrilldownTimeline: demoRole === 'team_lead',
             mfaVerified: true,
             mustEnrollMfa: false,

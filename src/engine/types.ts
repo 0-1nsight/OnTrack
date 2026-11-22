@@ -6,7 +6,7 @@ export type UserRole =
   | 'client'
   | 'admin_it';
 
-export type ShiftPattern = '8-5' | '5-9' | 'remote';
+export type ShiftPattern = '8-5' | '5-9' | 'remote' | 'weekend';
 export type OSPlatform = 'windows' | 'macos' | 'linux' | 'vdi' | 'web';
 
 export type EventPriority = 'state' | 'activity';
@@ -89,6 +89,20 @@ export interface TenantConfig {
   retentionDays: number; // default 60 (30-90)
   monitoringPolicy: 'mandatory' | 'opt_in';
   serverUrl: string;
+}
+
+export type PortalAccentTheme = 'indigo' | 'emerald' | 'blue' | 'slate' | 'amber' | 'rose';
+
+export interface PortalBrandingConfig {
+  firmName: string;
+  accentTheme: PortalAccentTheme;
+  accentColor: string;
+  portalTitle: string;
+  customDomain: string;
+  supportNotice: string;
+  welcomeMessage: string;
+  logoText: string;
+  logoFileId: string | null;
 }
 
 export interface ShiftUser {

@@ -6,9 +6,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   AuthUser,
+  DemoAccountSummary,
   bootstrapFirmAdmin,
   fetchAuthSession,
   fetchBootstrapStatus,
+  fetchDemoAccounts,
+  loginWithDemoAccount,
   loginWithPassword,
   logoutSession,
 } from './services/authClient';
@@ -26,20 +29,23 @@ import {
   WorkCategory,
   WorkspacePreferences,
 } from './types';
-import { AttributionRecord, WorkSession } from './engine/types';
+import { AttributionRecord, UserRole, WorkSession } from './engine/types';
 import {
   DEFAULT_PREFERENCES,
   createSeedDataset,
   getRecentWeekDates,
   inferAppCategory,
 } from './data/seedData';
+import { getRolePolicy } from './utils/roleConfig';
 import { TopBar } from './components/TopBar';
 import { ActiveTimerBar } from './components/ActiveTimerBar';
 import { TimelineView } from './components/TimelineView';
 import { TaskWorkspaceView } from './components/TaskWorkspaceView';
 import { WeeklyReportView } from './components/WeeklyReportView';
 import { AnalyticsView } from './components/AnalyticsView';
-import { AutoTrackView } from './components/AutoTrackView';
+import { AutoTrackSubTab, AutoTrackView } from './components/AutoTrackView';
+import { RoleDashboardView } from './components/RoleDashboardView';
+import { ClientPortalView } from './components/ClientPortalView';
 import { IdleReconcileModal } from './components/IdleReconcileModal';
 import { QuickLogModal } from './components/QuickLogModal';
 import { DataPreferencesModal } from './components/DataPreferencesModal';
@@ -232,7 +238,7 @@ export default function App() {
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
 
   // Automatic Browser Activity & Idle Presence Tracking
-  const lastActivityMsRef = useRef<number>(Date.now());
+  const lastActivityMsRef = useRef<number>(0);
   const [idleSeconds, setIdleSeconds] = useState<number>(0);
   const [idleAlert, setIdleAlert] = useState<IdleAlertState>({
     isOpen: false,
@@ -266,9 +272,29 @@ export default function App() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [needsInitialSetup, setNeedsInitialSetup] = useState(false);
+  const [demoModeEnabled, setDemoModeEnabled] = useState(false);
+  const [demoAccounts, setDemoAccounts] = useState<DemoAccountSummary[]>([]);
   const [showLanding, setShowLanding] = useState(true);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [previewRoleOverride, setPreviewRoleOverride] = useState<UserRole | null>(null);
+  const [autoTrackNav, setAutoTrackNav] = useState<{
+    key: number;
+    subTab?: AutoTrackSubTab;
+    targetUserId?: string;
+    drilldown?: boolean;
+  }>({ key: 0 });
+
+  const canSwitchPreviewRole = !user || user.role === 'admin_it';
+  const activeRole: UserRole = user
+    ? user.role === 'admin_it' && previewRoleOverride
+      ? previewRoleOverride
+      : user.role
+    : previewRoleOverride ?? 'accountant';
+  const rolePolicy = getRolePolicy(activeRole);
+  const effectiveTab: NavigationTab = rolePolicy.allowedTabs.some((t) => t.id === activeTab)
+    ? activeTab
+    : rolePolicy.defaultTab;
 
   const showToast = useCallback((msg: string) => {
     setToastBanner(msg);
@@ -406,6 +432,16 @@ export default function App() {
         fetchAuthSession().catch(() => ({ authenticated: false, user: null })),
       ]);
       setNeedsInitialSetup(Boolean(status.needsInitialSetup));
+      setDemoModeEnabled(Boolean(status.demoModeEnabled));
+      if (status.demoModeEnabled) {
+        const demoList = await fetchDemoAccounts().catch(() => ({
+          demoModeEnabled: false,
+          accounts: [],
+        }));
+        setDemoAccounts(demoList.accounts || []);
+      } else {
+        setDemoAccounts([]);
+      }
       if (session.authenticated && session.user) {
         setUser(session.user);
         setUserProfile({
@@ -442,6 +478,8 @@ export default function App() {
     try {
       const res = await loginWithPassword(payload);
       setUser(res.user);
+      setPreviewRoleOverride(null);
+      setActiveTab(getRolePolicy(res.user.role).defaultTab);
       setUserProfile({
         ownerId: res.user.userId,
         email: res.user.email,
@@ -455,6 +493,31 @@ export default function App() {
       showToast(`Signed in as ${res.user.email}.`);
     } catch (err: any) {
       const msg = err?.message || 'Authentication failed.';
+      setAuthError(msg);
+      throw err;
+    }
+  };
+
+  const handleDemoLogin = async (userId: string) => {
+    setAuthError(null);
+    try {
+      const res = await loginWithDemoAccount(userId);
+      setUser(res.user);
+      setPreviewRoleOverride(null);
+      setActiveTab(getRolePolicy(res.user.role).defaultTab);
+      setUserProfile({
+        ownerId: res.user.userId,
+        email: res.user.email,
+        displayName: res.user.name,
+        jobTitle: res.user.role,
+        hourlyRate: 150,
+        currency: 'USD',
+        preferences,
+      });
+      setShowLanding(false);
+      showToast(`Signed in as ${res.user.name} (${getRolePolicy(res.user.role).shortLabel}).`);
+    } catch (err: any) {
+      const msg = err?.message || 'Demo sign-in failed.';
       setAuthError(msg);
       throw err;
     }
@@ -554,8 +617,11 @@ export default function App() {
         setElapsedSeconds(timer.accumulatedSeconds);
       }
 
-      // Check idle sensor (only when inside workspace)
-      if (!idleAlert.isOpen && !(showLanding && !user)) {
+      // Check idle sensor (only when inside staff workspace)
+      if (!idleAlert.isOpen && !(showLanding && !user) && activeRole !== 'client') {
+        if (lastActivityMsRef.current === 0) {
+          lastActivityMsRef.current = now;
+        }
         const inactiveSec = Math.floor((now - lastActivityMsRef.current) / 1000);
         setIdleSeconds(inactiveSec);
 
@@ -577,7 +643,7 @@ export default function App() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [timer, idleAlert.isOpen, preferences.idleThresholdSeconds, showLanding, user]);
+  }, [timer, idleAlert.isOpen, preferences.idleThresholdSeconds, showLanding, user, activeRole]);
 
   // Sync browser document.title with active work context (ManicTime-style live window capture)
   useEffect(() => {
@@ -585,69 +651,76 @@ export default function App() {
       document.title = 'onTrack — Task Workspace & Timeline Tracker';
       return;
     }
-    const docLabel = timer.activeDocumentTitle || timer.customTitle || 'Workspace';
-    document.title = `${timer.isRunning && !timer.isPaused ? '● ' : ''}${timer.activeAppName} · ${docLabel} — onTrack`;
-  }, [timer.activeAppName, timer.activeDocumentTitle, timer.customTitle, timer.isRunning, timer.isPaused, showLanding, user]);
-
-  // Record in-app onTrack tab focus switches automatically after initial mount
-  const isFirstTabMountRef = useRef(true);
-  useEffect(() => {
-    if (isFirstTabMountRef.current) {
-      isFirstTabMountRef.current = false;
+    if (activeRole === 'client') {
+      document.title = 'onTrack — Client Portal';
       return;
     }
-    const tabLabels: Record<NavigationTab, string> = {
-      timeline: `Day Timeline (${selectedDate}) — onTrack`,
-      tasks: 'Task Board & Backlog — onTrack',
-      autotrack: 'Automated Tracking & Attribution Engine — onTrack',
-      report: 'Weekly Executive Progress Report — onTrack',
-      analytics: 'Productivity & App Usage Analytics — onTrack',
-    };
-    const nowMin = Math.min(1440, Math.max(20, getCurrentMinuteOfDay()));
-    const startMin = Math.max(0, nowMin - 10);
-    const ts = Date.now();
-    const docTitle = tabLabels[activeTab];
+    const docLabel = timer.activeDocumentTitle || timer.customTitle || 'Workspace';
+    document.title = `${timer.isRunning && !timer.isPaused ? '● ' : ''}${timer.activeAppName} · ${docLabel} — onTrack`;
+  }, [timer.activeAppName, timer.activeDocumentTitle, timer.customTitle, timer.isRunning, timer.isPaused, showLanding, user, activeRole]);
 
-    const newAppSeg: ApplicationUsageSegment = {
-      id: `app-${ts}`,
-      date: todayDate,
-      startTime: startMin,
-      endTime: nowMin,
-      appName: 'onTrack Web',
-      appCategory: 'browser',
-    };
-    const newDocSeg: DocumentUsageSegment = {
-      id: `doc-${ts}`,
-      date: todayDate,
-      startTime: startMin,
-      endTime: nowMin,
-      appName: 'onTrack Web',
-      documentTitle: docTitle,
-      domainOrPath: `ontrack.local/${activeTab}`,
-      linkedTaskId: timer.taskId,
-    };
+  // Record in-app onTrack tab focus switches inside explicit navigation handler (never for external client)
+  const navigateTab = useCallback(
+    (nextTab: NavigationTab) => {
+      setActiveTab(nextTab);
+      if (activeRole === 'client') return;
+      const tabLabels: Record<NavigationTab, string> = {
+        overview: `${rolePolicy.label} Overview — onTrack`,
+        timeline: `Day Timeline (${selectedDate}) — onTrack`,
+        tasks: 'Task Board & Backlog — onTrack',
+        autotrack: 'Automated Tracking & Attribution Engine — onTrack',
+        portal: 'Client Portal — onTrack',
+        admin: 'Admin & Fleet Governance — onTrack',
+        report: 'Weekly Executive Progress Report — onTrack',
+        analytics: 'Productivity & App Usage Analytics — onTrack',
+      };
+      const nowMin = Math.min(1440, Math.max(20, getCurrentMinuteOfDay()));
+      const startMin = Math.max(0, nowMin - 10);
+      const ts = Date.now();
+      const docTitle = tabLabels[nextTab];
 
-    setAppSegments((prev) => {
-      const recentSame = prev.find(
-        (s) =>
-          s.date === todayDate &&
-          s.appName === 'onTrack Web' &&
-          Math.abs(s.endTime - nowMin) <= 2
-      );
-      if (recentSame) return prev;
-      return [...prev, newAppSeg];
-    });
-    setDocumentSegments((prev) => {
-      const recentSame = prev.find(
-        (s) =>
-          s.date === todayDate &&
-          s.documentTitle === docTitle &&
-          Math.abs(s.endTime - nowMin) <= 2
-      );
-      if (recentSame) return prev;
-      return [...prev, newDocSeg];
-    });
-  }, [activeTab, selectedDate, todayDate, timer.taskId]);
+      const newAppSeg: ApplicationUsageSegment = {
+        id: `app-${ts}`,
+        date: todayDate,
+        startTime: startMin,
+        endTime: nowMin,
+        appName: 'onTrack Web',
+        appCategory: 'browser',
+      };
+      const newDocSeg: DocumentUsageSegment = {
+        id: `doc-${ts}`,
+        date: todayDate,
+        startTime: startMin,
+        endTime: nowMin,
+        appName: 'onTrack Web',
+        documentTitle: docTitle,
+        domainOrPath: `ontrack.local/${nextTab}`,
+        linkedTaskId: timer.taskId,
+      };
+
+      setAppSegments((prev) => {
+        const recentSame = prev.find(
+          (s) =>
+            s.date === todayDate &&
+            s.appName === 'onTrack Web' &&
+            Math.abs(s.endTime - nowMin) <= 2
+        );
+        if (recentSame) return prev;
+        return [...prev, newAppSeg];
+      });
+      setDocumentSegments((prev) => {
+        const recentSame = prev.find(
+          (s) =>
+            s.date === todayDate &&
+            s.documentTitle === docTitle &&
+            Math.abs(s.endTime - nowMin) <= 2
+        );
+        if (recentSame) return prev;
+        return [...prev, newDocSeg];
+      });
+    },
+    [activeRole, rolePolicy.label, selectedDate, todayDate, timer.taskId]
+  );
 
   // Timer Handlers
   const handleStartTimer = (taskId?: string | null) => {
@@ -1068,11 +1141,14 @@ export default function App() {
         authReady={authReady}
         authError={authError}
         needsInitialSetup={needsInitialSetup}
+        demoModeEnabled={demoModeEnabled}
+        demoAccounts={demoAccounts}
         darkMode={preferences.darkMode}
         onToggleTheme={() =>
           setPreferences((prev) => ({ ...prev, darkMode: !prev.darkMode }))
         }
         onLogin={handleLogin}
+        onDemoLogin={handleDemoLogin}
         onBootstrapFirm={handleBootstrapFirm}
         onContinueLocal={() => {
           lastActivityMsRef.current = Date.now();
@@ -1088,8 +1164,18 @@ export default function App() {
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col">
         {/* Strict 3-Zone Top Bar Contract */}
         <TopBar
-          activeTab={activeTab}
-          onSelectTab={setActiveTab}
+          activeTab={effectiveTab}
+          onSelectTab={(nextTab) => {
+            if (nextTab === 'autotrack') {
+              setAutoTrackNav((prev) => ({
+                key: prev.key + 1,
+                subTab: activeRole === 'admin_it' ? 'capture' : 'review',
+                targetUserId: undefined,
+                drilldown: false,
+              }));
+            }
+            navigateTab(nextTab);
+          }}
           onOpenQuickLog={() => {
             setEditingBlock(null);
             setQuickLogRange(null);
@@ -1099,33 +1185,47 @@ export default function App() {
           }}
           user={user}
           userProfile={userProfile}
+          activeRole={activeRole}
+          canSwitchPreviewRole={canSwitchPreviewRole}
+          onChangePreviewRole={(nextRole) => {
+            setPreviewRoleOverride(nextRole);
+            setActiveTab(getRolePolicy(nextRole).defaultTab);
+            setAutoTrackNav((prev) => ({
+              key: prev.key + 1,
+              subTab: nextRole === 'admin_it' ? 'capture' : 'review',
+              targetUserId: undefined,
+              drilldown: false,
+            }));
+          }}
           onOpenAccount={() => setAccountModalOpen(true)}
         />
 
-        {/* Global Active Task Timer & ManicTime Presence Sensor Strip */}
-        <ActiveTimerBar
-          timer={timer}
-          elapsedSeconds={elapsedSeconds}
-          tasks={tasks}
-          selectedDate={selectedDate}
-          weekDates={weekDates}
-          idleSeconds={idleSeconds}
-          preferences={preferences}
-          onSelectDate={setSelectedDate}
-          onStartTimer={handleStartTimer}
-          onPauseTimer={handlePauseTimer}
-          onResumeTimer={handleResumeTimer}
-          onStopAndSaveTimer={handleStopAndSaveTimer}
-          onUpdateTimerMeta={(updates) =>
-            setTimer((prev) => ({ ...prev, ...updates }))
-          }
-          onLogAppDocSwitch={handleLogAppDocSwitch}
-          onSimulateIdle={handleSimulateIdle}
-          onOpenPreferences={() => setPrefsModalOpen(true)}
-          onToggleTheme={() => {
-            setPreferences((prev) => ({ ...prev, darkMode: !prev.darkMode }));
-          }}
-        />
+        {/* Global Active Task Timer & ManicTime Presence Sensor Strip (Accountant & Team Lead only) */}
+        {rolePolicy.showTimerBar && (
+          <ActiveTimerBar
+            timer={timer}
+            elapsedSeconds={elapsedSeconds}
+            tasks={tasks}
+            selectedDate={selectedDate}
+            weekDates={weekDates}
+            idleSeconds={idleSeconds}
+            preferences={preferences}
+            onSelectDate={setSelectedDate}
+            onStartTimer={handleStartTimer}
+            onPauseTimer={handlePauseTimer}
+            onResumeTimer={handleResumeTimer}
+            onStopAndSaveTimer={handleStopAndSaveTimer}
+            onUpdateTimerMeta={(updates) =>
+              setTimer((prev) => ({ ...prev, ...updates }))
+            }
+            onLogAppDocSwitch={handleLogAppDocSwitch}
+            onSimulateIdle={handleSimulateIdle}
+            onOpenPreferences={() => setPrefsModalOpen(true)}
+            onToggleTheme={() => {
+              setPreferences((prev) => ({ ...prev, darkMode: !prev.darkMode }));
+            }}
+          />
+        )}
 
         {/* Toast Notification Banner */}
         {toastBanner && (
@@ -1136,7 +1236,51 @@ export default function App() {
 
         {/* Main 1440px Workspace Viewport */}
         <main className="flex-1 w-full max-w-[1440px] mx-auto px-6 py-6">
-          {activeTab === 'timeline' && (
+          {(effectiveTab === 'overview' || effectiveTab === 'admin') && (
+            <RoleDashboardView
+              activeRole={activeRole}
+              currentUser={user}
+              onInspectStaffTimeline={(targetUserId) => {
+                setAutoTrackNav((prev) => ({
+                  key: prev.key + 1,
+                  subTab: 'review',
+                  targetUserId,
+                  drilldown: true,
+                }));
+                setActiveTab('autotrack');
+              }}
+              onOpenAutoTrackConfig={() => {
+                setAutoTrackNav((prev) => ({
+                  key: prev.key + 1,
+                  subTab: 'packages',
+                  targetUserId: undefined,
+                  drilldown: false,
+                }));
+                setActiveTab('autotrack');
+              }}
+              onOpenAccount={() => setAccountModalOpen(true)}
+              onNotify={showToast}
+            />
+          )}
+
+          {effectiveTab === 'portal' && (
+            <ClientPortalView
+              key={`${user?.userId || 'anon'}-${activeRole}`}
+              currentUser={user}
+              activeRole={activeRole}
+              demoModeEnabled={demoModeEnabled}
+              demoAccounts={demoAccounts}
+              onDemoLogin={handleDemoLogin}
+              onReturnAdmin={() => {
+                setPreviewRoleOverride('admin_it');
+                setActiveTab('admin');
+              }}
+              onOpenAccount={() => setAccountModalOpen(true)}
+              onNotify={showToast}
+            />
+          )}
+
+          {effectiveTab === 'timeline' && (
             <TimelineView
               selectedDate={selectedDate}
               weekDates={weekDates}
@@ -1183,7 +1327,7 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'tasks' && (
+          {effectiveTab === 'tasks' && (
             <TaskWorkspaceView
               tasks={tasks}
               timeBlocks={timeBlocks}
@@ -1212,15 +1356,26 @@ export default function App() {
               }}
               onJumpToTimelineDate={(date) => {
                 setSelectedDate(date);
-                setActiveTab('timeline');
+                setActiveTab(
+                  rolePolicy.allowedTabs.some((t) => t.id === 'timeline')
+                    ? 'timeline'
+                    : rolePolicy.defaultTab
+                );
               }}
             />
           )}
 
-          {activeTab === 'autotrack' && (
+          {effectiveTab === 'autotrack' && (
             <AutoTrackView
+              key={`${activeRole}-${autoTrackNav.key}`}
               selectedDate={selectedDate}
               currentUser={user}
+              forcedRole={activeRole}
+              initialSubTab={
+                autoTrackNav.subTab || (activeRole === 'admin_it' ? 'capture' : 'review')
+              }
+              initialTargetUserId={autoTrackNav.targetUserId}
+              initialDrilldown={autoTrackNav.drilldown}
               autoSyncToTimeline={autoSyncToTimeline}
               onToggleAutoSyncToTimeline={setAutoSyncToTimeline}
               onSyncEngineSessionsToTimeline={handleSyncEngineSessionsToTimeline}
@@ -1286,7 +1441,7 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'report' && (
+          {effectiveTab === 'report' && (
             <WeeklyReportView
               weekDates={weekDates}
               tasks={tasks}
@@ -1300,7 +1455,7 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'analytics' && (
+          {effectiveTab === 'analytics' && (
             <AnalyticsView
               weekDates={weekDates}
               tasks={tasks}
@@ -1310,7 +1465,11 @@ export default function App() {
               documentSegments={documentSegments}
               onSelectDateAndGoToTimeline={(date) => {
                 setSelectedDate(date);
-                setActiveTab('timeline');
+                setActiveTab(
+                  rolePolicy.allowedTabs.some((t) => t.id === 'timeline')
+                    ? 'timeline'
+                    : rolePolicy.defaultTab
+                );
               }}
             />
           )}
@@ -1320,7 +1479,7 @@ export default function App() {
         <footer className="no-print border-t border-slate-200 dark:border-slate-800 px-6 py-4 text-xs text-slate-500 dark:text-slate-400">
           <div className="max-w-[1440px] mx-auto flex flex-wrap items-center justify-between gap-4">
             <span>
-              onTrack Workspace ·{' '}
+              onTrack Workspace · {rolePolicy.label} ·{' '}
               {user
                 ? `Cloud synced as ${user.email}`
                 : 'Local browser mode (Sign in to sync across devices)'}
@@ -1345,22 +1504,26 @@ export default function App() {
               >
                 {user ? 'Account Settings' : 'Sign In & Sync'}
               </button>
-              <span>·</span>
-              <button
-                type="button"
-                onClick={handleExportJson}
-                className="hover:text-slate-900 dark:hover:text-white underline cursor-pointer"
-              >
-                Export JSON Backup
-              </button>
-              <span>·</span>
-              <button
-                type="button"
-                onClick={() => setPrefsModalOpen(true)}
-                className="hover:text-slate-900 dark:hover:text-white underline cursor-pointer"
-              >
-                Idle Sensor Settings
-              </button>
+              {activeRole !== 'client' && (
+                <>
+                  <span>·</span>
+                  <button
+                    type="button"
+                    onClick={handleExportJson}
+                    className="hover:text-slate-900 dark:hover:text-white underline cursor-pointer"
+                  >
+                    Export JSON Backup
+                  </button>
+                  <span>·</span>
+                  <button
+                    type="button"
+                    onClick={() => setPrefsModalOpen(true)}
+                    className="hover:text-slate-900 dark:hover:text-white underline cursor-pointer"
+                  >
+                    Idle Sensor Settings
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </footer>
@@ -1374,18 +1537,21 @@ export default function App() {
           onClose={() => setIdleAlert((prev) => ({ ...prev, isOpen: false }))}
         />
 
-        <QuickLogModal
-          isOpen={quickLogOpen}
-          selectedDate={selectedDate}
-          weekDates={weekDates}
-          tasks={tasks}
-          initialBlock={editingBlock}
-          initialRange={quickLogRange}
-          initialTask={quickLogTask}
-          initialAppDoc={initialAppDoc}
-          onSaveBlock={handleSaveTimeBlock}
-          onClose={() => setQuickLogOpen(false)}
-        />
+        {quickLogOpen && (
+          <QuickLogModal
+            key={`${editingBlock?.id || quickLogTask?.id || initialAppDoc?.documentTitle || quickLogRange?.startTime || 'new'}-${selectedDate}`}
+            isOpen={quickLogOpen}
+            selectedDate={selectedDate}
+            weekDates={weekDates}
+            tasks={tasks}
+            initialBlock={editingBlock}
+            initialRange={quickLogRange}
+            initialTask={quickLogTask}
+            initialAppDoc={initialAppDoc}
+            onSaveBlock={handleSaveTimeBlock}
+            onClose={() => setQuickLogOpen(false)}
+          />
+        )}
 
         <DataPreferencesModal
           isOpen={prefsModalOpen}
@@ -1399,22 +1565,28 @@ export default function App() {
           onClose={() => setPrefsModalOpen(false)}
         />
 
-        <AccountModal
-          isOpen={accountModalOpen}
-          user={user}
-          userProfile={userProfile}
-          authReady={authReady}
-          needsInitialSetup={needsInitialSetup}
-          authError={authError}
-          onLogin={handleLogin}
-          onBootstrapFirm={handleBootstrapFirm}
-          onSignOut={handleSignOut}
-          onSaveProfile={handleSaveProfile}
-          onRefreshSession={refreshAuthSession}
-          onExportJson={handleExportJson}
-          onOpenPreferences={() => setPrefsModalOpen(true)}
-          onClose={() => setAccountModalOpen(false)}
-        />
+        {accountModalOpen && (
+          <AccountModal
+            key={user?.userId || 'anon'}
+            isOpen={accountModalOpen}
+            user={user}
+            userProfile={userProfile}
+            authReady={authReady}
+            needsInitialSetup={needsInitialSetup}
+            demoModeEnabled={demoModeEnabled}
+            demoAccounts={demoAccounts}
+            authError={authError}
+            onLogin={handleLogin}
+            onDemoLogin={handleDemoLogin}
+            onBootstrapFirm={handleBootstrapFirm}
+            onSignOut={handleSignOut}
+            onSaveProfile={handleSaveProfile}
+            onRefreshSession={refreshAuthSession}
+            onExportJson={handleExportJson}
+            onOpenPreferences={() => setPrefsModalOpen(true)}
+            onClose={() => setAccountModalOpen(false)}
+          />
+        )}
       </div>
     </div>
   );

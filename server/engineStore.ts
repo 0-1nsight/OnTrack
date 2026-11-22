@@ -26,12 +26,15 @@ import {
   FleetFreshnessSummary,
   FreshnessStatus,
   LearnedRule,
+  PortalAccentTheme,
+  PortalBrandingConfig,
   PrivacyRule,
   ShiftPattern,
   ShiftUser,
   StoredFileRecord,
   SyncConflict,
   TaskTemplate,
+  TaskTemplateStep,
   TenantConfig,
   TrackingEvent,
   UserRole,
@@ -54,6 +57,29 @@ export function isHourWithinShiftUtc(
   }
   // Overnight UTC wrap (e.g., 22:00Z -> 02:00Z)
   return currentHourUtc >= startHourUtc || currentHourUtc < endHourUtc;
+}
+
+export function getShiftWindowHoursUtc(shiftPattern: ShiftPattern): {
+  startHourUtc: number;
+  endHourUtc: number;
+} {
+  if (shiftPattern === '5-9') return { startHourUtc: 22, endHourUtc: 2 };
+  if (shiftPattern === 'remote') return { startHourUtc: 14, endHourUtc: 23 };
+  return { startHourUtc: 13, endHourUtc: 22 };
+}
+
+export function isWithinScheduledShiftUtc(
+  nowMs: number,
+  shiftPattern: string,
+  startHourUtc: number,
+  endHourUtc: number
+): boolean {
+  const d = new Date(nowMs);
+  if (shiftPattern === 'weekend') {
+    const day = d.getUTCDay();
+    if (day !== 0 && day !== 6) return false;
+  }
+  return isHourWithinShiftUtc(d.getUTCHours(), startHourUtc, endHourUtc);
 }
 
 export class EngineSQLStore {
@@ -107,12 +133,256 @@ export class EngineSQLStore {
       { tenantId: '__system__', bypassRls: true },
       (tx) => tx.get<{ id: string }>('SELECT id FROM tenants WHERE id = ?', tenantId)
     );
-    if (existing) return;
-
     const nowIso = new Date().toISOString();
     const currentHourUtc = new Date().getUTCHours();
     const offShiftStart = (currentHourUtc + 4) % 24;
     const offShiftEnd = (currentHourUtc + 8) % 24;
+
+    const demoUsers: (ShiftUser & { canDrilldown: boolean; clientId?: string | null })[] = [
+      {
+        userId: 'demo_u_acc_01',
+        tenantId,
+        name: 'Maya Patel (Senior Accountant)',
+        email: 'maya.patel@apex-cpa.example',
+        role: 'accountant',
+        teamId: 'team_audit',
+        shiftPattern: '8-5',
+        shiftStartHourUtc: 0,
+        shiftEndHourUtc: 24,
+        onLeave: false,
+        canDrilldown: false,
+      },
+      {
+        userId: 'demo_u_acc_02',
+        tenantId,
+        name: 'Devon Brooks (Evening Shift 5-9)',
+        email: 'devon.brooks@apex-cpa.example',
+        role: 'accountant',
+        teamId: 'team_audit',
+        shiftPattern: '5-9',
+        shiftStartHourUtc: offShiftStart,
+        shiftEndHourUtc: offShiftEnd,
+        onLeave: false,
+        canDrilldown: false,
+      },
+      {
+        userId: 'demo_u_acc_03',
+        tenantId,
+        name: 'Elena Gomez (Remote Tax)',
+        email: 'elena.gomez@apex-cpa.example',
+        role: 'accountant',
+        teamId: 'team_tax',
+        shiftPattern: 'remote',
+        shiftStartHourUtc: 0,
+        shiftEndHourUtc: 24,
+        onLeave: false,
+        canDrilldown: false,
+      },
+      {
+        userId: 'demo_u_acc_04',
+        tenantId,
+        name: 'Samira Al-Mansoor (Weekend Audit)',
+        email: 'samira.mansoor@apex-cpa.example',
+        role: 'accountant',
+        teamId: 'team_audit',
+        shiftPattern: 'weekend',
+        shiftStartHourUtc: 0,
+        shiftEndHourUtc: 24,
+        onLeave: false,
+        canDrilldown: false,
+      },
+      {
+        userId: 'demo_u_lead_01',
+        tenantId,
+        name: 'Marcus Chen (Audit Team Lead)',
+        email: 'marcus.chen@apex-cpa.example',
+        role: 'team_lead',
+        teamId: 'team_audit',
+        shiftPattern: '8-5',
+        shiftStartHourUtc: 0,
+        shiftEndHourUtc: 24,
+        onLeave: false,
+        canDrilldown: true,
+      },
+      {
+        userId: 'demo_u_lead_02',
+        tenantId,
+        name: 'Hannah Kim (Tax Team Lead)',
+        email: 'hannah.kim@apex-cpa.example',
+        role: 'team_lead',
+        teamId: 'team_tax',
+        shiftPattern: 'remote',
+        shiftStartHourUtc: 0,
+        shiftEndHourUtc: 24,
+        onLeave: false,
+        canDrilldown: true,
+      },
+      {
+        userId: 'demo_u_mgr_01',
+        tenantId,
+        name: 'Jordan Rivera (Line Manager)',
+        email: 'jordan.rivera@apex-cpa.example',
+        role: 'line_manager',
+        teamId: 'team_audit',
+        shiftPattern: '8-5',
+        shiftStartHourUtc: 0,
+        shiftEndHourUtc: 24,
+        onLeave: false,
+        canDrilldown: true,
+      },
+      {
+        userId: 'demo_u_mgr_02',
+        tenantId,
+        name: 'David Okafor (Weekend Line Manager)',
+        email: 'david.okafor@apex-cpa.example',
+        role: 'line_manager',
+        teamId: 'team_tax',
+        shiftPattern: 'weekend',
+        shiftStartHourUtc: 0,
+        shiftEndHourUtc: 24,
+        onLeave: false,
+        canDrilldown: true,
+      },
+      {
+        userId: 'demo_u_exec_01',
+        tenantId,
+        name: 'Claire Vance (Managing Partner)',
+        email: 'claire.vance@apex-cpa.example',
+        role: 'executive',
+        teamId: 'team_audit',
+        shiftPattern: '8-5',
+        shiftStartHourUtc: 0,
+        shiftEndHourUtc: 24,
+        onLeave: false,
+        canDrilldown: false,
+      },
+      {
+        userId: 'demo_u_exec_02',
+        tenantId,
+        name: 'Arthur Sterling (Firm Owner)',
+        email: 'arthur.sterling@apex-cpa.example',
+        role: 'executive',
+        teamId: 'team_audit',
+        shiftPattern: '8-5',
+        shiftStartHourUtc: 0,
+        shiftEndHourUtc: 24,
+        onLeave: false,
+        canDrilldown: false,
+      },
+      {
+        userId: 'demo_u_admin_01',
+        tenantId,
+        name: 'Nadia Sterling (Admin / IT)',
+        email: 'it-admin@apex-cpa.example',
+        role: 'admin_it',
+        teamId: 'team_ops',
+        shiftPattern: '8-5',
+        shiftStartHourUtc: 0,
+        shiftEndHourUtc: 24,
+        onLeave: false,
+        canDrilldown: false,
+      },
+      {
+        userId: 'demo_u_admin_02',
+        tenantId,
+        name: 'Owen Price (Weekend SecOps / IT)',
+        email: 'secops@apex-cpa.example',
+        role: 'admin_it',
+        teamId: 'team_ops',
+        shiftPattern: 'weekend',
+        shiftStartHourUtc: 0,
+        shiftEndHourUtc: 24,
+        onLeave: false,
+        canDrilldown: false,
+      },
+      {
+        userId: 'demo_u_client_01',
+        tenantId,
+        name: 'Acme Ltd Portal Contact',
+        email: 'portal@acme.example',
+        role: 'client',
+        teamId: 'team_ext',
+        shiftPattern: '8-5',
+        shiftStartHourUtc: 0,
+        shiftEndHourUtc: 24,
+        onLeave: false,
+        canDrilldown: false,
+        clientId: 'demo_cli-acme',
+      },
+      {
+        userId: 'demo_u_client_02',
+        tenantId,
+        name: 'Northstar Logistics Contact',
+        email: 'portal@northstar.example',
+        role: 'client',
+        teamId: 'team_ext',
+        shiftPattern: '8-5',
+        shiftStartHourUtc: 0,
+        shiftEndHourUtc: 24,
+        onLeave: false,
+        canDrilldown: false,
+        clientId: 'demo_cli-northstar',
+      },
+      {
+        userId: 'demo_u_client_03',
+        tenantId,
+        name: 'Harbor Health Contact',
+        email: 'portal@harbor.example',
+        role: 'client',
+        teamId: 'team_ext',
+        shiftPattern: '8-5',
+        shiftStartHourUtc: 0,
+        shiftEndHourUtc: 24,
+        onLeave: false,
+        canDrilldown: false,
+        clientId: 'demo_cli-harbor',
+      },
+    ];
+
+    if (existing) {
+      await this.db.withTenantTransaction(
+        { tenantId, bypassRls: true },
+        async (tx) => {
+          for (const u of demoUsers) {
+            await tx.run(
+              `INSERT INTO shift_users
+               (user_id, tenant_id, name, email, role, team_id, shift_pattern, shift_start_hour_utc, shift_end_hour_utc, on_leave, can_drilldown_timeline, client_id, status, created_at_utc)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+               ON CONFLICT (user_id) DO NOTHING`,
+              u.userId,
+              u.tenantId,
+              u.name,
+              u.email,
+              u.role,
+              u.teamId,
+              u.shiftPattern,
+              u.shiftStartHourUtc,
+              u.shiftEndHourUtc,
+              u.onLeave ? 1 : 0,
+              u.canDrilldown ? 1 : 0,
+              u.clientId ?? null,
+              nowIso
+            );
+          }
+          await tx.run(
+            `INSERT INTO device_freshness (device_id, tenant_id, user_id, user_name, shift_pattern, os_platform, extension_connected, last_heartbeat_utc, last_ack_seq, clock_offset_ms, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (device_id) DO NOTHING`,
+            'demo-dev-win-samira',
+            tenantId,
+            'demo_u_acc_04',
+            'Samira Al-Mansoor',
+            'weekend',
+            'windows',
+            1,
+            nowIso,
+            64,
+            8,
+            'live'
+          );
+        }
+      );
+      return;
+    }
 
     const config: TenantConfig = {
       id: tenantId,
@@ -142,7 +412,7 @@ export class EngineSQLStore {
           `INSERT INTO teams (id, tenant_id, name, parent_team_id, lead_user_id, created_at_utc)
            VALUES
              ('team_audit', ?, 'Audit & Assurance', NULL, 'demo_u_lead_01', ?),
-             ('team_tax', ?, 'Tax Advisory', NULL, 'demo_u_lead_01', ?),
+             ('team_tax', ?, 'Tax Advisory', NULL, 'demo_u_lead_02', ?),
              ('team_ops', ?, 'Operations & IT', NULL, 'demo_u_admin_01', ?)
            ON CONFLICT (id) DO NOTHING`,
           tenantId,
@@ -153,92 +423,11 @@ export class EngineSQLStore {
           nowIso
         );
 
-        const users: (ShiftUser & { canDrilldown: boolean })[] = [
-          {
-            userId: 'demo_u_acc_01',
-            tenantId,
-            name: 'Maya Patel (Senior Accountant)',
-            email: 'maya.patel@apex-cpa.example',
-            role: 'accountant',
-            teamId: 'team_audit',
-            shiftPattern: '8-5',
-            shiftStartHourUtc: 0,
-            shiftEndHourUtc: 24,
-            onLeave: false,
-            canDrilldown: false,
-          },
-          {
-            userId: 'demo_u_acc_02',
-            tenantId,
-            name: 'Devon Brooks (Evening Shift 5-9)',
-            email: 'devon.brooks@apex-cpa.example',
-            role: 'accountant',
-            teamId: 'team_audit',
-            shiftPattern: '5-9',
-            shiftStartHourUtc: offShiftStart,
-            shiftEndHourUtc: offShiftEnd,
-            onLeave: false,
-            canDrilldown: false,
-          },
-          {
-            userId: 'demo_u_acc_03',
-            tenantId,
-            name: 'Elena Gomez (Remote Tax)',
-            email: 'elena.gomez@apex-cpa.example',
-            role: 'accountant',
-            teamId: 'team_tax',
-            shiftPattern: 'remote',
-            shiftStartHourUtc: 0,
-            shiftEndHourUtc: 24,
-            onLeave: false,
-            canDrilldown: false,
-          },
-          {
-            userId: 'demo_u_lead_01',
-            tenantId,
-            name: 'Marcus Chen (Team Lead)',
-            email: 'marcus.chen@apex-cpa.example',
-            role: 'team_lead',
-            teamId: 'team_audit',
-            shiftPattern: '8-5',
-            shiftStartHourUtc: 0,
-            shiftEndHourUtc: 24,
-            onLeave: false,
-            canDrilldown: true,
-          },
-          {
-            userId: 'demo_u_exec_01',
-            tenantId,
-            name: 'Claire Vance (Managing Partner)',
-            email: 'claire.vance@apex-cpa.example',
-            role: 'executive',
-            teamId: 'team_audit',
-            shiftPattern: '8-5',
-            shiftStartHourUtc: 0,
-            shiftEndHourUtc: 24,
-            onLeave: false,
-            canDrilldown: false,
-          },
-          {
-            userId: 'demo_u_admin_01',
-            tenantId,
-            name: 'Nadia Sterling (Admin / IT)',
-            email: 'it-admin@apex-cpa.example',
-            role: 'admin_it',
-            teamId: 'team_ops',
-            shiftPattern: '8-5',
-            shiftStartHourUtc: 0,
-            shiftEndHourUtc: 24,
-            onLeave: false,
-            canDrilldown: false,
-          },
-        ];
-
-        for (const u of users) {
+        for (const u of demoUsers) {
           await tx.run(
             `INSERT INTO shift_users
-             (user_id, tenant_id, name, email, role, team_id, shift_pattern, shift_start_hour_utc, shift_end_hour_utc, on_leave, can_drilldown_timeline, status, created_at_utc)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+             (user_id, tenant_id, name, email, role, team_id, shift_pattern, shift_start_hour_utc, shift_end_hour_utc, on_leave, can_drilldown_timeline, client_id, status, created_at_utc)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
              ON CONFLICT (user_id) DO NOTHING`,
             u.userId,
             u.tenantId,
@@ -251,6 +440,7 @@ export class EngineSQLStore {
             u.shiftEndHourUtc,
             u.onLeave ? 1 : 0,
             u.canDrilldown ? 1 : 0,
+            u.clientId ?? null,
             nowIso
           );
         }
@@ -528,6 +718,21 @@ export class EngineSQLStore {
           4,
           'off_shift'
         );
+        await tx.run(
+          `INSERT INTO device_freshness (device_id, tenant_id, user_id, user_name, shift_pattern, os_platform, extension_connected, last_heartbeat_utc, last_ack_seq, clock_offset_ms, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (device_id) DO NOTHING`,
+          'demo-dev-win-samira',
+          tenantId,
+          'demo_u_acc_04',
+          'Samira Al-Mansoor',
+          'weekend',
+          'windows',
+          1,
+          nowIso,
+          64,
+          8,
+          'live'
+        );
 
         const scenario = generateRealisticAccountingScenario(
           tenantId,
@@ -609,8 +814,9 @@ export class EngineSQLStore {
   ) {
     await this.ready();
     await this.db.withTenantTransaction({ tenantId }, async (tx) => {
-      const startHour = shiftPattern === '5-9' ? 22 : shiftPattern === 'remote' ? 14 : shiftPattern === '8-5' ? 13 : null;
-      const endHour = shiftPattern === '5-9' ? 2 : shiftPattern === 'remote' ? 23 : shiftPattern === '8-5' ? 22 : null;
+      const hours = shiftPattern ? getShiftWindowHoursUtc(shiftPattern) : null;
+      const startHour = hours ? hours.startHourUtc : null;
+      const endHour = hours ? hours.endHourUtc : null;
       await tx.run(
         `UPDATE shift_users
          SET role = ?,
@@ -657,11 +863,13 @@ export class EngineSQLStore {
         ).includes(roleRaw)
           ? (roleRaw as UserRole)
           : 'accountant';
-        const validShift: ShiftPattern = (['8-5', '5-9', 'remote'] as string[]).includes(shiftRaw)
+        const validShift: ShiftPattern = (
+          ['8-5', '5-9', 'remote', 'weekend'] as string[]
+        ).includes(shiftRaw)
           ? (shiftRaw as ShiftPattern)
           : '8-5';
-        const startHour = validShift === '5-9' ? 22 : validShift === 'remote' ? 14 : 13;
-        const endHour = validShift === '5-9' ? 2 : validShift === 'remote' ? 23 : 22;
+        const { startHourUtc: startHour, endHourUtc: endHour } =
+          getShiftWindowHoursUtc(validShift);
         const cleanEmail = emailRaw.toLowerCase();
         const userId = `u_${crypto.createHash('sha256').update(`${tenantId}:${cleanEmail}`).digest('hex').slice(0, 12)}`;
 
@@ -1073,10 +1281,51 @@ export class EngineSQLStore {
   public async getTemplates(tenantId: string): Promise<TaskTemplate[]> {
     await this.ready();
     return this.db.withTenantTransaction({ tenantId }, async (tx) => {
-      const rows = await tx.all<any>(
+      let rows = await tx.all<any>(
         'SELECT * FROM task_templates WHERE tenant_id = ?',
         tenantId
       );
+      if (rows.length === 0) {
+        const prefix = tenantId === 'firm_demo' ? 'demo_' : `${tenantId.slice(0, 8)}_`;
+        const defaults: TaskTemplate[] = [
+          {
+            id: `${prefix}tpl-monthly-close`,
+            tenantId,
+            name: 'Monthly Bank Close & Reconciliation',
+            defaultCategory: 'billable',
+            steps: [
+              { id: `${prefix}stp-1`, order: 1, title: 'Bank Statements & Intake Verified', activitySignature: 'bank', docTypeHint: 'Bank Statement CSV/PDF' },
+              { id: `${prefix}stp-2`, order: 2, title: 'Chequing & Clearing Ledger Reconciled', activitySignature: 'reconcil', docTypeHint: 'Clearing Ledger Export' },
+              { id: `${prefix}stp-3`, order: 3, title: 'Trial Balance Tie-Out Completed', activitySignature: 'tie-out', docTypeHint: 'Signed Approval Package' },
+            ],
+          },
+          {
+            id: `${prefix}tpl-payroll-tax`,
+            tenantId,
+            name: 'Payroll & Corporate Tax Compliance',
+            defaultCategory: 'billable',
+            steps: [
+              { id: `${prefix}stp-4`, order: 1, title: 'Payroll Register & Deductions Verified', activitySignature: 'payroll', docTypeHint: 'Payroll Summary & Authorization PDF' },
+              { id: `${prefix}stp-5`, order: 2, title: 'Corporate Tax Schedule Drafted & Ready', activitySignature: 'tax', docTypeHint: 'Tax Filing Consent Form' },
+            ],
+          },
+        ];
+        for (const tpl of defaults) {
+          await tx.run(
+            `INSERT INTO task_templates (id, tenant_id, name, default_category, steps_json)
+             VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`,
+            tpl.id,
+            tpl.tenantId,
+            tpl.name,
+            tpl.defaultCategory,
+            JSON.stringify(tpl.steps)
+          );
+        }
+        rows = await tx.all<any>(
+          'SELECT * FROM task_templates WHERE tenant_id = ?',
+          tenantId
+        );
+      }
       return rows.map((r) => ({
         id: r.id,
         tenantId: r.tenant_id,
@@ -1085,6 +1334,152 @@ export class EngineSQLStore {
         steps: JSON.parse(r.steps_json),
       }));
     });
+  }
+
+  public async updateTaskTemplate(
+    tenantId: string,
+    templateId: string,
+    updates: {
+      name?: string;
+      milestoneNames?: string[];
+      steps?: TaskTemplateStep[];
+    }
+  ): Promise<TaskTemplate> {
+    await this.ready();
+    const templates = await this.getTemplates(tenantId);
+    const existing = templates.find((t) => t.id === templateId);
+    if (!existing) {
+      throw new HttpError(404, 'TEMPLATE_NOT_FOUND', 'Task template not found.');
+    }
+
+    const nextName = updates.name?.trim() || existing.name;
+    let nextSteps: TaskTemplateStep[] = existing.steps;
+    if (Array.isArray(updates.steps) && updates.steps.length > 0) {
+      nextSteps = updates.steps.map((s, idx) => ({
+        id: s.id || `${templateId}_stp_${idx + 1}`,
+        order: idx + 1,
+        title: s.title.trim() || `Milestone ${idx + 1}`,
+        activitySignature: s.activitySignature?.trim() || existing.steps[idx]?.activitySignature || 'work',
+        docTypeHint: s.docTypeHint?.trim() || existing.steps[idx]?.docTypeHint,
+      }));
+    } else if (Array.isArray(updates.milestoneNames) && updates.milestoneNames.length > 0) {
+      nextSteps = updates.milestoneNames
+        .map((m) => m.trim())
+        .filter(Boolean)
+        .map((title, idx) => ({
+          id: existing.steps[idx]?.id || `${templateId}_stp_${idx + 1}`,
+          order: idx + 1,
+          title,
+          activitySignature: existing.steps[idx]?.activitySignature || title.toLowerCase().split(/\s+/)[0] || 'work',
+          docTypeHint: existing.steps[idx]?.docTypeHint,
+        }));
+    }
+
+    await this.db.withTenantTransaction({ tenantId }, async (tx) => {
+      await tx.run(
+        'UPDATE task_templates SET name = ?, steps_json = ? WHERE tenant_id = ? AND id = ?',
+        nextName,
+        JSON.stringify(nextSteps),
+        tenantId,
+        templateId
+      );
+    });
+
+    return {
+      ...existing,
+      name: nextName,
+      steps: nextSteps,
+    };
+  }
+
+  public async getPortalBranding(tenantId: string): Promise<PortalBrandingConfig> {
+    await this.ready();
+    const row = await this.db.withTenantTransaction(
+      { tenantId: '__system__', bypassRls: true },
+      (tx) =>
+        tx.get<{ name: string; slug: string | null; branding_json: string | null }>(
+          'SELECT name, slug, branding_json FROM tenants WHERE id = ?',
+          tenantId
+        )
+    );
+    const firmName = row?.name || 'OnTrack Accounting Firm';
+    const slug = row?.slug || tenantId.replace(/[^a-z0-9-]/gi, '').toLowerCase() || 'firm';
+    const initials = firmName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((w) => w[0]?.toUpperCase() || '')
+      .join('') || 'OT';
+
+    const defaults: PortalBrandingConfig = {
+      firmName,
+      accentTheme: 'indigo',
+      accentColor: '#4f46e5',
+      portalTitle: `${firmName} · Client Portal`,
+      customDomain: `portal.${slug}.example`,
+      supportNotice: 'Confirmed deliverables only · Encrypted document vault',
+      welcomeMessage: 'Track verified engagement milestones, sign off completed workpapers, and exchange documents securely with your accounting team.',
+      logoText: initials,
+      logoFileId: null,
+    };
+
+    if (!row?.branding_json) {
+      return defaults;
+    }
+    try {
+      const parsed = JSON.parse(row.branding_json);
+      return {
+        ...defaults,
+        ...parsed,
+        firmName,
+      };
+    } catch {
+      return defaults;
+    }
+  }
+
+  public async updatePortalBranding(
+    tenantId: string,
+    partial: Partial<Omit<PortalBrandingConfig, 'firmName'>>
+  ): Promise<PortalBrandingConfig> {
+    const curr = await this.getPortalBranding(tenantId);
+    const themeColorMap: Record<PortalAccentTheme, string> = {
+      indigo: '#4f46e5',
+      emerald: '#059669',
+      blue: '#2563eb',
+      slate: '#334155',
+      amber: '#d97706',
+      rose: '#e11d48',
+    };
+    const nextTheme: PortalAccentTheme =
+      partial.accentTheme && partial.accentTheme in themeColorMap
+        ? partial.accentTheme
+        : curr.accentTheme;
+
+    const next: PortalBrandingConfig = {
+      firmName: curr.firmName,
+      accentTheme: nextTheme,
+      accentColor: themeColorMap[nextTheme] || partial.accentColor || curr.accentColor,
+      portalTitle: partial.portalTitle !== undefined ? partial.portalTitle.trim() || curr.portalTitle : curr.portalTitle,
+      customDomain: partial.customDomain !== undefined ? partial.customDomain.trim() : curr.customDomain,
+      supportNotice: partial.supportNotice !== undefined ? partial.supportNotice.trim() : curr.supportNotice,
+      welcomeMessage: partial.welcomeMessage !== undefined ? partial.welcomeMessage.trim() : curr.welcomeMessage,
+      logoText: partial.logoText !== undefined ? partial.logoText.trim().slice(0, 4).toUpperCase() || curr.logoText : curr.logoText,
+      logoFileId: partial.logoFileId !== undefined ? partial.logoFileId : curr.logoFileId,
+    };
+
+    const { firmName: _omit, ...stored } = next;
+    await this.db.withTenantTransaction(
+      { tenantId: '__system__', bypassRls: true },
+      async (tx) => {
+        await tx.run(
+          'UPDATE tenants SET branding_json = ? WHERE id = ?',
+          JSON.stringify(stored),
+          tenantId
+        );
+      }
+    );
+    return next;
   }
 
   public async getTasks(tenantId: string): Promise<EngineTask[]> {
@@ -1840,7 +2235,7 @@ export class EngineSQLStore {
     );
 
     const userMap = new Map(users.map((u) => [u.user_id, u]));
-    const currentHourUtc = new Date(referenceNowMs).getUTCHours();
+    const utcDay = new Date(referenceNowMs).getUTCDay();
 
     const devices: DeviceFreshnessRecord[] = rows.map((r) => {
       const u = userMap.get(r.user_id);
@@ -1849,12 +2244,14 @@ export class EngineSQLStore {
 
       const onLeave = Boolean(u?.on_leave);
       const inScheduledShift = u
-        ? isHourWithinShiftUtc(
-            currentHourUtc,
+        ? isWithinScheduledShiftUtc(
+            referenceNowMs,
+            u.shift_pattern || r.shift_pattern,
             Number(u.shift_start_hour_utc),
             Number(u.shift_end_hour_utc)
           )
-        : r.shift_pattern !== '5-9';
+        : r.shift_pattern !== '5-9' &&
+          (r.shift_pattern !== 'weekend' || utcDay === 0 || utcDay === 6);
 
       let status: FreshnessStatus = 'live';
       if (onLeave || !inScheduledShift) {

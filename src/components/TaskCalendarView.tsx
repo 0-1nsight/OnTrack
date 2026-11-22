@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -114,20 +114,23 @@ export const TaskCalendarView: React.FC<TaskCalendarViewProps> = ({
   }, [timeBlocks]);
 
   // Helper to get tasks active or due on a given date
-  const getTasksForDate = (ymd: string): { dueToday: Task[]; activeSpan: Task[] } => {
-    const dueToday: Task[] = [];
-    const activeSpan: Task[] = [];
-    for (const t of tasks) {
-      const start = t.startDate || t.createdAt;
-      const due = t.dueDate || start;
-      if (due === ymd) {
-        dueToday.push(t);
-      } else if (start && due && start <= ymd && ymd < due) {
-        activeSpan.push(t);
+  const getTasksForDate = useCallback(
+    (ymd: string): { dueToday: Task[]; activeSpan: Task[] } => {
+      const dueToday: Task[] = [];
+      const activeSpan: Task[] = [];
+      for (const t of tasks) {
+        const start = t.startDate || t.createdAt;
+        const due = t.dueDate || start;
+        if (due === ymd) {
+          dueToday.push(t);
+        } else if (start && due && start <= ymd && ymd < due) {
+          activeSpan.push(t);
+        }
       }
-    }
-    return { dueToday, activeSpan };
-  };
+      return { dueToday, activeSpan };
+    },
+    [tasks]
+  );
 
   const agendaDayBlocks = blocksByDate.get(agendaDate) || [];
   const agendaLoggedMins = agendaDayBlocks.reduce(
@@ -136,7 +139,7 @@ export const TaskCalendarView: React.FC<TaskCalendarViewProps> = ({
   );
   const { dueToday: agendaDueTasks, activeSpan: agendaSpanTasks } = useMemo(
     () => getTasksForDate(agendaDate),
-    [tasks, agendaDate]
+    [getTasksForDate, agendaDate]
   );
 
   const shiftMonth = (delta: number) => {

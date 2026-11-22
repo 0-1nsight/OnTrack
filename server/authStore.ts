@@ -1123,4 +1123,96 @@ export class AuthStore {
       } satisfies PublicUserSummary,
     };
   }
+
+  public async listDemoAccounts() {
+    return this.db.withTenantTransaction(
+      { tenantId: 'firm_demo', bypassRls: true },
+      async (tx) => {
+        const rows = await tx.all<any>(
+          `SELECT user_id, name, email, role, team_id, shift_pattern, client_id, can_drilldown_timeline
+           FROM shift_users
+           WHERE tenant_id = 'firm_demo' AND status = 'active'
+           ORDER BY CASE role
+             WHEN 'accountant' THEN 1
+             WHEN 'team_lead' THEN 2
+             WHEN 'line_manager' THEN 3
+             WHEN 'executive' THEN 4
+             WHEN 'client' THEN 5
+             WHEN 'admin_it' THEN 6
+             ELSE 7
+           END, user_id ASC`
+        );
+        return rows.map((r) => ({
+          userId: String(r.user_id),
+          name: String(r.name),
+          email: String(r.email),
+          role: r.role as UserRole,
+          teamId: String(r.team_id),
+          shiftPattern: (r.shift_pattern as ShiftPattern) || '8-5',
+          clientId: r.client_id ? String(r.client_id) : null,
+          canDrilldownTimeline: Boolean(r.can_drilldown_timeline),
+        }));
+      }
+    );
+  }
+
+  public async authenticateDemoAccount(params: {
+    userId: string;
+    ipAddress?: string | null;
+    userAgent?: string | null;
+  }): Promise<{
+    rawToken: string;
+    sessionId: string;
+    user: PublicUserSummary;
+  }> {
+    const userRow = await this.db.withTenantTransaction(
+      { tenantId: 'firm_demo', bypassRls: true },
+      (tx) =>
+        tx.get<any>(
+          `SELECT u.*, t.name as tenant_name, t.ai_reports_enabled
+           FROM shift_users u
+           JOIN tenants t ON t.id = u.tenant_id
+           WHERE u.tenant_id = 'firm_demo' AND u.user_id = ? AND u.status = 'active'`,
+          params.userId
+        )
+    );
+
+    if (!userRow) {
+      throw new HttpError(404, 'DEMO_USER_NOT_FOUND', 'Demo account not found.');
+    }
+
+    const role = userRow.role as UserRole;
+    const principalType: 'staff' | 'client' = role === 'client' ? 'client' : 'staff';
+    const session = await this.createSessionForUser({
+      tenantId: 'firm_demo',
+      userId: userRow.user_id,
+      principalType,
+      mfaVerified: true,
+      ipAddress: params.ipAddress,
+      userAgent: params.userAgent,
+    });
+
+    return {
+      rawToken: session.rawToken,
+      sessionId: session.sessionId,
+      user: {
+        userId: userRow.user_id,
+        tenantId: userRow.tenant_id,
+        tenantName: userRow.tenant_name,
+        name: userRow.name,
+        email: userRow.email,
+        role,
+        teamId: userRow.team_id,
+        clientId: userRow.client_id || null,
+        shiftPattern: userRow.shift_pattern as ShiftPattern,
+        canDrilldownTimeline: Boolean(userRow.can_drilldown_timeline),
+        totpEnabled: Boolean(userRow.totp_enabled),
+        mfaVerified: true,
+        mustEnrollMfa: false,
+        principalType,
+        isDemoSandbox: true,
+        aiReportsEnabled: Boolean(userRow.ai_reports_enabled),
+      } satisfies PublicUserSummary,
+    };
+  }
 }

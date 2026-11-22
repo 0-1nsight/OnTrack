@@ -11,11 +11,15 @@ import {
   Sun,
 } from 'lucide-react';
 import heroWorkspaceImg from '../assets/images/hero_ontrack_workspace_1795323315338.jpg';
+import { DemoAccountSummary } from '../services/authClient';
+import { getRolePolicy } from '../utils/roleConfig';
 
 interface LandingPageProps {
   authReady: boolean;
   authError: string | null;
   needsInitialSetup: boolean;
+  demoModeEnabled?: boolean;
+  demoAccounts?: DemoAccountSummary[];
   darkMode: boolean;
   onToggleTheme: () => void;
   onLogin: (payload: {
@@ -24,6 +28,7 @@ interface LandingPageProps {
     totpCode?: string;
     isClientPortal?: boolean;
   }) => Promise<void>;
+  onDemoLogin?: (userId: string) => Promise<void>;
   onBootstrapFirm: (payload: {
     firmName: string;
     name: string;
@@ -37,9 +42,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   authReady,
   authError,
   needsInitialSetup,
+  demoModeEnabled = false,
+  demoAccounts = [],
   darkMode,
   onToggleTheme,
   onLogin,
+  onDemoLogin,
   onBootstrapFirm,
   onContinueLocal,
 }) => {
@@ -412,6 +420,50 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       <span className="whitespace-nowrap">Continue in Local Workspace</span>
                       <ArrowRight className="w-3.5 h-3.5 shrink-0" />
                     </button>
+
+                    {demoModeEnabled && demoAccounts.length > 0 && onDemoLogin && mode === 'login' && (
+                      <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                        <div className="flex items-center justify-between text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                          <span>Demo Accounts by Role &amp; Shift</span>
+                          <span className="font-mono text-indigo-600 dark:text-indigo-400">
+                            {demoAccounts.length} ready
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-48 overflow-y-auto pr-0.5">
+                          {demoAccounts.map((acc) => {
+                            const roleLabel = getRolePolicy(acc.role).shortLabel;
+                            return (
+                              <button
+                                key={acc.userId}
+                                type="button"
+                                disabled={isSubmitting}
+                                onClick={async () => {
+                                  setIsSubmitting(true);
+                                  try {
+                                    await onDemoLogin(acc.userId);
+                                  } finally {
+                                    setIsSubmitting(false);
+                                  }
+                                }}
+                                className="text-left px-2.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/60 hover:border-indigo-400 hover:bg-indigo-50/60 dark:hover:bg-indigo-950/30 transition-colors cursor-pointer disabled:opacity-50"
+                              >
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="text-[11px] font-semibold text-slate-900 dark:text-white truncate">
+                                    {acc.name.split(' (')[0]}
+                                  </span>
+                                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 shrink-0">
+                                    {roleLabel}
+                                  </span>
+                                </div>
+                                <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                                  {acc.email} · {acc.shiftPattern}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Architectural Assurances */}

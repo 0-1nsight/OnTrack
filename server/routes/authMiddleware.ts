@@ -115,6 +115,15 @@ export async function resolveHttpAuthContext(
         ? 'demo_u_client_01'
         : 'demo_u_acc_01';
 
+    const demoClientId =
+      previewRole !== 'client'
+        ? null
+        : demoUser === 'demo_u_client_02'
+        ? 'demo_cli-northstar'
+        : demoUser === 'demo_u_client_03'
+        ? 'demo_cli-harbor'
+        : 'demo_cli-acme';
+
     return {
       mode: 'demo',
       principalType: 'demo',
@@ -123,8 +132,8 @@ export async function resolveHttpAuthContext(
       userEmail: 'demo@apex-cpa.example',
       userName: 'Demo Sandbox User',
       role: previewRole,
-      teamId: previewRole === 'admin_it' ? 'team_it' : 'team_audit',
-      clientId: previewRole === 'client' ? 'demo_cli-acme' : null,
+      teamId: previewRole === 'admin_it' ? 'team_ops' : 'team_audit',
+      clientId: demoClientId,
       canDrilldownTimeline: previewRole === 'team_lead' || previewRole === 'line_manager',
       mfaVerified: true,
       mustEnrollMfa: false,

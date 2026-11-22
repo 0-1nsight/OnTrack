@@ -1,17 +1,14 @@
 import React, { useMemo } from 'react';
-import { BarChart3, Clock, Target, Layers, AppWindow, FileText } from 'lucide-react';
+import { Clock, Target, Layers, AppWindow, FileText } from 'lucide-react';
 import {
   ActivitySegment,
   ApplicationUsageSegment,
   DocumentUsageSegment,
   Task,
   TimeBlock,
-  WorkCategory,
 } from '../types';
 import {
   APP_COLORS,
-  CATEGORY_LABELS,
-  CATEGORY_RIBBON_STYLES,
   PROJECTS,
   formatDuration,
 } from '../data/seedData';

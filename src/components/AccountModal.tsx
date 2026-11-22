@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import {
   AuthUser,
+  DemoAccountSummary,
   SessionInfo,
   beginMfaEnrollment,
   confirmMfaEnrollment,
@@ -22,6 +23,7 @@ import {
   revokeActiveSession,
 } from '../services/authClient';
 import { UserProfile } from '../types';
+import { getRolePolicy } from '../utils/roleConfig';
 
 interface AccountModalProps {
   isOpen: boolean;
@@ -29,6 +31,8 @@ interface AccountModalProps {
   userProfile: UserProfile | null;
   authReady: boolean;
   needsInitialSetup: boolean;
+  demoModeEnabled?: boolean;
+  demoAccounts?: DemoAccountSummary[];
   authError: string | null;
   onLogin: (payload: {
     email: string;
@@ -36,6 +40,7 @@ interface AccountModalProps {
     totpCode?: string;
     isClientPortal?: boolean;
   }) => Promise<void>;
+  onDemoLogin?: (userId: string) => Promise<void>;
   onBootstrapFirm: (payload: {
     firmName: string;
     name: string;
@@ -61,8 +66,11 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   userProfile,
   authReady,
   needsInitialSetup,
+  demoModeEnabled = false,
+  demoAccounts = [],
   authError,
   onLogin,
+  onDemoLogin,
   onBootstrapFirm,
   onSignOut,
   onSaveProfile,
@@ -84,10 +92,18 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   const [totpCode, setTotpCode] = useState('');
   const [isClientPortal, setIsClientPortal] = useState(false);
 
-  const [displayName, setDisplayName] = useState('');
-  const [jobTitle, setJobTitle] = useState('');
-  const [hourlyRate, setHourlyRate] = useState('150');
-  const [currency, setCurrency] = useState('USD');
+  const [displayName, setDisplayName] = useState(
+    () => userProfile?.displayName || user?.name || user?.email?.split('@')[0] || ''
+  );
+  const [jobTitle, setJobTitle] = useState(
+    () => userProfile?.jobTitle || user?.role || ''
+  );
+  const [hourlyRate, setHourlyRate] = useState(
+    () => String(userProfile?.hourlyRate ?? 150)
+  );
+  const [currency, setCurrency] = useState(
+    () => userProfile?.currency || 'USD'
+  );
   const [isSaving, setIsSaving] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -103,29 +119,19 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
 
   useEffect(() => {
-    if (!isOpen) {
-      setFeedback(null);
-      setLocalError(null);
-      setMfaEnrollment(null);
-      return;
-    }
-    if (userProfile) {
-      setDisplayName(userProfile.displayName || '');
-      setJobTitle(userProfile.jobTitle || '');
-      setHourlyRate(String(userProfile.hourlyRate ?? 150));
-      setCurrency(userProfile.currency || 'USD');
-    } else if (user) {
-      setDisplayName(user.name || user.email?.split('@')[0] || '');
-      setJobTitle(user.role);
-      setHourlyRate('150');
-      setCurrency('USD');
-    }
-    if (user) {
-      listActiveSessions()
-        .then((res) => setSessions(res.sessions || []))
-        .catch(() => setSessions([]));
-    }
-  }, [isOpen, userProfile, user]);
+    if (!isOpen || !user) return;
+    let active = true;
+    listActiveSessions()
+      .then((res) => {
+        if (active) setSessions(res.sessions || []);
+      })
+      .catch(() => {
+        if (active) setSessions([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isOpen, user]);
 
   if (!isOpen) return null;
 
@@ -371,6 +377,51 @@ export const AccountModal: React.FC<AccountModalProps> = ({
               </button>
             </form>
 
+            {demoModeEnabled && demoAccounts.length > 0 && onDemoLogin && mode === 'login' && (
+              <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                <div className="flex items-center justify-between font-semibold text-slate-700 dark:text-slate-300">
+                  <span>Quick Demo Accounts by Role &amp; Shift</span>
+                  <span className="font-mono text-[11px] text-indigo-600 dark:text-indigo-400">
+                    {demoAccounts.length} available
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-44 overflow-y-auto">
+                  {demoAccounts.map((acc) => (
+                    <button
+                      key={acc.userId}
+                      type="button"
+                      disabled={isSigningIn}
+                      onClick={async () => {
+                        setIsSigningIn(true);
+                        setLocalError(null);
+                        try {
+                          await onDemoLogin(acc.userId);
+                          onClose();
+                        } catch (err: any) {
+                          setLocalError(err?.message || 'Demo sign-in failed.');
+                        } finally {
+                          setIsSigningIn(false);
+                        }
+                      }}
+                      className="text-left px-2.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 hover:border-indigo-400 hover:bg-indigo-50/50 dark:hover:bg-indigo-950/30 cursor-pointer disabled:opacity-50"
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="font-semibold text-slate-900 dark:text-white truncate">
+                          {acc.name.split(' (')[0]}
+                        </span>
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 shrink-0">
+                          {getRolePolicy(acc.role).shortLabel}
+                        </span>
+                      </div>
+                      <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400 truncate">
+                        {acc.email} · {acc.shiftPattern}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-slate-500">
               <span>Currently in Local Browser Mode</span>
               <button
@@ -410,6 +461,58 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                 </div>
               </div>
             </div>
+
+            {demoModeEnabled && user.isDemoSandbox && demoAccounts.length > 0 && onDemoLogin && (
+              <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-slate-800 dark:text-slate-200">
+                    Switch Demo Role Account
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                    Shift: {user.shiftPattern}
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-36 overflow-y-auto">
+                  {demoAccounts.map((acc) => {
+                    const isCurrent = acc.userId === user.userId;
+                    return (
+                      <button
+                        key={acc.userId}
+                        type="button"
+                        disabled={isSigningIn || isCurrent}
+                        onClick={async () => {
+                          setIsSigningIn(true);
+                          setLocalError(null);
+                          try {
+                            await onDemoLogin(acc.userId);
+                            onClose();
+                          } catch (err: any) {
+                            setLocalError(err?.message || 'Unable to switch demo account.');
+                          } finally {
+                            setIsSigningIn(false);
+                          }
+                        }}
+                        className={`text-left px-2.5 py-1.5 rounded border text-[11px] transition-colors cursor-pointer disabled:cursor-default ${
+                          isCurrent
+                            ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-800 dark:text-indigo-200'
+                            : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-indigo-400'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="font-semibold truncate">{acc.name.split(' (')[0]}</span>
+                          <span className="font-mono text-[10px] text-indigo-600 dark:text-indigo-400 shrink-0">
+                            {getRolePolicy(acc.role).shortLabel}
+                          </span>
+                        </div>
+                        <div className="font-mono text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                          {acc.email} · {acc.shiftPattern}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* TOTP MFA Setup Prompt / Status */}
             {(!user.totpEnabled || user.mustEnrollMfa) && (

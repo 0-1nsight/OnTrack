@@ -420,7 +420,7 @@ export async function deletePrivacyRuleApi(tenantId: string, id: string) {
 
 export async function updateEngineConfigApi(
   tenantId: string,
-  partial: Partial<TenantConfig>
+  partial: Partial<TenantConfig> & { aiReportsEnabled?: boolean }
 ) {
   const res = await fetch('/api/engine/config', {
     method: 'PATCH',
@@ -560,13 +560,14 @@ export async function updateStaffRoleApi(
   userId: string,
   role: UserRole,
   shiftPattern?: ShiftPattern,
-  onLeave?: boolean
+  onLeave?: boolean,
+  canDrilldownTimeline?: boolean
 ) {
   const res = await fetch(`/api/engine/staff/${encodeURIComponent(userId)}/role`, {
     method: 'PATCH',
     credentials: 'include',
     headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ tenantId, role, shiftPattern, onLeave }),
+    body: JSON.stringify({ tenantId, role, shiftPattern, onLeave, canDrilldownTimeline }),
   });
   if (!res.ok) throw new Error('Failed to update staff role');
   return res.json();

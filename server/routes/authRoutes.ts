@@ -45,9 +45,13 @@ const InviteCreateSchema = z.object({
     'admin_it',
   ]),
   teamId: z.string().trim().min(1).default('team_audit'),
-  shiftPattern: z.enum(['8-5', '5-9', 'remote']).default('8-5'),
+  shiftPattern: z.enum(['8-5', '5-9', 'remote', 'weekend']).default('8-5'),
   clientId: z.string().trim().nullable().optional(),
   canDrilldownTimeline: z.boolean().optional(),
+});
+
+const DemoLoginSchema = z.object({
+  userId: z.string().trim().min(1),
 });
 
 const AcceptInviteSchema = z.object({
@@ -148,6 +152,41 @@ export function createAuthRouter(deps: {
       const out = await deps.authStore.authenticateWithPassword({
         ...input,
         principalType: 'client',
+        ipAddress: getClientIp(req),
+        userAgent: req.headers['user-agent'] || null,
+      });
+      setSessionCookie(req, res, out.rawToken);
+      res.json({ user: out.user });
+    })
+  );
+
+  router.get(
+    '/demo-accounts',
+    asyncHandler(async (_req, res) => {
+      if (!appConfig.demoModeEnabled) {
+        return res.json({ demoModeEnabled: false, accounts: [] });
+      }
+      await deps.engineStore.seedDemoTenantIfMissing('firm_demo');
+      const accounts = await deps.authStore.listDemoAccounts();
+      return res.json({ demoModeEnabled: true, accounts });
+    })
+  );
+
+  router.post(
+    '/demo-login',
+    ...limitMiddleware,
+    asyncHandler(async (req, res) => {
+      if (!appConfig.demoModeEnabled) {
+        throw new HttpError(
+          403,
+          'DEMO_DISABLED',
+          'Demo account sign-in is disabled outside demo mode.'
+        );
+      }
+      const { userId } = DemoLoginSchema.parse(req.body);
+      await deps.engineStore.seedDemoTenantIfMissing('firm_demo');
+      const out = await deps.authStore.authenticateDemoAccount({
+        userId,
         ipAddress: getClientIp(req),
         userAgent: req.headers['user-agent'] || null,
       });
