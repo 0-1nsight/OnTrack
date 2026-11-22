@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 
 export type SqlDialect = 'sqlite' | 'postgres';
 
@@ -9,14 +9,43 @@ export interface RunResult {
   changes: number;
 }
 
+export interface SqlExecutor {
+  readonly dialect: SqlDialect;
+  exec(ddl: string): Promise<void>;
+  get<T = Record<string, any>>(sql: string, ...params: any[]): Promise<T | undefined>;
+  all<T = Record<string, any>>(sql: string, ...params: any[]): Promise<T[]>;
+  run(sql: string, ...params: any[]): Promise<RunResult>;
+}
+
+export function translateSqlPlaceholders(sql: string, dialect: SqlDialect): string {
+  if (dialect === 'sqlite') return sql;
+  let idx = 0;
+  let inSingleQuote = false;
+  let out = '';
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    if (ch === "'") {
+      inSingleQuote = !inSingleQuote;
+      out += ch;
+    } else if (ch === '?' && !inSingleQuote) {
+      idx += 1;
+      out += `$${idx}`;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
 /**
- * Dual SQLite (`node:sqlite`) and PostgreSQL (`pg`) parameterized adapter.
+ * Dual SQLite (`node:sqlite`, dev/tests) and PostgreSQL (`pg`, production with RLS) adapter.
  * Converts `?` placeholders cleanly to `$1, $2, ...` when running against PostgreSQL.
  */
-export class PortableSqlAdapter {
+export class PortableSqlAdapter implements SqlExecutor {
   public readonly dialect: SqlDialect;
   private sqliteDb: DatabaseSync | null = null;
   private pgPool: Pool | null = null;
+  private sqliteTxDepth = 0;
 
   constructor(options?: { dbPath?: string; databaseUrl?: string }) {
     const databaseUrl = options?.databaseUrl ?? process.env.DATABASE_URL ?? '';
@@ -28,37 +57,17 @@ export class PortableSqlAdapter {
       this.dialect = 'postgres';
       this.pgPool = new Pool({
         connectionString: databaseUrl.trim(),
-        max: 15,
+        max: 20,
       });
     } else {
       this.dialect = 'sqlite';
       const dataDir = process.env.DATA_DIR || path.resolve(process.cwd(), 'data');
-      const resolved = options?.dbPath || path.resolve(dataDir, 'chronoflow-engine.db');
+      const resolved = options?.dbPath || path.resolve(dataDir, 'ontrack-engine.db');
       if (resolved !== ':memory:') {
         fs.mkdirSync(path.dirname(resolved), { recursive: true });
       }
       this.sqliteDb = new DatabaseSync(resolved);
     }
-  }
-
-  private translateSql(sql: string): string {
-    if (this.dialect === 'sqlite') return sql;
-    let idx = 0;
-    let inSingleQuote = false;
-    let out = '';
-    for (let i = 0; i < sql.length; i++) {
-      const ch = sql[i];
-      if (ch === "'") {
-        inSingleQuote = !inSingleQuote;
-        out += ch;
-      } else if (ch === '?' && !inSingleQuote) {
-        idx += 1;
-        out += `$${idx}`;
-      } else {
-        out += ch;
-      }
-    }
-    return out;
   }
 
   public async exec(ddl: string): Promise<void> {
@@ -79,7 +88,7 @@ export class PortableSqlAdapter {
       return this.sqliteDb.prepare(sql).get(...params) as T | undefined;
     }
     if (this.pgPool) {
-      const res = await this.pgPool.query(this.translateSql(sql), params);
+      const res = await this.pgPool.query(translateSqlPlaceholders(sql, 'postgres'), params);
       return res.rows[0] as T | undefined;
     }
     return undefined;
@@ -93,7 +102,7 @@ export class PortableSqlAdapter {
       return this.sqliteDb.prepare(sql).all(...params) as T[];
     }
     if (this.pgPool) {
-      const res = await this.pgPool.query(this.translateSql(sql), params);
+      const res = await this.pgPool.query(translateSqlPlaceholders(sql, 'postgres'), params);
       return res.rows as T[];
     }
     return [];
@@ -105,240 +114,118 @@ export class PortableSqlAdapter {
       return { changes: Number(info.changes) };
     }
     if (this.pgPool) {
-      const res = await this.pgPool.query(this.translateSql(sql), params);
+      const res = await this.pgPool.query(translateSqlPlaceholders(sql, 'postgres'), params);
       return { changes: Number(res.rowCount || 0) };
     }
     return { changes: 0 };
   }
 
+  /**
+   * Executes a callback inside an explicit DB transaction.
+   * On PostgreSQL, sets transaction-local RLS context variables:
+   * `SET LOCAL app.tenant_id`, `app.user_id`, `app.role`, `app.bypass_rls`.
+   */
+  public async withTenantTransaction<T>(
+    ctx: { tenantId: string; userId?: string; role?: string; bypassRls?: boolean },
+    fn: (tx: SqlExecutor) => Promise<T>
+  ): Promise<T> {
+    if (this.sqliteDb) {
+      const nested = this.sqliteTxDepth > 0;
+      this.sqliteTxDepth += 1;
+      if (!nested) {
+        this.sqliteDb.exec('BEGIN IMMEDIATE');
+      }
+      try {
+        const result = await fn(this);
+        if (!nested) {
+          this.sqliteDb.exec('COMMIT');
+        }
+        return result;
+      } catch (err) {
+        if (!nested) {
+          try {
+            this.sqliteDb.exec('ROLLBACK');
+          } catch {
+            // ignore rollback errors
+          }
+        }
+        throw err;
+      } finally {
+        this.sqliteTxDepth = Math.max(0, this.sqliteTxDepth - 1);
+      }
+    }
+
+    if (this.pgPool) {
+      const client: PoolClient = await this.pgPool.connect();
+      const txExec: SqlExecutor = {
+        dialect: 'postgres',
+        exec: async (ddl: string) => {
+          await client.query(ddl);
+        },
+        get: async <R = Record<string, any>>(sql: string, ...params: any[]) => {
+          const res = await client.query(translateSqlPlaceholders(sql, 'postgres'), params);
+          return res.rows[0] as R | undefined;
+        },
+        all: async <R = Record<string, any>>(sql: string, ...params: any[]) => {
+          const res = await client.query(translateSqlPlaceholders(sql, 'postgres'), params);
+          return res.rows as R[];
+        },
+        run: async (sql: string, ...params: any[]) => {
+          const res = await client.query(translateSqlPlaceholders(sql, 'postgres'), params);
+          return { changes: Number(res.rowCount || 0) };
+        },
+      };
+
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          `SELECT
+             set_config('app.tenant_id', $1, true),
+             set_config('app.user_id', $2, true),
+             set_config('app.role', $3, true),
+             set_config('app.bypass_rls', $4, true)`,
+          [
+            ctx.tenantId || '',
+            ctx.userId || '',
+            ctx.role || '',
+            ctx.bypassRls ? 'true' : 'false',
+          ]
+        );
+        const result = await fn(txExec);
+        await client.query('COMMIT');
+        return result;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw err;
+      } finally {
+        client.release();
+      }
+    }
+
+    return fn(this);
+  }
+
+  public async getPgPool(): Promise<Pool | null> {
+    return this.pgPool;
+  }
+
+  public async ping(): Promise<boolean> {
+    try {
+      const row = await this.get<{ ok: number }>('SELECT 1 as ok');
+      return Number(row?.ok) === 1;
+    } catch {
+      return false;
+    }
+  }
+
   public async close(): Promise<void> {
     if (this.sqliteDb) {
       this.sqliteDb.close();
+      this.sqliteDb = null;
     }
     if (this.pgPool) {
       await this.pgPool.end();
+      this.pgPool = null;
     }
-  }
-}
-
-export async function initPortableSchema(db: PortableSqlAdapter): Promise<void> {
-  if (db.dialect === 'sqlite') {
-    await db.exec('PRAGMA journal_mode = WAL;');
-  }
-
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS tenants (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      config_json TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS shift_users (
-      user_id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      firebase_uid TEXT,
-      name TEXT NOT NULL,
-      email TEXT NOT NULL,
-      role TEXT NOT NULL,
-      team_id TEXT NOT NULL,
-      shift_pattern TEXT NOT NULL,
-      shift_start_hour_utc INTEGER NOT NULL,
-      shift_end_hour_utc INTEGER NOT NULL,
-      on_leave INTEGER NOT NULL DEFAULT 0
-    );
-
-    CREATE TABLE IF NOT EXISTS device_tokens (
-      token_id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      device_id TEXT NOT NULL,
-      label TEXT NOT NULL,
-      prefix TEXT NOT NULL,
-      token_hash TEXT NOT NULL,
-      created_at_utc TEXT NOT NULL,
-      last_used_utc TEXT,
-      revoked_at_utc TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS clients (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      legal_name TEXT NOT NULL,
-      aliases_json TEXT NOT NULL,
-      codes_json TEXT NOT NULL,
-      folder_patterns_json TEXT NOT NULL,
-      known_domains_json TEXT NOT NULL,
-      restricted_user_ids_json TEXT NOT NULL,
-      source TEXT NOT NULL,
-      updated_at_utc TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS activity_rules (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      keyword TEXT NOT NULL,
-      activity_type TEXT NOT NULL,
-      work_category TEXT NOT NULL,
-      weight DOUBLE PRECISION NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS privacy_rules (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      pattern TEXT NOT NULL,
-      reason TEXT NOT NULL,
-      enabled INTEGER NOT NULL DEFAULT 1
-    );
-
-    CREATE TABLE IF NOT EXISTS task_templates (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      default_category TEXT NOT NULL,
-      steps_json TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS engine_tasks (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      client_id TEXT NOT NULL,
-      client_name TEXT NOT NULL,
-      template_id TEXT,
-      title TEXT NOT NULL,
-      period TEXT NOT NULL,
-      status TEXT NOT NULL,
-      due_date_utc TEXT NOT NULL,
-      assigned_user_id TEXT NOT NULL,
-      estimated_minutes INTEGER NOT NULL,
-      version INTEGER NOT NULL DEFAULT 1,
-      updated_at_utc TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS learned_rules (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      pattern_type TEXT NOT NULL,
-      pattern TEXT NOT NULL,
-      target_client_id TEXT NOT NULL,
-      target_task_id TEXT,
-      accepted INTEGER NOT NULL DEFAULT 1,
-      created_at_utc TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS tracking_events (
-      event_id TEXT PRIMARY KEY,
-      schema_version INTEGER NOT NULL,
-      tenant_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      device_id TEXT NOT NULL,
-      seq INTEGER NOT NULL,
-      type TEXT NOT NULL,
-      priority TEXT NOT NULL,
-      event_time_utc TEXT NOT NULL,
-      received_at TEXT NOT NULL,
-      payload_json TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_tracking_events_tenant_user
-      ON tracking_events(tenant_id, user_id, event_time_utc);
-
-    CREATE TABLE IF NOT EXISTS device_freshness (
-      device_id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      user_name TEXT NOT NULL,
-      shift_pattern TEXT NOT NULL,
-      os_platform TEXT NOT NULL,
-      extension_connected INTEGER NOT NULL DEFAULT 1,
-      last_heartbeat_utc TEXT NOT NULL,
-      last_ack_seq INTEGER NOT NULL DEFAULT 0,
-      clock_offset_ms INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS attribution_overrides (
-      session_id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      task_id TEXT,
-      task_title TEXT,
-      client_id TEXT,
-      client_name TEXT,
-      step_id TEXT,
-      step_title TEXT,
-      period TEXT,
-      confidence DOUBLE PRECISION NOT NULL,
-      reason TEXT NOT NULL,
-      status TEXT NOT NULL,
-      version INTEGER NOT NULL,
-      updated_at_utc TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS checklist_overrides (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      task_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      step_id TEXT,
-      order_index INTEGER NOT NULL,
-      title TEXT NOT NULL,
-      status TEXT NOT NULL,
-      minutes_accumulated INTEGER NOT NULL,
-      source_session_ids_json TEXT NOT NULL,
-      reason TEXT NOT NULL,
-      is_free_form INTEGER NOT NULL,
-      updated_at_utc TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS sync_conflicts (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      task_id TEXT NOT NULL,
-      task_title TEXT NOT NULL,
-      local_status TEXT NOT NULL,
-      server_status TEXT NOT NULL,
-      local_version INTEGER NOT NULL,
-      server_version INTEGER NOT NULL,
-      created_at_utc TEXT NOT NULL,
-      resolved INTEGER NOT NULL DEFAULT 0,
-      resolution TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS audit_logs (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      actor_user_id TEXT NOT NULL,
-      actor_role TEXT NOT NULL,
-      target_user_id TEXT,
-      action TEXT NOT NULL,
-      details TEXT NOT NULL,
-      created_at_utc TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS stored_files (
-      file_id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      uploader_user_id TEXT NOT NULL,
-      uploader_email TEXT NOT NULL,
-      purpose TEXT NOT NULL,
-      original_name TEXT NOT NULL,
-      stored_rel_path TEXT NOT NULL,
-      mime_type TEXT NOT NULL,
-      byte_size INTEGER NOT NULL,
-      sha256 TEXT NOT NULL,
-      created_at_utc TEXT NOT NULL
-    );
-  `);
-
-  if (db.dialect === 'sqlite') {
-    const cols = await db.all<{ name: string }>('PRAGMA table_info(shift_users)');
-    if (!cols.some((c) => c.name === 'firebase_uid')) {
-      await db.exec('ALTER TABLE shift_users ADD COLUMN firebase_uid TEXT;');
-    }
-  } else {
-    await db.exec('ALTER TABLE shift_users ADD COLUMN IF NOT EXISTS firebase_uid TEXT;');
   }
 }

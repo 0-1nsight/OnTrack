@@ -1,145 +1,77 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
+import argon2 from 'argon2';
+import { Request, Response } from 'express';
+import * as OTPAuth from 'otpauth';
+import QRCode from 'qrcode';
 import { UserRole } from '../src/engine/types.ts';
+import { appConfig } from './config.ts';
 
-export interface VerifiedFirebaseClaims {
-  uid: string;
-  email: string;
-  emailVerified: boolean;
-  name: string;
-  picture?: string;
-}
+export type PrincipalType = 'staff' | 'client' | 'device' | 'demo';
 
 export interface RequestAuthContext {
-  mode: 'firebase' | 'device' | 'demo';
+  mode: 'session' | 'device' | 'demo';
+  principalType: PrincipalType;
+  sessionId?: string;
   tenantId: string;
   userId: string;
   userEmail: string;
+  userName: string;
   role: UserRole;
+  teamId: string;
+  clientId?: string | null;
+  canDrilldownTimeline: boolean;
+  mfaVerified: boolean;
+  mustEnrollMfa: boolean;
   deviceId?: string;
   isDemoSandbox: boolean;
 }
 
-const FIREBASE_JWKS_URL =
-  'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
+export const SESSION_COOKIE_NAME = 'ontrack_sid';
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-let cachedJwks: { keys: Record<string, any>[]; expiresAtMs: number } = {
-  keys: [],
-  expiresAtMs: 0,
-};
+export const ROLES_REQUIRING_MFA = new Set<UserRole>(['admin_it', 'executive']);
 
-function readFirebaseProjectId(): string {
-  if (process.env.FIREBASE_PROJECT_ID) {
-    return process.env.FIREBASE_PROJECT_ID;
-  }
+export function roleRequiresMfa(role: UserRole): boolean {
+  return ROLES_REQUIRING_MFA.has(role);
+}
+
+export async function hashPassword(plain: string): Promise<string> {
+  return argon2.hash(plain, {
+    type: argon2.argon2id,
+    memoryCost: 65536,
+    timeCost: 3,
+    parallelism: 1,
+  });
+}
+
+export async function verifyPassword(hash: string, plain: string): Promise<boolean> {
   try {
-    const cfgPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
-    if (fs.existsSync(cfgPath)) {
-      const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-      if (parsed.projectId) return String(parsed.projectId);
-    }
+    return await argon2.verify(hash, plain);
   } catch {
-    // ignore
+    return false;
   }
-  return 'dark-trees-jbcxw';
 }
 
-function base64UrlToBuffer(input: string): Buffer {
-  const padded = input.replace(/-/g, '+').replace(/_/g, '/').padEnd(
-    input.length + ((4 - (input.length % 4)) % 4),
-    '='
-  );
-  return Buffer.from(padded, 'base64');
-}
-
-async function getFirebaseJwks(): Promise<Record<string, any>[]> {
-  if (Date.now() < cachedJwks.expiresAtMs && cachedJwks.keys.length > 0) {
-    return cachedJwks.keys;
-  }
-  const res = await fetch(FIREBASE_JWKS_URL);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch Firebase JWKS (${res.status})`);
-  }
-  const data = (await res.json()) as { keys?: Record<string, any>[] };
-  const cc = res.headers.get('cache-control') || '';
-  const maxAgeMatch = cc.match(/max-age=(\d+)/i);
-  const ttlSec = maxAgeMatch ? Number(maxAgeMatch[1]) : 3600;
-  cachedJwks = {
-    keys: data.keys || [],
-    expiresAtMs: Date.now() + ttlSec * 1000,
-  };
-  return cachedJwks.keys;
-}
-
-/**
- * Cryptographically verifies a Firebase Auth JWT ID token using Google's public JWKS,
- * requiring zero GCP service-account IAM keys and working in both cloud and on-prem builds.
- */
-export async function verifyFirebaseIdToken(
-  token: string
-): Promise<VerifiedFirebaseClaims> {
-  const parts = token.split('.');
-  if (parts.length !== 3) {
-    throw new Error('Malformed Firebase JWT');
-  }
-  const [headerB64, payloadB64, sigB64] = parts;
-  const header = JSON.parse(base64UrlToBuffer(headerB64).toString('utf8'));
-  const payload = JSON.parse(base64UrlToBuffer(payloadB64).toString('utf8'));
-
-  if (header.alg !== 'RS256' || !header.kid) {
-    throw new Error('Invalid Firebase JWT algorithm or key ID');
-  }
-
-  const projectId = readFirebaseProjectId();
-  const nowSec = Math.floor(Date.now() / 1000);
-  if (typeof payload.exp !== 'number' || payload.exp <= nowSec) {
-    throw new Error('Firebase ID token expired');
-  }
-  if (typeof payload.iat !== 'number' || payload.iat > nowSec + 300) {
-    throw new Error('Firebase ID token issued in the future');
-  }
-  if (payload.aud !== projectId) {
-    throw new Error('Firebase ID token audience mismatch');
-  }
-  if (payload.iss !== `https://securetoken.google.com/${projectId}`) {
-    throw new Error('Firebase ID token issuer mismatch');
-  }
-  if (!payload.sub || typeof payload.sub !== 'string') {
-    throw new Error('Firebase ID token subject missing');
-  }
-
-  const keys = await getFirebaseJwks();
-  let jwk = keys.find((k) => k.kid === header.kid);
-  if (!jwk) {
-    cachedJwks.expiresAtMs = 0;
-    const freshKeys = await getFirebaseJwks();
-    jwk = freshKeys.find((k) => k.kid === header.kid);
-  }
-  if (!jwk) {
-    throw new Error('Firebase signing key not found');
-  }
-
-  const publicKey = crypto.createPublicKey({ key: jwk as any, format: 'jwk' });
-  const signingInput = Buffer.from(`${headerB64}.${payloadB64}`, 'utf8');
-  const signature = base64UrlToBuffer(sigB64);
-
-  const valid = crypto.verify('RSA-SHA256', signingInput, publicKey, signature);
-  if (!valid) {
-    throw new Error('Invalid Firebase JWT signature');
-  }
-
-  return {
-    uid: payload.sub,
-    email: String(payload.email || ''),
-    emailVerified: Boolean(payload.email_verified),
-    name: String(payload.name || payload.email || payload.sub),
-    picture: payload.picture ? String(payload.picture) : undefined,
-  };
+export function hashOpaqueToken(rawToken: string): string {
+  return crypto
+    .createHmac('sha256', appConfig.sessionSecret)
+    .update(rawToken, 'utf8')
+    .digest('hex');
 }
 
 export function hashDeviceToken(rawToken: string): string {
   return crypto.createHash('sha256').update(rawToken, 'utf8').digest('hex');
+}
+
+export function generateOpaqueToken(prefix = 'ots'): {
+  rawToken: string;
+  tokenHash: string;
+} {
+  const rawToken = `${prefix}_${crypto.randomBytes(32).toString('hex')}`;
+  return {
+    rawToken,
+    tokenHash: hashOpaqueToken(rawToken),
+  };
 }
 
 export function generateDeviceToken(): {
@@ -148,24 +80,199 @@ export function generateDeviceToken(): {
   tokenHash: string;
 } {
   const randomPart = crypto.randomBytes(24).toString('hex');
-  const rawToken = `cf_dev_${randomPart}`;
+  const rawToken = `ontrack_dev_${randomPart}`;
   return {
     rawToken,
-    prefix: rawToken.slice(0, 14),
+    prefix: rawToken.slice(0, 18),
     tokenHash: hashDeviceToken(rawToken),
   };
 }
 
-export function extractBearerToken(
-  authHeader?: string | string[],
-  queryToken?: string | string[]
-): string | null {
+export function encryptSecret(plaintext: string): string {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', appConfig.encryptionKeyBytes, iv);
+  const enc = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString('hex')}.${tag.toString('hex')}.${enc.toString('hex')}`;
+}
+
+export function decryptSecret(ciphertext: string): string {
+  const parts = ciphertext.split('.');
+  if (parts.length !== 3) {
+    throw new Error('Malformed encrypted secret');
+  }
+  const [ivHex, tagHex, encHex] = parts;
+  const decipher = crypto.createDecipheriv(
+    'aes-256-gcm',
+    appConfig.encryptionKeyBytes,
+    Buffer.from(ivHex, 'hex')
+  );
+  decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
+  const dec = Buffer.concat([
+    decipher.update(Buffer.from(encHex, 'hex')),
+    decipher.final(),
+  ]);
+  return dec.toString('utf8');
+}
+
+export async function generateTotpEnrollment(email: string, firmName = 'OnTrack') {
+  const secret = new OTPAuth.Secret({ size: 20 });
+  const totp = new OTPAuth.TOTP({
+    issuer: firmName || 'OnTrack',
+    label: email,
+    algorithm: 'SHA1',
+    digits: 6,
+    period: 30,
+    secret,
+  });
+  const otpauthUri = totp.toString();
+  const qrDataUrl = await QRCode.toDataURL(otpauthUri);
+  const backupCodes = Array.from({ length: 8 }, () =>
+    `${crypto.randomBytes(2).toString('hex').toUpperCase()}-${crypto
+      .randomBytes(2)
+      .toString('hex')
+      .toUpperCase()}`
+  );
+  return {
+    secretBase32: secret.base32,
+    otpauthUri,
+    qrDataUrl,
+    backupCodes,
+    backupCodeHashes: backupCodes.map((c) => hashOpaqueToken(c)),
+  };
+}
+
+export function verifyTotpCode(secretBase32: string, code: string): boolean {
+  const clean = code.replace(/\s+/g, '');
+  if (!/^\d{6}$/.test(clean)) return false;
+  const totp = new OTPAuth.TOTP({
+    algorithm: 'SHA1',
+    digits: 6,
+    period: 30,
+    secret: OTPAuth.Secret.fromBase32(secretBase32),
+  });
+  const delta = totp.validate({ token: clean, window: 1 });
+  return delta !== null;
+}
+
+export function isHttpsRequest(req: Request): boolean {
+  if (appConfig.cookieSecure === 'true') return true;
+  if (appConfig.cookieSecure === 'false') return false;
+  if (req.secure) return true;
+  const xfProto = req.headers['x-forwarded-proto'];
+  if (typeof xfProto === 'string' && xfProto.toLowerCase().includes('https')) {
+    return true;
+  }
+  return appConfig.appUrl.startsWith('https://');
+}
+
+export function setSessionCookie(req: Request, res: Response, rawToken: string) {
+  const secure = isHttpsRequest(req);
+  const parts = [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(rawToken)}`,
+    'Path=/',
+    'HttpOnly',
+    `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
+  ];
+  if (secure) {
+    parts.push('SameSite=None', 'Secure', 'Partitioned');
+  } else {
+    parts.push('SameSite=Lax');
+  }
+  res.append('Set-Cookie', parts.join('; '));
+}
+
+export function clearSessionCookie(req: Request, res: Response) {
+  const secure = isHttpsRequest(req);
+  const parts = [
+    `${SESSION_COOKIE_NAME}=`,
+    'Path=/',
+    'HttpOnly',
+    'Max-Age=0',
+  ];
+  if (secure) {
+    parts.push('SameSite=None', 'Secure', 'Partitioned');
+  } else {
+    parts.push('SameSite=Lax');
+  }
+  res.append('Set-Cookie', parts.join('; '));
+}
+
+export function getSessionExpiryIso(): string {
+  return new Date(Date.now() + SESSION_TTL_MS).toISOString();
+}
+
+export function extractBearerToken(authHeader?: string | string[]): string | null {
   if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
     const val = authHeader.slice(7).trim();
     if (val) return val;
   }
-  if (typeof queryToken === 'string' && queryToken.trim()) {
-    return queryToken.trim();
-  }
   return null;
+}
+
+export function parseCookieHeader(cookieHeader?: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!cookieHeader) return out;
+  for (const part of cookieHeader.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx <= 0) continue;
+    const key = part.slice(0, idx).trim();
+    const val = part.slice(idx + 1).trim();
+    if (key) {
+      try {
+        out[key] = decodeURIComponent(val);
+      } catch {
+        out[key] = val;
+      }
+    }
+  }
+  return out;
+}
+
+export function validateCsrfOrigin(req: Request): boolean {
+  const method = req.method.toUpperCase();
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
+    return true;
+  }
+  // Device Bearer tokens don't use ambient browser cookies
+  const bearer = extractBearerToken(req.headers.authorization);
+  if (bearer && bearer.startsWith('ontrack_dev_')) {
+    return true;
+  }
+
+  const origin = req.headers.origin;
+  const referer = req.headers.referer;
+  const checkHeader = typeof origin === 'string' ? origin : typeof referer === 'string' ? referer : '';
+
+  if (!checkHeader) {
+    // Allow non-browser test clients in test environment or when no cookie is present
+    if (!req.cookies?.[SESSION_COOKIE_NAME] && !parseCookieHeader(req.headers.cookie)[SESSION_COOKIE_NAME]) {
+      return true;
+    }
+    return appConfig.isTest;
+  }
+
+  let sourceOrigin: string;
+  try {
+    sourceOrigin = new URL(checkHeader).origin;
+  } catch {
+    return false;
+  }
+
+  const allowedOrigins = new Set<string>(appConfig.corsOrigins);
+  if (appConfig.appUrl) {
+    try {
+      allowedOrigins.add(new URL(appConfig.appUrl).origin);
+    } catch {
+      // ignore invalid APP_URL
+    }
+  }
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  if (typeof host === 'string' && host.trim()) {
+    const cleanHost = host.split(',')[0].trim();
+    allowedOrigins.add(`http://${cleanHost}`);
+    allowedOrigins.add(`https://${cleanHost}`);
+  }
+
+  return allowedOrigins.has(sourceOrigin);
 }

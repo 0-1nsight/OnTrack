@@ -1,6 +1,6 @@
 {
-  "name": "ChronoFlow — Task Workspace & Timeline Tracker",
-  "description": "ClickUp-style task management combined with ManicTime-inspired daily activity timelines, automatic idle detection, and AI-generated weekly progress reports.",
+  "name": "OnTrack — Accounting Resource Management & Auto-Tracking",
+  "description": "Multi-tenant accounting resource management and metadata-only activity attribution platform with role-based dashboards, shift freshness monitoring, and client portal.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

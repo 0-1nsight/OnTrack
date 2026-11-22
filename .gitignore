@@ -1,9 +1,14 @@
 node_modules/
 build/
 dist/
+dist-server/
 coverage/
 data/
+*.db
+*.db-*
+.ontrack-*
 .DS_Store
 *.log
-.env*
+.env
+.env.*
 !.env.example
