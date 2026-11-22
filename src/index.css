@@ -28,6 +28,26 @@
   }
 }
 
+.bg-hatched-detected {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgb(99 102 241 / 0.35),
+    rgb(99 102 241 / 0.35) 4px,
+    rgb(99 102 241 / 0.1) 4px,
+    rgb(99 102 241 / 0.1) 8px
+  );
+}
+
+.dark .bg-hatched-detected {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgb(129 140 248 / 0.45),
+    rgb(129 140 248 / 0.45) 4px,
+    rgb(129 140 248 / 0.14) 4px,
+    rgb(129 140 248 / 0.14) 8px
+  );
+}
+
 @media print {
   body {
     background: #ffffff !important;

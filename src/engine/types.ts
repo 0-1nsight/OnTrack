@@ -87,6 +87,7 @@ export interface TenantConfig {
   heartbeatIntervalSeconds: number; // default 12
   delayedThresholdSeconds: number; // default 120
   retentionDays: number; // default 60 (30-90)
+  focusFactor?: number; // default 0.85 (effective productive hours ratio)
   monitoringPolicy: 'mandatory' | 'opt_in';
   serverUrl: string;
 }

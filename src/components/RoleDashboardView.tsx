@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowRightLeft,
   BarChart3,
   Building2,
   CalendarClock,
@@ -78,6 +79,8 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
   const [inviteDrilldown, setInviteDrilldown] = useState(false);
   const [createdInviteUrl, setCreatedInviteUrl] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState(false);
+  const [focusFactorDraft, setFocusFactorDraft] = useState<number>(85);
+  const [delayedThresholdDraft, setDelayedThresholdDraft] = useState<number>(120);
 
   // Admin portal branding & template milestone configuration (PORT-2)
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
@@ -90,6 +93,22 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
   const [templateDrafts, setTemplateDrafts] = useState<
     Record<string, { name: string; milestonesText: string }>
   >({});
+
+  const percentToWidthClass = (pct: number): string => {
+    const p = Math.max(0, Math.min(100, pct));
+    if (p >= 95) return 'w-full';
+    if (p >= 85) return 'w-5/6';
+    if (p >= 75) return 'w-3/4';
+    if (p >= 66) return 'w-2/3';
+    if (p >= 60) return 'w-3/5';
+    if (p >= 50) return 'w-1/2';
+    if (p >= 40) return 'w-2/5';
+    if (p >= 33) return 'w-1/3';
+    if (p >= 25) return 'w-1/4';
+    if (p >= 16) return 'w-1/6';
+    if (p > 0) return 'w-1/12';
+    return 'w-0';
+  };
 
   const syncPortalConfigState = useCallback(
     (cfg: Awaited<ReturnType<typeof fetchBrandingAndTemplatesApi>>) => {
@@ -121,6 +140,10 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
         viewerRole: activeRole,
       });
       setData(overview);
+      if (overview.adminAlerts) {
+        setFocusFactorDraft(Math.round((overview.adminAlerts.focusFactor ?? 0.85) * 100));
+        setDelayedThresholdDraft(overview.adminAlerts.delayedThresholdSeconds ?? 120);
+      }
 
       if (activeRole === 'admin_it') {
         if (currentUser) {
@@ -162,6 +185,10 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
         });
         if (!active) return;
         setData(overview);
+        if (overview.adminAlerts) {
+          setFocusFactorDraft(Math.round((overview.adminAlerts.focusFactor ?? 0.85) * 100));
+          setDelayedThresholdDraft(overview.adminAlerts.delayedThresholdSeconds ?? 120);
+        }
         setError(null);
         if (activeRole === 'admin_it') {
           if (currentUser) {
@@ -235,6 +262,27 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
       await loadData();
     } catch (err: any) {
       onNotify(err?.message || 'Unable to update AI policy.');
+    } finally {
+      setBusyAction(false);
+    }
+  };
+
+  const handleSaveCapacityThresholds = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusyAction(true);
+    try {
+      const clampedFocus = Math.min(1, Math.max(0.5, focusFactorDraft / 100));
+      const clampedDelay = Math.min(600, Math.max(30, delayedThresholdDraft));
+      await updateEngineConfigApi(tenantId, {
+        focusFactor: clampedFocus,
+        delayedThresholdSeconds: clampedDelay,
+      });
+      onNotify(
+        `Updated firm focus factor (${Math.round(clampedFocus * 100)}%) and IT delay threshold (${clampedDelay}s).`
+      );
+      await loadData();
+    } catch (err: any) {
+      onNotify(err?.message || 'Unable to update capacity/freshness thresholds.');
     } finally {
       setBusyAction(false);
     }
@@ -525,6 +573,103 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
                 )}
               </div>
             </div>
+          </section>
+
+          {/* IT-Only Delayed Shift Device Alert Feed (FRESH-1) */}
+          {data.adminAlerts.itDelayedDevices.length > 0 && (
+            <section className="bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg p-4 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-amber-900 dark:text-amber-200">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                  <span>
+                    Active IT Freshness Alerts ({data.adminAlerts.itDelayedDevices.length} active-shift device
+                    {data.adminAlerts.itDelayedDevices.length === 1 ? '' : 's'})
+                  </span>
+                </div>
+                <span className="font-mono text-[11px] text-amber-800 dark:text-amber-300">
+                  Routed exclusively to Admin / IT · Never exposed to line managers
+                </span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5 text-xs">
+                {data.adminAlerts.itDelayedDevices.map((d) => (
+                  <div
+                    key={d.deviceId}
+                    className="px-3 py-2 rounded border border-amber-200 dark:border-amber-800/80 bg-white dark:bg-slate-900 flex items-center justify-between gap-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-medium text-slate-900 dark:text-white truncate">
+                        {d.userName}
+                      </div>
+                      <div className="font-mono text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                        {d.deviceId} · {d.shiftPattern} shift
+                      </div>
+                    </div>
+                    <span
+                      className={`font-mono text-[11px] font-semibold whitespace-nowrap ${
+                        d.status === 'offline'
+                          ? 'text-rose-700 dark:text-rose-400'
+                          : 'text-amber-700 dark:text-amber-400'
+                      }`}
+                    >
+                      {d.status === 'offline' ? 'OFFLINE' : 'DELAYED'} · {d.delayedSeconds}s
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Tenant Focus Factor & Freshness Threshold Configuration */}
+          <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5">
+            <form
+              onSubmit={handleSaveCapacityThresholds}
+              className="flex flex-wrap items-end justify-between gap-4 text-xs"
+            >
+              <div>
+                <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white">
+                  Capacity Focus Factor &amp; Freshness Thresholds
+                </h2>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                  Focus factor adjusts weekly shift hours for deadline risk; delay threshold triggers IT-only device alerts.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-end gap-3">
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+                    Focus Factor (%)
+                  </label>
+                  <input
+                    type="number"
+                    min={50}
+                    max={100}
+                    value={focusFactorDraft}
+                    onChange={(e) => setFocusFactorDraft(Number(e.target.value))}
+                    className="w-24 px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+                    IT Delay Alert (sec)
+                  </label>
+                  <input
+                    type="number"
+                    min={30}
+                    max={600}
+                    value={delayedThresholdDraft}
+                    onChange={(e) => setDelayedThresholdDraft(Number(e.target.value))}
+                    className="w-24 px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono tabular-nums"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={busyAction || !currentUser}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg disabled:opacity-50 cursor-pointer"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>{currentUser ? 'Save Settings' : 'Sign In as Admin'}</span>
+                </button>
+              </div>
+            </form>
           </section>
 
           {/* Device Sync Health Table */}
@@ -1170,47 +1315,188 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
                 </tbody>
               </table>
             </div>
+            <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+              <span>
+                Effective weekly availability applies the configured{' '}
+                <strong className="font-mono text-slate-700 dark:text-slate-200">
+                  {Math.round((data.focusFactor ?? 0.85) * 100)}%
+                </strong>{' '}
+                focus factor and deducts active leave.
+              </span>
+              <span className="font-mono">
+                {data.staffCapacity.filter((s) => s.onLeave).length} staff currently on leave
+              </span>
+            </div>
           </section>
+
+          {/* Day-by-Day Shift Workload Heatmap (Mon–Sat net of leave) */}
+          {data.shiftHeatmap.length > 0 && (
+            <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <CalendarClock className="w-4 h-4 text-indigo-600" />
+                  <span>This Week Shift Workload Heatmap (Net of Leave)</span>
+                </h2>
+                <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                  Assigned vs available focus hours per day ({Math.round((data.focusFactor ?? 0.85) * 100)}% focus factor)
+                </span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400">
+                      <th className="py-2 pr-3 font-medium">Shift Schedule</th>
+                      <th className="py-2 px-2 font-medium text-right">Staff / Leave</th>
+                      {data.shiftHeatmap[0]?.days.map((d) => (
+                        <th key={d.dayLabel} className="py-2 px-2 font-medium text-center">
+                          {d.dayLabel}
+                        </th>
+                      ))}
+                      <th className="py-2 pl-3 font-medium text-right">Weekly Net Cap.</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {data.shiftHeatmap.map((row) => (
+                      <tr key={row.shiftPattern}>
+                        <td className="py-2.5 pr-3 font-medium text-slate-900 dark:text-white whitespace-nowrap">
+                          {row.shiftLabel}
+                        </td>
+                        <td className="py-2.5 px-2 text-right font-mono tabular-nums text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                          {row.staffCount} · {row.onLeaveCount} leave
+                        </td>
+                        {row.days.map((cell) => {
+                          const cellStyle =
+                            cell.availableHoursNetLeave === 0
+                              ? 'bg-slate-50 dark:bg-slate-800/40 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-800'
+                              : cell.utilizationPercent >= 95
+                              ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200 border-rose-200 dark:border-rose-800'
+                              : cell.utilizationPercent >= 75
+                              ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200 border-amber-200 dark:border-amber-800'
+                              : 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800';
+                          return (
+                            <td key={cell.dayLabel} className="py-1.5 px-1.5 text-center">
+                              <div
+                                className={`px-2 py-1.5 rounded border font-mono tabular-nums text-[11px] ${cellStyle}`}
+                              >
+                                <div className="font-semibold">
+                                  {cell.availableHoursNetLeave > 0
+                                    ? `${cell.utilizationPercent}%`
+                                    : 'Off'}
+                                </div>
+                                <div className="text-[10px] opacity-80">
+                                  {cell.assignedHours}h / {cell.availableHoursNetLeave}h
+                                </div>
+                              </div>
+                            </td>
+                          );
+                        })}
+                        <td className="py-2.5 pl-3 text-right font-mono tabular-nums text-slate-700 dark:text-slate-200 whitespace-nowrap">
+                          {row.weeklyAssignedHours}h / {row.weeklyAvailableHoursNetLeave}h
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
 
           {/* Deadline Risk & Recurring Capacity Forecast */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <section className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5">
-              <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2 mb-4">
-                <Clock className="w-4 h-4 text-rose-600" />
-                <span>Deadline Risk &amp; Planned vs Actual Watchlist</span>
-              </h2>
-              <div className="space-y-2.5">
-                {data.deadlineRisks.map((item) => (
-                  <div
-                    key={item.taskId}
-                    className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 flex flex-wrap items-center justify-between gap-3"
-                  >
-                    <div>
-                      <div className="text-xs font-semibold text-slate-900 dark:text-white">
-                        {item.title}
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-rose-600" />
+                  <span>Tasks Progress &amp; Deadline Risk Watchlist</span>
+                </h2>
+                <div className="flex items-center gap-3 text-[11px] text-slate-500 dark:text-slate-400">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-3 h-2 rounded-xs bg-indigo-600 inline-block" />
+                    <span>Confirmed</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-3 h-2 rounded-xs bg-hatched-detected border border-indigo-400/50 inline-block" />
+                    <span>Detected</span>
+                  </span>
+                </div>
+              </div>
+              <div className="space-y-3">
+                {data.deadlineRisks.map((item) => {
+                  const confirmedPct =
+                    item.estimatedHours > 0
+                      ? Math.round((item.confirmedHours / item.estimatedHours) * 100)
+                      : 0;
+                  const detectedPct =
+                    item.estimatedHours > 0
+                      ? Math.round((item.detectedHours / item.estimatedHours) * 100)
+                      : 0;
+                  const confirmedCls = percentToWidthClass(confirmedPct);
+                  const detectedCls = percentToWidthClass(
+                    Math.min(100 - confirmedPct, detectedPct)
+                  );
+
+                  return (
+                    <div
+                      key={item.taskId}
+                      className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 space-y-2"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold text-slate-900 dark:text-white">
+                            {item.title}
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                            {item.clientName} · {item.period} · {item.assignedUserName}
+                          </div>
+                        </div>
+                        <span
+                          className={`px-2 py-0.5 rounded border text-[11px] font-mono font-semibold whitespace-nowrap ${
+                            item.riskLevel === 'high'
+                              ? 'border-rose-300 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300'
+                              : item.riskLevel === 'medium'
+                              ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
+                              : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+                          }`}
+                        >
+                          {item.riskLevel.toUpperCase()} RISK
+                        </span>
                       </div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                        {item.clientName} · {item.period} · Assigned to {item.assignedUserName}
+
+                      {/* Solid (confirmed) + Hatched (detected) progress bar */}
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-2.5 bg-slate-200/80 dark:bg-slate-800 rounded overflow-hidden flex">
+                          {confirmedPct > 0 && (
+                            <div
+                              title={`Confirmed: ${item.confirmedHours}h`}
+                              className={`h-full bg-indigo-600 ${confirmedCls}`}
+                            />
+                          )}
+                          {detectedPct > 0 && (
+                            <div
+                              title={`Detected / Suggested: ${item.detectedHours}h`}
+                              className={`h-full bg-hatched-detected ${detectedCls}`}
+                            />
+                          )}
+                        </div>
+                        <span className="font-mono tabular-nums text-[11px] text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                          {item.confirmedHours}h conf. + {item.detectedHours}h det. / {item.estimatedHours}h est.
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                        <span>
+                          Remaining effort: <strong className="text-slate-700 dark:text-slate-200">{item.remainingHours}h</strong>
+                        </span>
+                        <span>
+                          Shift avail. before due (@{Math.round(item.focusFactor * 100)}% focus):{' '}
+                          <strong className="text-slate-700 dark:text-slate-200">
+                            {item.availableHoursBeforeDue}h
+                          </strong>
+                        </span>
                       </div>
                     </div>
-                    <div className="flex items-center gap-3 text-xs font-mono tabular-nums">
-                      <span className="text-slate-600 dark:text-slate-300">
-                        {item.trackedHours}h / {item.estimatedHours}h est.
-                      </span>
-                      <span
-                        className={`px-2 py-0.5 rounded border text-[11px] font-semibold ${
-                          item.riskLevel === 'high'
-                            ? 'border-rose-300 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300'
-                            : item.riskLevel === 'medium'
-                            ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
-                            : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
-                        }`}
-                      >
-                        {item.riskLevel.toUpperCase()} RISK
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </section>
 
@@ -1224,18 +1510,21 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
                   {data.recurringForecast.map((wk) => (
                     <div
                       key={wk.weekLabel}
-                      className="p-2.5 rounded border border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs"
+                      className="p-2.5 rounded border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 text-xs"
                     >
-                      <div>
+                      <div className="min-w-0">
                         <div className="font-medium text-slate-900 dark:text-white">
                           {wk.weekLabel}
                         </div>
                         <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
-                          {wk.projectedRecurringHours}h projected vs {wk.teamAvailableHours}h shift capacity
+                          {wk.projectedRecurringHours}h projected vs {wk.teamAvailableHours}h net cap.
+                          {wk.leaveDeductedHours > 0
+                            ? ` (-${wk.leaveDeductedHours}h leave)`
+                            : ''}
                         </div>
                       </div>
                       <span
-                        className={`font-mono text-[11px] font-semibold ${
+                        className={`font-mono text-[11px] font-semibold whitespace-nowrap ${
                           wk.status === 'overallocated'
                             ? 'text-rose-600 dark:text-rose-400'
                             : wk.status === 'tight'
@@ -1285,6 +1574,66 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
               </div>
             </section>
           </div>
+
+          {/* Shift Handoffs Across 8-5 & 5-9 (Team Leads & Line Managers only, never Executive or Admin/IT) */}
+          {(activeRole === 'team_lead' || activeRole === 'line_manager') && (
+            <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <ArrowRightLeft className="w-4 h-4 text-indigo-600" />
+                  <span>Cross-Shift Handoffs (8-5 &amp; 5-9 Continuity)</span>
+                </h2>
+                <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                  {data.handoffs.length} active handoff thread{data.handoffs.length === 1 ? '' : 's'}
+                </span>
+              </div>
+              {data.handoffs.length === 0 ? (
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  No open cross-shift handoffs are currently queued for this team.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                  {data.handoffs.map((h) => (
+                    <div
+                      key={`${h.taskId}-${h.assignedUserId}`}
+                      className="p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/30 space-y-2"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="font-semibold text-slate-900 dark:text-white">
+                            {h.taskTitle}
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                            {h.clientName} · {h.period} · {h.assignedUserName} ({h.shiftPattern} shift)
+                          </div>
+                        </div>
+                        <span className="font-mono tabular-nums text-[11px] text-indigo-700 dark:text-indigo-300 whitespace-nowrap">
+                          {h.totalMinutes}m logged
+                        </span>
+                      </div>
+                      <p className="text-slate-700 dark:text-slate-300 leading-relaxed">
+                        {h.handoffNote}
+                      </p>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 space-y-1">
+                        <div>
+                          <span className="font-medium text-slate-700 dark:text-slate-200">
+                            Confirmed steps ({h.confirmedSteps.length}):
+                          </span>{' '}
+                          {h.confirmedSteps.length > 0 ? h.confirmedSteps.join(', ') : 'None yet'}
+                        </div>
+                        <div>
+                          <span className="font-medium text-slate-700 dark:text-slate-200">
+                            Pending pickup ({h.pendingSteps.length}):
+                          </span>{' '}
+                          {h.pendingSteps.length > 0 ? h.pendingSteps.join(', ') : 'All confirmed'}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
 
           {activeRole === 'executive' && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

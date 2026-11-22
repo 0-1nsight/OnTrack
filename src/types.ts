@@ -1,6 +1,46 @@
 export type TaskStatus = 'in_progress' | 'todo' | 'blocked' | 'completed';
 export type TaskPriority = 'urgent' | 'high' | 'medium' | 'low';
 export type WorkCategory = 'deep_work' | 'collaborative' | 'billable' | 'admin';
+export type BoardSectionColor = 'slate' | 'indigo' | 'emerald' | 'amber' | 'rose' | 'sky';
+
+export interface BoardSection {
+  id: string;
+  name: string;
+  description: string;
+  color: BoardSectionColor;
+  mappedStatus: TaskStatus;
+}
+
+export interface WorkspaceBoard {
+  id: string;
+  spaceId: string;
+  folderId: string | null;
+  name: string;
+  description: string;
+  projectTag: string;
+  sections: BoardSection[];
+  createdAt: string;
+}
+
+export interface WorkspaceFolder {
+  id: string;
+  spaceId: string;
+  name: string;
+  collapsed?: boolean;
+}
+
+export interface WorkspaceSpace {
+  id: string;
+  name: string;
+  color: BoardSectionColor;
+  collapsed?: boolean;
+}
+
+export interface WorkspaceHierarchy {
+  spaces: WorkspaceSpace[];
+  folders: WorkspaceFolder[];
+  boards: WorkspaceBoard[];
+}
 
 export interface Subtask {
   id: string;
@@ -13,6 +53,8 @@ export interface Task {
   title: string;
   description: string;
   project: string;
+  boardId?: string;
+  sectionId?: string;
   status: TaskStatus;
   priority: TaskPriority;
   category: WorkCategory;

@@ -86,6 +86,7 @@ export class EngineSQLStore {
   public readonly db: PortableSqlAdapter;
   private readyPromise: Promise<void>;
   private broadcastLatencySamplesMs: number[] = [];
+  private delayedAlertCooldownMs = new Map<string, number>();
 
   constructor(options?: {
     dbPath?: string;
@@ -392,6 +393,7 @@ export class EngineSQLStore {
       heartbeatIntervalSeconds: 12,
       delayedThresholdSeconds: 120,
       retentionDays: 60,
+      focusFactor: 0.85,
       monitoringPolicy: 'mandatory',
       serverUrl: appConfig.appUrl,
     };
@@ -1054,8 +1056,13 @@ export class EngineSQLStore {
       throw new HttpError(404, 'TENANT_NOT_FOUND', `Unknown tenant: ${tenantId}`);
     }
     const parsed = JSON.parse(row.config_json) as TenantConfig;
+    const focusFactor =
+      typeof parsed.focusFactor === 'number' && parsed.focusFactor >= 0.5 && parsed.focusFactor <= 1
+        ? Number(parsed.focusFactor.toFixed(2))
+        : 0.85;
     return {
       ...parsed,
+      focusFactor,
       aiReportsEnabled: Boolean(row.ai_reports_enabled),
     };
   }
@@ -1069,6 +1076,12 @@ export class EngineSQLStore {
       partial.aiReportsEnabled !== undefined
         ? Boolean(partial.aiReportsEnabled)
         : curr.aiReportsEnabled;
+
+    const rawFocus =
+      partial.focusFactor !== undefined ? Number(partial.focusFactor) : curr.focusFactor ?? 0.85;
+    const focusFactor = Number.isFinite(rawFocus)
+      ? Math.min(1, Math.max(0.5, Number(rawFocus.toFixed(2))))
+      : 0.85;
 
     const next: TenantConfig = {
       id: curr.id,
@@ -1084,6 +1097,7 @@ export class EngineSQLStore {
       heartbeatIntervalSeconds: partial.heartbeatIntervalSeconds ?? curr.heartbeatIntervalSeconds,
       delayedThresholdSeconds: partial.delayedThresholdSeconds ?? curr.delayedThresholdSeconds,
       retentionDays: partial.retentionDays ?? curr.retentionDays,
+      focusFactor,
       monitoringPolicy: partial.monitoringPolicy ?? curr.monitoringPolicy,
       serverUrl: partial.serverUrl ?? curr.serverUrl,
     };
@@ -2208,12 +2222,14 @@ export class EngineSQLStore {
 
   public async getDeviceFreshness(
     tenantId: string,
-    referenceNowMs = Date.now()
+    referenceNowMs?: number
   ): Promise<{
     devices: DeviceFreshnessRecord[];
     summary: FleetFreshnessSummary;
   }> {
     await this.ready();
+    const isSyntheticRef = referenceNowMs !== undefined;
+    const effectiveNowMs = referenceNowMs ?? Date.now();
     const config = await this.getTenantConfig(tenantId);
     const { rows, users, lateNoticeRow } = await this.db.withTenantTransaction(
       { tenantId },
@@ -2235,17 +2251,17 @@ export class EngineSQLStore {
     );
 
     const userMap = new Map(users.map((u) => [u.user_id, u]));
-    const utcDay = new Date(referenceNowMs).getUTCDay();
+    const utcDay = new Date(effectiveNowMs).getUTCDay();
 
     const devices: DeviceFreshnessRecord[] = rows.map((r) => {
       const u = userMap.get(r.user_id);
       const lastMs = Date.parse(r.last_heartbeat_utc);
-      const silentSec = Math.max(0, Math.round((referenceNowMs - lastMs) / 1000));
+      const silentSec = Math.max(0, Math.round((effectiveNowMs - lastMs) / 1000));
 
       const onLeave = Boolean(u?.on_leave);
       const inScheduledShift = u
         ? isWithinScheduledShiftUtc(
-            referenceNowMs,
+            effectiveNowMs,
             u.shift_pattern || r.shift_pattern,
             Number(u.shift_start_hour_utc),
             Number(u.shift_end_hour_utc)
@@ -2278,6 +2294,28 @@ export class EngineSQLStore {
       };
     });
 
+    // FRESH-1: Dispatch IT/Admin alert for shift devices silent past threshold (never routed to managers)
+    if (!isSyntheticRef) {
+      const nowMs = Date.now();
+      for (const dev of devices) {
+        if (dev.status === 'delayed') {
+          const coolKey = `${tenantId}:${dev.deviceId}`;
+          const lastAlert = this.delayedAlertCooldownMs.get(coolKey) || 0;
+          if (nowMs - lastAlert > 10 * 60 * 1000) {
+            this.delayedAlertCooldownMs.set(coolKey, nowMs);
+            await this.recordAuditLog({
+              tenantId,
+              actorUserId: 'system_freshness_monitor',
+              actorRole: 'admin_it',
+              targetUserId: dev.userId,
+              action: 'device.delayed_alert',
+              details: `IT Alert: Device ${dev.deviceId} (${dev.userName}, ${dev.shiftPattern} shift) silent for ${dev.delayedSeconds}s (> ${config.delayedThresholdSeconds}s threshold). Routed to Admin/IT only.`,
+            }).catch(() => undefined);
+          }
+        }
+      }
+    }
+
     const activeShiftDevices = devices.filter((d) => d.status !== 'off_shift');
     const liveCount = activeShiftDevices.filter((d) => d.status === 'live').length;
     const delayedCount = activeShiftDevices.filter((d) => d.status === 'delayed').length;
@@ -2287,7 +2325,7 @@ export class EngineSQLStore {
     return {
       devices,
       summary: {
-        dataAsOfUtc: new Date(referenceNowMs).toISOString(),
+        dataAsOfUtc: new Date(effectiveNowMs).toISOString(),
         totalActiveShiftStaff: activeShiftDevices.length,
         reportingLiveCount: liveCount,
         delayedCount,

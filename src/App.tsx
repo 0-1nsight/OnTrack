@@ -27,6 +27,7 @@ import {
   UserProfile,
   WeeklyReport,
   WorkCategory,
+  WorkspaceHierarchy,
   WorkspacePreferences,
 } from './types';
 import { AttributionRecord, UserRole, WorkSession } from './engine/types';
@@ -37,6 +38,7 @@ import {
   inferAppCategory,
 } from './data/seedData';
 import { getRolePolicy } from './utils/roleConfig';
+import { createDefaultWorkspaceHierarchy } from './utils/taskHierarchy';
 import { TopBar } from './components/TopBar';
 import { ActiveTimerBar } from './components/ActiveTimerBar';
 import { TimelineView } from './components/TimelineView';
@@ -60,6 +62,7 @@ const STORAGE_KEYS = {
   DOC_SEGMENTS: 'ontrack_doc_segments_v1',
   REPORTS: 'ontrack_reports_v1',
   PREFS: 'ontrack_prefs_v1',
+  HIERARCHY: 'ontrack_workspace_hierarchy_v1',
 };
 
 function readStorageJson<T>(primaryKey: string): T | null {
@@ -112,6 +115,20 @@ export default function App() {
   const [preferences, setPreferences] = useState<WorkspacePreferences>(() => {
     const saved = readStorageJson<Partial<WorkspacePreferences>>(STORAGE_KEYS.PREFS);
     return saved ? { ...DEFAULT_PREFERENCES, ...saved } : DEFAULT_PREFERENCES;
+  });
+
+  const [workspaceHierarchy, setWorkspaceHierarchy] = useState<WorkspaceHierarchy>(() => {
+    const saved = readStorageJson<WorkspaceHierarchy>(STORAGE_KEYS.HIERARCHY);
+    if (
+      saved &&
+      Array.isArray(saved.spaces) &&
+      Array.isArray(saved.folders) &&
+      Array.isArray(saved.boards) &&
+      saved.boards.length > 0
+    ) {
+      return saved;
+    }
+    return createDefaultWorkspaceHierarchy();
   });
 
   // Persist to localStorage
@@ -180,6 +197,17 @@ export default function App() {
     }
     document.documentElement.classList.toggle('dark', preferences.darkMode);
   }, [preferences]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        STORAGE_KEYS.HIERARCHY,
+        JSON.stringify(workspaceHierarchy)
+      );
+    } catch {
+      // ignore
+    }
+  }, [workspaceHierarchy]);
 
   // Live Active Task Stopwatch State
   const [timer, setTimer] = useState<ActiveTimerState>({
@@ -1030,6 +1058,7 @@ export default function App() {
       documentSegments,
       reports,
       preferences,
+      workspaceHierarchy,
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
       type: 'application/json',
@@ -1066,6 +1095,14 @@ export default function App() {
         setAppSegments(nextApp);
         setDocumentSegments(nextDoc);
         setReports(nextReports);
+        if (
+          parsed.workspaceHierarchy &&
+          Array.isArray(parsed.workspaceHierarchy.spaces) &&
+          Array.isArray(parsed.workspaceHierarchy.folders) &&
+          Array.isArray(parsed.workspaceHierarchy.boards)
+        ) {
+          setWorkspaceHierarchy(parsed.workspaceHierarchy);
+        }
 
         showToast('Workspace state restored from JSON backup.');
         return true;
@@ -1084,6 +1121,7 @@ export default function App() {
     setAppSegments(seed.appSegments);
     setDocumentSegments(seed.documentSegments);
     setReports(seed.reports);
+    setWorkspaceHierarchy(createDefaultWorkspaceHierarchy());
     showToast('Workspace reset to default 7-day sample data.');
   };
 
@@ -1299,9 +1337,12 @@ export default function App() {
             <TaskWorkspaceView
               tasks={tasks}
               timeBlocks={timeBlocks}
+              hierarchy={workspaceHierarchy}
               selectedDate={selectedDate}
               activeTimerTaskId={timer.taskId}
               isTimerRunning={timer.isRunning && !timer.isPaused}
+              onUpdateHierarchy={setWorkspaceHierarchy}
+              onNotify={showToast}
               onStartTimerForTask={(taskId) => handleStartTimer(taskId)}
               onPauseTimer={handlePauseTimer}
               onCreateTask={handleCreateTask}

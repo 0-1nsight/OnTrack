@@ -31,6 +31,24 @@ export interface StaffCapacityRow {
   deviceStatus: 'live' | 'delayed' | 'offline' | 'off_shift' | 'unpaired';
 }
 
+export interface ShiftHeatmapCell {
+  dayLabel: string;
+  dayIndex: number;
+  assignedHours: number;
+  availableHoursNetLeave: number;
+  utilizationPercent: number;
+}
+
+export interface ShiftHeatmapRow {
+  shiftPattern: ShiftPattern;
+  shiftLabel: string;
+  staffCount: number;
+  onLeaveCount: number;
+  weeklyAvailableHoursNetLeave: number;
+  weeklyAssignedHours: number;
+  days: ShiftHeatmapCell[];
+}
+
 export interface DeadlineRiskItem {
   taskId: string;
   title: string;
@@ -42,9 +60,13 @@ export interface DeadlineRiskItem {
   dueDateUtc: string;
   status: string;
   estimatedHours: number;
+  confirmedHours: number;
+  detectedHours: number;
   trackedHours: number;
   remainingHours: number;
   hoursUntilDue: number;
+  availableHoursBeforeDue: number;
+  focusFactor: number;
   riskLevel: 'high' | 'medium' | 'low';
 }
 
@@ -64,19 +86,39 @@ export interface RecurringForecastBucket {
   weekLabel: string;
   projectedRecurringHours: number;
   teamAvailableHours: number;
+  leaveDeductedHours: number;
   capacityDeltaHours: number;
   status: 'balanced' | 'tight' | 'overallocated';
+}
+
+export interface EnrichedShiftHandoff {
+  taskId: string;
+  taskTitle: string;
+  clientName: string;
+  period: string;
+  lastUpdatedUtc: string;
+  totalMinutes: number;
+  lastDocuments: string[];
+  confirmedSteps: string[];
+  pendingSteps: string[];
+  handoffNote: string;
+  assignedUserId: string;
+  assignedUserName: string;
+  shiftPattern: ShiftPattern;
 }
 
 export interface RoleOverviewData {
   role: UserRole;
   viewerUserId: string;
   tenantName: string;
+  focusFactor: number;
   freshnessSummary: FleetFreshnessSummary;
   staffCapacity: StaffCapacityRow[];
+  shiftHeatmap: ShiftHeatmapRow[];
   deadlineRisks: DeadlineRiskItem[];
   clientProfitability: ClientProfitabilityRow[];
   recurringForecast: RecurringForecastBucket[];
+  handoffs: EnrichedShiftHandoff[];
   devices: DeviceFreshnessRecord[];
   auditLogs: AuditLogEntry[];
   adminAlerts: {
@@ -84,7 +126,16 @@ export interface RoleOverviewData {
     offlineDevicesCount: number;
     aiReportsEnabled: boolean;
     retentionDays: number;
+    delayedThresholdSeconds: number;
+    focusFactor: number;
     monitoringPolicy: 'mandatory' | 'opt_in';
+    itDelayedDevices: {
+      deviceId: string;
+      userName: string;
+      shiftPattern: ShiftPattern;
+      delayedSeconds: number;
+      status: 'delayed' | 'offline';
+    }[];
   } | null;
 }
 
