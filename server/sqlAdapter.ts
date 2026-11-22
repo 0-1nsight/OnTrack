@@ -67,6 +67,10 @@ export class PortableSqlAdapter implements SqlExecutor {
         fs.mkdirSync(path.dirname(resolved), { recursive: true });
       }
       this.sqliteDb = new DatabaseSync(resolved);
+      if (resolved !== ':memory:') {
+        this.sqliteDb.exec('PRAGMA journal_mode = WAL;');
+      }
+      this.sqliteDb.exec('PRAGMA foreign_keys = ON;');
     }
   }
 

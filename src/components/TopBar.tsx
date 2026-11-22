@@ -1,13 +1,13 @@
 import React from 'react';
-import { User } from 'firebase/auth';
 import { UserCircle2 } from 'lucide-react';
+import { AuthUser } from '../services/authClient';
 import { NavigationTab, UserProfile } from '../types';
 
 interface TopBarProps {
   activeTab: NavigationTab;
   onSelectTab: (tab: NavigationTab) => void;
   onOpenQuickLog: () => void;
-  user: User | null;
+  user: AuthUser | null;
   userProfile: UserProfile | null;
   onOpenAccount: () => void;
 }
@@ -30,7 +30,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   const shortName = (
     userProfile?.displayName ||
-    user?.displayName ||
+    user?.name ||
     user?.email?.split('@')[0] ||
     'Account'
   ).split(' ')[0];
@@ -76,18 +76,9 @@ export const TopBar: React.FC<TopBarProps> = ({
           type="button"
           onClick={onOpenAccount}
           className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          title={user ? `Signed in as ${user.email}` : 'Sign in for Cloud Sync'}
+          title={user ? `Signed in as ${user.email}` : 'Sign in to OnTrack'}
         >
-          {user?.photoURL ? (
-            <img
-              src={user.photoURL}
-              alt={shortName}
-              referrerPolicy="no-referrer"
-              className="w-4 h-4 rounded-full object-cover"
-            />
-          ) : (
-            <UserCircle2 className="w-4 h-4 text-slate-500 dark:text-slate-400" />
-          )}
+          <UserCircle2 className="w-4 h-4 text-slate-500 dark:text-slate-400" />
           <span>{user ? shortName : 'Sign In'}</span>
         </button>
 

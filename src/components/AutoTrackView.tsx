@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { User } from 'firebase/auth';
+import { AuthUser } from '../services/authClient';
 import {
   Activity,
   AlertTriangle,
@@ -52,7 +52,6 @@ import {
   fetchEngineSnapshot,
   filterAndEnqueueEvent,
   flushQueuedEventsOverHttp,
-  getFirebaseIdToken,
   getOrCreateLocalDeviceId,
   getPackageDownloadUrl,
   importClientsRawApi,
@@ -80,7 +79,7 @@ import {
 
 interface AutoTrackViewProps {
   selectedDate: string;
-  firebaseUser: User | null;
+  currentUser: AuthUser | null;
   autoSyncToTimeline: boolean;
   onToggleAutoSyncToTimeline: (enabled: boolean) => void;
   onSyncEngineSessionsToTimeline?: (
@@ -95,6 +94,7 @@ interface AutoTrackViewProps {
     notes: string;
   }) => void;
   onNotify: (message: string) => void;
+  onOpenAccount?: () => void;
 }
 
 type SubTab = 'review' | 'capture' | 'dictionaries' | 'packages';
@@ -142,27 +142,29 @@ function formatDurationSeconds(sec: number): string {
 }
 
 export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
-  firebaseUser,
+  currentUser,
   autoSyncToTimeline,
   onToggleAutoSyncToTimeline,
   onSyncEngineSessionsToTimeline,
   onPushConfirmedToTimeline,
   onNotify,
+  onOpenAccount,
 }) => {
-  const isAuthenticated = Boolean(firebaseUser && firebaseUser.emailVerified);
-  const [tenantMode, setTenantMode] = useState<'firm_demo' | 'firm_apex'>(
-    isAuthenticated ? 'firm_apex' : 'firm_demo'
+  const isAuthenticated = Boolean(currentUser);
+  const [tenantMode, setTenantMode] = useState<'firm_demo' | 'live'>(
+    isAuthenticated ? 'live' : 'firm_demo'
   );
 
   useEffect(() => {
     if (isAuthenticated) {
-      setTenantMode('firm_apex');
+      setTenantMode('live');
     } else {
       setTenantMode('firm_demo');
     }
   }, [isAuthenticated]);
 
-  const tenantId = tenantMode;
+  const tenantId =
+    tenantMode === 'live' && currentUser ? currentUser.tenantId : 'firm_demo';
 
   const [subTab, setSubTab] = useState<SubTab>('review');
   const [snapshot, setSnapshot] = useState<EngineSnapshot | null>(null);
@@ -194,7 +196,7 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
   }, [tenantId, snapshot?.visibility.viewerUserId]);
 
   const viewerUserId = useMemo(() => {
-    if (tenantId === 'firm_apex' && snapshot?.authMode === 'firebase') {
+    if (tenantMode === 'live' && snapshot?.authMode === 'session') {
       return snapshot.visibility.viewerUserId;
     }
     if (viewerRole === 'team_lead' || viewerRole === 'line_manager' || viewerRole === 'executive') {
@@ -203,7 +205,7 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
     if (viewerRole === 'admin_it') return 'demo_u_admin_01';
     if (viewerRole === 'client') return 'demo_u_client_ext';
     return 'demo_u_acc_01';
-  }, [tenantId, viewerRole, snapshot?.authMode, snapshot?.visibility.viewerUserId]);
+  }, [tenantMode, viewerRole, snapshot?.authMode, snapshot?.visibility.viewerUserId]);
 
   const deviceId = useMemo(() => getOrCreateLocalDeviceId(), []);
   const wsRef = useRef<WebSocket | null>(null);
@@ -245,7 +247,9 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
   const [newTaskTitle, setNewTaskTitle] = useState<string>('');
   const [newTaskClientId, setNewTaskClientId] = useState<string>('');
   const [newTaskPeriod, setNewTaskPeriod] = useState<string>('Oct 2026');
-  const [vaultPurpose, setVaultPurpose] = useState<'client_document' | 'client_csv' | 'firm_branding'>('client_document');
+  const [vaultPurpose, setVaultPurpose] = useState<
+    'portal_document' | 'dictionary_import' | 'branding_asset' | 'policy_doc'
+  >('portal_document');
 
   // Replay & Acceptance States
   const [replayResult, setReplayResult] = useState<ReplayMetricsResult | null>(null);
@@ -382,7 +386,6 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
     let ws: WebSocket | null = null;
 
     const connect = async () => {
-      const token = await getFirebaseIdToken();
       if (cancelled) return;
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const qs = new URLSearchParams({
@@ -390,7 +393,6 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
         userId: viewerUserId,
         role: viewerRole,
       });
-      if (token) qs.set('token', token);
 
       ws = new WebSocket(`${proto}//${window.location.host}/ws/engine?${qs.toString()}`);
       wsRef.current = ws;
@@ -812,14 +814,14 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
   }, [snapshot, clientSearch]);
 
   const staffOptions = useMemo(() => {
-    if (tenantId === 'firm_apex' && snapshot?.staffUsers?.length) {
+    if (tenantMode === 'live' && snapshot?.staffUsers?.length) {
       return snapshot.staffUsers.map((u) => ({
         id: u.userId,
         label: `${u.name} · ${u.role}`,
       }));
     }
     return DEMO_STAFF_OPTIONS;
-  }, [tenantId, snapshot?.staffUsers]);
+  }, [tenantMode, snapshot]);
 
   const selectedMergeCount = useMemo(
     () => taskChecklistItems.filter((it) => selectedForMerge[it.id]).length,
@@ -830,6 +832,42 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
     return (
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-8 text-sm text-slate-500 dark:text-slate-400">
         Initializing Automated Tracking &amp; Attribution Engine...
+      </div>
+    );
+  }
+
+  if (loadError && !snapshot) {
+    return (
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-8 space-y-4">
+        <div className="flex items-start gap-3">
+          <Lock className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
+              Authentication Required for Engine Access
+            </h2>
+            <p className="text-xs text-slate-600 dark:text-slate-400">
+              {loadError}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          {onOpenAccount && (
+            <button
+              type="button"
+              onClick={onOpenAccount}
+              className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg cursor-pointer"
+            >
+              Sign In or Setup Firm
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void loadSnapshot(false)}
+            className="px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+          >
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
@@ -847,7 +885,7 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
                 Automated Tracking &amp; Attribution Engine
               </h1>
               <span className="font-mono text-xs px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 tabular-nums">
-                {snapshot?.config.name || (tenantId === 'firm_apex' ? 'Live Firm' : 'Demo Sandbox')}
+                {snapshot?.config.name || (tenantMode === 'live' ? currentUser?.tenantName || 'Live Firm' : 'Demo Sandbox')}
               </span>
               <span className="inline-flex items-center gap-1 font-mono text-[11px] px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300">
                 <Database className="w-3 h-3" />
@@ -855,8 +893,8 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
               </span>
             </div>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              {tenantId === 'firm_apex'
-                ? `Live Authenticated Firm (${firebaseUser?.email || 'Verified'}) · Server-enforced RBAC`
+              {tenantMode === 'live'
+                ? `Live Authenticated Firm (${currentUser?.email || 'Verified'}) · Server-enforced RBAC`
                 : 'Isolated Demo Sandbox (firm_demo) · Role switcher enabled for preview'}
               {' · '}
               <span className="font-mono tabular-nums text-slate-700 dark:text-slate-300">
@@ -889,9 +927,9 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
               <div className="inline-flex rounded border border-slate-200 dark:border-slate-700 overflow-hidden text-xs">
                 <button
                   type="button"
-                  onClick={() => setTenantMode('firm_apex')}
+                  onClick={() => setTenantMode('live')}
                   className={`px-2.5 py-1.5 font-medium cursor-pointer ${
-                    tenantMode === 'firm_apex'
+                    tenantMode === 'live'
                       ? 'bg-indigo-600 text-white'
                       : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300'
                   }`}
@@ -2365,14 +2403,19 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
                     value={vaultPurpose}
                     onChange={(e) =>
                       setVaultPurpose(
-                        e.target.value as 'client_document' | 'client_csv' | 'firm_branding'
+                        e.target.value as
+                          | 'portal_document'
+                          | 'dictionary_import'
+                          | 'branding_asset'
+                          | 'policy_doc'
                       )
                     }
                     className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
                   >
-                    <option value="client_document">Client Doc</option>
-                    <option value="client_csv">CSV Import</option>
-                    <option value="firm_branding">Firm Branding</option>
+                    <option value="portal_document">Client Doc</option>
+                    <option value="dictionary_import">CSV Import</option>
+                    <option value="branding_asset">Firm Branding</option>
+                    <option value="policy_doc">Policy Doc</option>
                   </select>
                   <label className="inline-flex items-center gap-1 px-2.5 py-1 font-medium bg-indigo-600 text-white rounded hover:bg-indigo-500 cursor-pointer">
                     <FolderUp className="w-3.5 h-3.5" />

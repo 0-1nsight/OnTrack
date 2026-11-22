@@ -1,4 +1,3 @@
-import { auth } from '../firebase';
 import { sanitizeAndFilterEvent } from '../engine/privacyFilter';
 import {
   ActivityDictionaryEntry,
@@ -30,7 +29,7 @@ import {
 } from '../engine/types';
 
 export interface EngineSnapshot {
-  authMode: 'firebase' | 'device' | 'demo';
+  authMode: 'session' | 'device' | 'demo';
   dialect: 'sqlite' | 'postgres';
   config: TenantConfig;
   visibility: {
@@ -99,22 +98,8 @@ const QUEUE_KEY = 'chronoflow_engine_queue_v1';
 const SEQ_KEY = 'chronoflow_engine_seq_v1';
 const DEVICE_KEY = 'chronoflow_engine_device_v1';
 
-export async function getFirebaseIdToken(): Promise<string | null> {
-  try {
-    if (!auth.currentUser) return null;
-    return await auth.currentUser.getIdToken();
-  } catch {
-    return null;
-  }
-}
-
-async function buildAuthHeaders(extra: Record<string, string> = {}): Promise<Record<string, string>> {
-  const token = await getFirebaseIdToken();
-  const headers: Record<string, string> = { ...extra };
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-  return headers;
+function buildAuthHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return { ...extra };
 }
 
 export function getOrCreateLocalDeviceId(): string {
@@ -245,7 +230,8 @@ export async function fetchEngineSnapshot(params: {
     drilldown: params.drilldownGranted ? 'true' : 'false',
   });
   const res = await fetch(`/api/engine/snapshot?${qs.toString()}`, {
-    headers: await buildAuthHeaders(),
+    credentials: 'include',
+    headers: buildAuthHeaders(),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -269,7 +255,8 @@ export async function pollEngineSnapshot(params: {
     drilldown: params.drilldownGranted ? 'true' : 'false',
   });
   const res = await fetch(`/api/engine/poll?${qs.toString()}`, {
-    headers: await buildAuthHeaders(),
+    credentials: 'include',
+    headers: buildAuthHeaders(),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -309,7 +296,8 @@ export async function flushQueuedEventsOverHttp(params: {
 
   const res = await fetch('/api/engine/sync', {
     method: 'POST',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       tenantId: params.tenantId,
       userId: params.userId,
@@ -338,7 +326,8 @@ export async function saveManualClientApi(payload: {
 }): Promise<ClientDictionaryEntry> {
   const res = await fetch('/api/engine/clients', {
     method: 'POST',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ ...payload, source: 'manual' }),
   });
   if (!res.ok) throw new Error('Failed to save client');
@@ -353,7 +342,8 @@ export async function importClientsRawApi(payload: {
 }): Promise<{ importedCount: number; clients: ClientDictionaryEntry[] }> {
   const res = await fetch('/api/engine/clients/import', {
     method: 'POST',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error('Import failed');
@@ -363,7 +353,7 @@ export async function importClientsRawApi(payload: {
 export async function deleteClientApi(tenantId: string, clientId: string) {
   const res = await fetch(
     `/api/engine/clients/${encodeURIComponent(clientId)}?tenantId=${encodeURIComponent(tenantId)}`,
-    { method: 'DELETE', headers: await buildAuthHeaders() }
+    { method: 'DELETE', credentials: 'include', headers: buildAuthHeaders() }
   );
   if (!res.ok) throw new Error('Delete failed');
 }
@@ -377,7 +367,8 @@ export async function addActivityRuleApi(payload: {
 }) {
   const res = await fetch('/api/engine/activity-rules', {
     method: 'POST',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error('Failed to add activity rule');
@@ -387,7 +378,7 @@ export async function addActivityRuleApi(payload: {
 export async function deleteActivityRuleApi(tenantId: string, id: string) {
   await fetch(
     `/api/engine/activity-rules/${encodeURIComponent(id)}?tenantId=${encodeURIComponent(tenantId)}`,
-    { method: 'DELETE', headers: await buildAuthHeaders() }
+    { method: 'DELETE', credentials: 'include', headers: buildAuthHeaders() }
   );
 }
 
@@ -399,7 +390,8 @@ export async function addPrivacyRuleApi(payload: {
 }) {
   const res = await fetch('/api/engine/privacy-rules', {
     method: 'POST',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error('Failed to add privacy rule');
@@ -413,7 +405,8 @@ export async function togglePrivacyRuleApi(
 ) {
   await fetch(`/api/engine/privacy-rules/${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ tenantId, enabled }),
   });
 }
@@ -421,7 +414,7 @@ export async function togglePrivacyRuleApi(
 export async function deletePrivacyRuleApi(tenantId: string, id: string) {
   await fetch(
     `/api/engine/privacy-rules/${encodeURIComponent(id)}?tenantId=${encodeURIComponent(tenantId)}`,
-    { method: 'DELETE', headers: await buildAuthHeaders() }
+    { method: 'DELETE', credentials: 'include', headers: buildAuthHeaders() }
   );
 }
 
@@ -431,7 +424,8 @@ export async function updateEngineConfigApi(
 ) {
   const res = await fetch('/api/engine/config', {
     method: 'PATCH',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ tenantId, ...partial }),
   });
   if (!res.ok) throw new Error('Failed to update config');
@@ -450,7 +444,8 @@ export async function createEngineTaskApi(payload: {
 }) {
   const res = await fetch('/api/engine/tasks', {
     method: 'POST',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error('Failed to create task');
@@ -471,7 +466,8 @@ export async function resolveAttributionApi(payload: {
     `/api/engine/attributions/${encodeURIComponent(payload.sessionId)}/resolve`,
     {
       method: 'POST',
-      headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+      headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
     }
   );
@@ -485,7 +481,8 @@ export async function saveChecklistItemApi(
 ) {
   const res = await fetch('/api/engine/checklists', {
     method: 'POST',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ tenantId, item }),
   });
   if (!res.ok) throw new Error('Failed to save checklist item');
@@ -500,7 +497,8 @@ export async function mergeChecklistItemsApi(payload: {
 }) {
   const res = await fetch('/api/engine/checklists/merge', {
     method: 'POST',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error('Failed to merge checklist items');
@@ -513,7 +511,8 @@ export async function reorderChecklistItemsApi(
 ) {
   const res = await fetch('/api/engine/checklists/reorder', {
     method: 'POST',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ tenantId, items }),
   });
   if (!res.ok) throw new Error('Failed to reorder checklist items');
@@ -523,7 +522,7 @@ export async function reorderChecklistItemsApi(
 export async function deleteChecklistItemApi(tenantId: string, id: string) {
   await fetch(
     `/api/engine/checklists/${encodeURIComponent(id)}?tenantId=${encodeURIComponent(tenantId)}`,
-    { method: 'DELETE', headers: await buildAuthHeaders() }
+    { method: 'DELETE', credentials: 'include', headers: buildAuthHeaders() }
   );
 }
 
@@ -536,7 +535,8 @@ export async function resolveConflictApi(
     `/api/engine/conflicts/${encodeURIComponent(conflictId)}/resolve`,
     {
       method: 'POST',
-      headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+      headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ tenantId, resolution }),
     }
   );
@@ -547,7 +547,8 @@ export async function resolveConflictApi(
 export async function importStaffCsvApi(tenantId: string, rawText: string) {
   const res = await fetch('/api/engine/staff/import', {
     method: 'POST',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ tenantId, rawText }),
   });
   if (!res.ok) throw new Error('Failed to import staff CSV');
@@ -563,7 +564,8 @@ export async function updateStaffRoleApi(
 ) {
   const res = await fetch(`/api/engine/staff/${encodeURIComponent(userId)}/role`, {
     method: 'PATCH',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ tenantId, role, shiftPattern, onLeave }),
   });
   if (!res.ok) throw new Error('Failed to update staff role');
@@ -578,7 +580,8 @@ export async function pairDeviceTokenApi(payload: {
 }): Promise<{ record: DeviceTokenRecord; rawToken: string }> {
   const res = await fetch('/api/engine/devices/pair', {
     method: 'POST',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error('Failed to pair device');
@@ -588,7 +591,7 @@ export async function pairDeviceTokenApi(payload: {
 export async function revokeDeviceTokenApi(tenantId: string, tokenId: string) {
   const res = await fetch(
     `/api/engine/devices/${encodeURIComponent(tokenId)}?tenantId=${encodeURIComponent(tenantId)}`,
-    { method: 'DELETE', headers: await buildAuthHeaders() }
+    { method: 'DELETE', credentials: 'include', headers: buildAuthHeaders() }
   );
   if (!res.ok) throw new Error('Failed to revoke device token');
 }
@@ -598,7 +601,8 @@ export async function purgeRetentionApi(
 ): Promise<{ purgedCount: number; cutoffUtc: string }> {
   const res = await fetch('/api/engine/retention/purge', {
     method: 'POST',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ tenantId }),
   });
   if (!res.ok) throw new Error('Retention purge failed');
@@ -617,13 +621,14 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 export async function uploadPortableFileApi(payload: {
   tenantId: string;
   file: File;
-  purpose: 'client_csv' | 'client_document' | 'firm_branding';
+  purpose: 'dictionary_import' | 'branding_asset' | 'portal_document' | 'policy_doc';
 }): Promise<{ file: StoredFileRecord }> {
   const buf = await payload.file.arrayBuffer();
   const contentBase64 = arrayBufferToBase64(buf);
   const res = await fetch('/api/engine/files', {
     method: 'POST',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       tenantId: payload.tenantId,
       originalName: payload.file.name,
@@ -646,7 +651,7 @@ export async function downloadPortableFileWithAuth(
 ) {
   const res = await fetch(
     `/api/engine/files/${encodeURIComponent(fileId)}/download?tenantId=${encodeURIComponent(tenantId)}`,
-    { headers: await buildAuthHeaders() }
+    { credentials: 'include', headers: buildAuthHeaders() }
   );
   if (!res.ok) throw new Error('Download failed');
   const blob = await res.blob();
@@ -664,7 +669,8 @@ export async function runReplayApi(
 ): Promise<ReplayMetricsResult> {
   const res = await fetch('/api/engine/replay', {
     method: 'POST',
-    headers: await buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ tenantId, userId }),
   });
   if (!res.ok) throw new Error('Replay failed');
@@ -676,7 +682,7 @@ export async function runAcceptanceApi(
 ): Promise<AcceptanceReport> {
   const res = await fetch(
     `/api/engine/acceptance?tenantId=${encodeURIComponent(tenantId)}`,
-    { headers: await buildAuthHeaders() }
+    { credentials: 'include', headers: buildAuthHeaders() }
   );
   if (!res.ok) throw new Error('Acceptance suite failed');
   return res.json();

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
+  Building2,
   Database,
   LogIn,
   MonitorSmartphone,
@@ -14,29 +15,70 @@ import heroWorkspaceImg from '../assets/images/hero_ontrack_workspace_1795323315
 interface LandingPageProps {
   authReady: boolean;
   authError: string | null;
+  needsInitialSetup: boolean;
   darkMode: boolean;
   onToggleTheme: () => void;
-  onSignInWithGoogle: () => Promise<void>;
+  onLogin: (payload: {
+    email: string;
+    password: string;
+    totpCode?: string;
+    isClientPortal?: boolean;
+  }) => Promise<void>;
+  onBootstrapFirm: (payload: {
+    firmName: string;
+    name: string;
+    email: string;
+    password: string;
+  }) => Promise<void>;
   onContinueLocal: () => void;
 }
 
 export const LandingPage: React.FC<LandingPageProps> = ({
   authReady,
   authError,
+  needsInitialSetup,
   darkMode,
   onToggleTheme,
-  onSignInWithGoogle,
+  onLogin,
+  onBootstrapFirm,
   onContinueLocal,
 }) => {
-  const [isSigningIn, setIsSigningIn] = useState(false);
+  const [modeOverride, setModeOverride] = useState<'login' | 'setup' | null>(
+    null
+  );
+  const mode: 'login' | 'setup' =
+    modeOverride ?? (needsInitialSetup ? 'setup' : 'login');
+  const setMode = (next: 'login' | 'setup') => setModeOverride(next);
+  const [firmName, setFirmName] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [totpCode, setTotpCode] = useState('');
+  const [isClientPortal, setIsClientPortal] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
 
-  const handleGoogleSignIn = async () => {
-    setIsSigningIn(true);
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSubmitting(true);
     try {
-      await onSignInWithGoogle();
+      if (mode === 'setup') {
+        await onBootstrapFirm({
+          firmName: firmName.trim(),
+          name: fullName.trim(),
+          email: email.trim(),
+          password,
+        });
+      } else {
+        await onLogin({
+          email: email.trim(),
+          password,
+          totpCode: totpCode.trim() || undefined,
+          isClientPortal,
+        });
+      }
     } finally {
-      setIsSigningIn(false);
+      setIsSubmitting(false);
     }
   };
 
@@ -70,7 +112,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       title: 'Weekly Stakeholder Reports',
       span: 'lg:col-span-2',
       summary:
-        'Compiles logged hours, deep-work ratio, billable allocation, and application usage into formatted weekly progress reviews tailored for executives, engineering standups, or client billing.',
+        'Compiles logged hours, deep-work ratio, billable allocation, and application usage into formatted weekly progress reviews tailored for executives, accounting leads, or client billing.',
       detail: 'Export to clean Markdown or print-ready PDF in one click.',
     },
   ];
@@ -78,8 +120,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   const workflowSteps = [
     {
       step: '01.',
-      title: 'Sign in with Google or start locally',
-      body: 'Authenticate with your Google account to sync tasks, timelines, and preferences across devices, or launch directly in Local Browser Mode with zero setup.',
+      title: 'Sign in or initialize your firm workspace',
+      body: 'Sign in with your self-hosted account (with optional TOTP MFA) or launch directly in Local Browser Mode with zero setup.',
     },
     {
       step: '02.',
@@ -108,7 +150,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
     },
     {
       label: 'Storage & Portability',
-      value: 'Firestore user isolation, JSON export & SQLite/PostgreSQL',
+      value: 'Self-hosted SQLite/PostgreSQL RLS isolation & JSON export',
     },
   ];
 
@@ -122,7 +164,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               href="#top"
               className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0"
             >
-              onTrack
+              OnTrack
             </a>
 
             <nav className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-600 dark:text-slate-400">
@@ -154,14 +196,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             </nav>
 
             <div className="flex items-center gap-3 shrink-0">
-              <button
-                type="button"
-                disabled={isSigningIn || !authReady}
-                onClick={handleGoogleSignIn}
-                className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              <a
+                href="#signin"
+                className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
-                {isSigningIn ? 'Signing In...' : 'Sign In'}
-              </button>
+                Sign In
+              </a>
             </div>
           </div>
         </header>
@@ -192,7 +232,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   </h1>
 
                   <p className="text-base text-slate-600 dark:text-slate-300 leading-relaxed max-w-[62ch]">
-                    onTrack combines structured task boards, Gantt charts, and scheduling calendars with automatic desktop and browser activity timelines—matching active windows and documents to client engagements and exporting executive weekly reports.
+                    OnTrack combines structured task boards, Gantt charts, and scheduling calendars with automatic desktop and browser activity timelines—matching active windows and documents to client engagements and exporting executive weekly reports.
                   </p>
                 </div>
 
@@ -201,7 +241,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   {!imageFailed ? (
                     <img
                       src={heroWorkspaceImg}
-                      alt="onTrack workstation desk displaying multi-track project timelines and usage analytics"
+                      alt="OnTrack workstation desk displaying multi-track project timelines and usage analytics"
                       referrerPolicy="no-referrer"
                       onError={() => setImageFailed(true)}
                       className="w-full h-full object-cover"
@@ -210,7 +250,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                     <div className="w-full h-full flex flex-col items-center justify-center p-8 text-center bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-900 dark:to-slate-800">
                       <MonitorSmartphone className="w-10 h-10 text-indigo-600 dark:text-indigo-400 mb-3" />
                       <div className="font-display text-sm font-semibold text-slate-900 dark:text-white">
-                        onTrack Multi-Track Timeline &amp; Task Workspace
+                        OnTrack Multi-Track Timeline &amp; Task Workspace
                       </div>
                       <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-md">
                         Synchronized presence segments, application traces, document titles, and billable time blocks.
@@ -221,19 +261,29 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               </div>
 
               {/* Right 5 Columns: Sign-In & Workspace Entry Card */}
-              <div
-                id="signin"
-                className="lg:col-span-5 flex"
-              >
+              <div id="signin" className="lg:col-span-5 flex">
                 <div className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-7 flex flex-col justify-between gap-6">
-                  <div className="space-y-5">
-                    <div>
-                      <h2 className="font-display text-xl font-bold text-slate-900 dark:text-white tracking-tight">
-                        Sign in to onTrack
-                      </h2>
-                      <p className="mt-1.5 text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-                        Connect your Google account to sync tasks, timeline blocks, attribution rules, and weekly reports across devices.
-                      </p>
+                  <div className="space-y-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <h2 className="font-display text-xl font-bold text-slate-900 dark:text-white tracking-tight">
+                          {mode === 'setup' ? 'Initialize Your Firm' : 'Sign in to OnTrack'}
+                        </h2>
+                        <p className="mt-1 text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                          {mode === 'setup'
+                            ? 'Create the initial Admin/IT account for your firm workspace.'
+                            : 'Sign in with your self-hosted firm credentials to sync tracking and tasks.'}
+                        </p>
+                      </div>
+                      {needsInitialSetup && (
+                        <button
+                          type="button"
+                          onClick={() => setMode(mode === 'setup' ? 'login' : 'setup')}
+                          className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline shrink-0 cursor-pointer"
+                        >
+                          {mode === 'setup' ? 'Sign In' : 'First-Run Setup'}
+                        </button>
+                      )}
                     </div>
 
                     {authError && (
@@ -243,46 +293,133 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       </div>
                     )}
 
-                    <div className="space-y-3">
-                      <button
-                        type="button"
-                        disabled={isSigningIn || !authReady}
-                        onClick={handleGoogleSignIn}
-                        className="w-full min-h-[44px] flex items-center justify-center gap-2.5 px-4 py-3 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 rounded-lg transition-colors cursor-pointer"
-                      >
-                        <LogIn className="w-4 h-4 shrink-0" />
-                        <span className="whitespace-nowrap">
-                          {isSigningIn
-                            ? 'Signing in with Google...'
-                            : !authReady
-                              ? 'Checking Session...'
-                              : 'Continue with Google'}
-                        </span>
-                      </button>
+                    <form onSubmit={handleSubmit} className="space-y-3 text-xs">
+                      {mode === 'setup' && (
+                        <>
+                          <div>
+                            <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
+                              Accounting Firm / Organization
+                            </label>
+                            <input
+                              type="text"
+                              required
+                              minLength={2}
+                              value={firmName}
+                              onChange={(e) => setFirmName(e.target.value)}
+                              placeholder="Apex Chartered Accountants"
+                              className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
+                              Administrator Name
+                            </label>
+                            <input
+                              type="text"
+                              required
+                              minLength={2}
+                              value={fullName}
+                              onChange={(e) => setFullName(e.target.value)}
+                              placeholder="Alex Morgan"
+                              className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                            />
+                          </div>
+                        </>
+                      )}
 
-                      <div className="flex items-center gap-3 text-xs text-slate-400 dark:text-slate-500">
-                        <div className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
-                        <span>or</span>
-                        <div className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+                      <div>
+                        <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
+                          Work Email
+                        </label>
+                        <input
+                          type="email"
+                          required
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                          placeholder="name@firm.example"
+                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                        />
                       </div>
 
+                      <div>
+                        <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
+                          Password
+                        </label>
+                        <input
+                          type="password"
+                          required
+                          minLength={mode === 'setup' ? 10 : 1}
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          placeholder={mode === 'setup' ? 'Minimum 10 characters' : '••••••••••••'}
+                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                        />
+                      </div>
+
+                      {mode === 'login' && (
+                        <div className="grid grid-cols-2 gap-2 items-center">
+                          <input
+                            type="text"
+                            value={totpCode}
+                            onChange={(e) => setTotpCode(e.target.value)}
+                            placeholder="MFA code (if enabled)"
+                            className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white font-mono"
+                          />
+                          <label className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={isClientPortal}
+                              onChange={(e) => setIsClientPortal(e.target.checked)}
+                            />
+                            <span>Client Portal</span>
+                          </label>
+                        </div>
+                      )}
+
                       <button
-                        type="button"
-                        onClick={onContinueLocal}
-                        className="w-full min-h-[42px] flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700/80 rounded-lg transition-colors cursor-pointer"
+                        type="submit"
+                        disabled={isSubmitting || !authReady}
+                        className="w-full min-h-[42px] flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 rounded-lg transition-colors cursor-pointer"
                       >
-                        <span className="whitespace-nowrap">Continue in Local Workspace</span>
-                        <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+                        {mode === 'setup' ? (
+                          <Building2 className="w-4 h-4 shrink-0" />
+                        ) : (
+                          <LogIn className="w-4 h-4 shrink-0" />
+                        )}
+                        <span className="whitespace-nowrap">
+                          {isSubmitting
+                            ? 'Authenticating...'
+                            : !authReady
+                              ? 'Checking Session...'
+                              : mode === 'setup'
+                                ? 'Create Firm & Sign In'
+                                : 'Sign In'}
+                        </span>
                       </button>
+                    </form>
+
+                    <div className="flex items-center gap-3 text-xs text-slate-400 dark:text-slate-500">
+                      <div className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+                      <span>or</span>
+                      <div className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
                     </div>
+
+                    <button
+                      type="button"
+                      onClick={onContinueLocal}
+                      className="w-full min-h-[42px] flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700/80 rounded-lg transition-colors cursor-pointer"
+                    >
+                      <span className="whitespace-nowrap">Continue in Local Workspace</span>
+                      <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+                    </button>
                   </div>
 
                   {/* Architectural Assurances */}
-                  <div className="border-t border-slate-200 dark:border-slate-800 pt-5 space-y-3.5 text-xs text-slate-600 dark:text-slate-400">
+                  <div className="border-t border-slate-200 dark:border-slate-800 pt-4 space-y-3 text-xs text-slate-600 dark:text-slate-400">
                     <div className="flex items-start gap-2.5">
                       <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
                       <span>
-                        Private per-user Firestore isolation with verified Google identity and automatic migration of local data.
+                        Self-hosted argon2id authentication, httpOnly session cookies, and optional TOTP MFA.
                       </span>
                     </div>
                     <div className="flex items-start gap-2.5">
@@ -294,7 +431,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                     <div className="flex items-start gap-2.5">
                       <Database className="w-4 h-4 text-slate-500 dark:text-slate-300 shrink-0 mt-0.5" />
                       <span>
-                        Portable JSON workspace backups paired with an embedded SQLite / PostgreSQL tracking store.
+                        Portable JSON workspace backups paired with an embedded SQLite / PostgreSQL RLS tracking store.
                       </span>
                     </div>
                   </div>
@@ -410,7 +547,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               <div id="workflow" className="lg:col-span-6 space-y-6">
                 <div className="space-y-1.5">
                   <h2 className="font-display text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
-                    How onTrack fits your workday
+                    How OnTrack fits your workday
                   </h2>
                   <p className="text-sm text-slate-600 dark:text-slate-400">
                     Start immediately in your browser or connect workstation collectors when ready.
@@ -471,22 +608,20 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-8 lg:p-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
               <div className="space-y-1.5 max-w-xl">
                 <h2 className="font-display text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
-                  Ready to get every project onTrack?
+                  Ready to get every project OnTrack?
                 </h2>
                 <p className="text-sm text-slate-600 dark:text-slate-400">
-                  Sign in with Google for real-time cloud sync across devices, or open the workspace locally to inspect timelines and reports.
+                  Sign in to your self-hosted workspace or open locally to inspect timelines and reports.
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-3 shrink-0">
-                <button
-                  type="button"
-                  disabled={isSigningIn || !authReady}
-                  onClick={handleGoogleSignIn}
-                  className="inline-flex items-center gap-2 px-5 py-3 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                <a
+                  href="#signin"
+                  className="inline-flex items-center gap-2 px-5 py-3 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   <LogIn className="w-4 h-4" />
-                  <span>{isSigningIn ? 'Signing in...' : 'Continue with Google'}</span>
-                </button>
+                  <span>Sign In</span>
+                </a>
                 <button
                   type="button"
                   onClick={onContinueLocal}
@@ -503,7 +638,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         <footer className="border-t border-slate-200 dark:border-slate-800 px-6 py-5 text-xs text-slate-500 dark:text-slate-400">
           <div className="max-w-[1440px] mx-auto flex flex-wrap items-center justify-between gap-4">
             <span className="font-medium text-slate-700 dark:text-slate-300">
-              onTrack · Task Workspace &amp; Timeline Tracker
+              OnTrack · Task Workspace &amp; Timeline Tracker
             </span>
             <div className="flex flex-wrap items-center gap-4">
               <a href="#capabilities" className="hover:text-slate-900 dark:hover:text-white">

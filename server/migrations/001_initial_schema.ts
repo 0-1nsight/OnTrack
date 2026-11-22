@@ -11,10 +11,6 @@ export const migration001InitialSchema: Migration = {
   version: '001',
   name: 'initial_ontrack_schema',
   async up(db: SqlExecutor): Promise<void> {
-    if (db.dialect === 'sqlite') {
-      await db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
-    }
-
     await db.exec(`
       CREATE TABLE IF NOT EXISTS tenants (
         id TEXT PRIMARY KEY,

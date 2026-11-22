@@ -322,23 +322,23 @@ export const WeeklyReportView: React.FC<WeeklyReportViewProps> = ({
     setIsGenerating(true);
     setStatusMessage(null);
     try {
-      const enrichedTasks = tasks.map((t) => ({
-        ...t,
-        loggedMinutes: loggedByTask.get(t.id) || 0,
-      }));
-
       const res = await fetch('/api/reports/generate', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           weekStartDate,
           weekEndDate,
           tone: selectedTone,
-          tasks: enrichedTasks,
-          timeBlocks: weekBlocks,
-          appSummary: appBreakdown,
-          docSummary: docBreakdown,
-          metrics: liveMetrics,
+          metrics: {
+            totalHours: liveMetrics.totalHours,
+            totalMinutes: liveMetrics.totalMinutes,
+            plannedHours: liveMetrics.plannedHours,
+            deepWorkPercent: liveMetrics.deepWorkPercent,
+            billablePercent: liveMetrics.billablePercent,
+            completedCount: liveMetrics.completedCount,
+            totalTasksCount: liveMetrics.totalTasksCount,
+          },
         }),
       });
 

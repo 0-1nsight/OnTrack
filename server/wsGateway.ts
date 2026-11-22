@@ -86,7 +86,7 @@ export function isSubscriberPermittedForEvent(
     if (msg.eventType === 'activity:updated') {
       return isSelf;
     }
-    if (msg.affectedTeamId && sub.teamId && sub.affectedTeamId !== sub.teamId) {
+    if (msg.affectedTeamId && sub.teamId && msg.affectedTeamId !== sub.teamId) {
       return false;
     }
     return true;

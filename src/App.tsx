@@ -5,11 +5,13 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  User,
-  onAuthStateChanged,
-  signInWithPopup,
-  signOut,
-} from 'firebase/auth';
+  AuthUser,
+  bootstrapFirmAdmin,
+  fetchAuthSession,
+  fetchBootstrapStatus,
+  loginWithPassword,
+  logoutSession,
+} from './services/authClient';
 import {
   ActiveTimerState,
   ActivitySegment,
@@ -31,23 +33,6 @@ import {
   getRecentWeekDates,
   inferAppCategory,
 } from './data/seedData';
-import { auth, googleProvider } from './firebase';
-import {
-  clearAndDeleteUserWorkspace,
-  createAppSegmentInCloud,
-  createDocSegmentInCloud,
-  createReportInCloud,
-  createTaskInCloud,
-  deleteTaskInCloud,
-  deleteTimeBlockInCloud,
-  ensureUserProfile,
-  saveActivitySegmentInCloud,
-  saveTimeBlockInCloud,
-  seedOrMigrateWorkspaceToCloud,
-  subscribeToUserWorkspace,
-  updateTaskInCloud,
-  updateUserProfile,
-} from './services/firestoreWorkspace';
 import { TopBar } from './components/TopBar';
 import { ActiveTimerBar } from './components/ActiveTimerBar';
 import { TimelineView } from './components/TimelineView';
@@ -277,15 +262,12 @@ export default function App() {
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [toastBanner, setToastBanner] = useState<string | null>(null);
 
-  // Firebase Auth & User Account State
-  const [user, setUser] = useState<User | null>(null);
+  // Self-Hosted Auth & User Account State
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const [needsInitialSetup, setNeedsInitialSetup] = useState(false);
   const [showLanding, setShowLanding] = useState(true);
-  const [profileReadyUid, setProfileReadyUid] = useState<string | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [cloudSyncStatus, setCloudSyncStatus] = useState<
-    'local' | 'syncing' | 'synced' | 'error'
-  >('local');
   const [authError, setAuthError] = useState<string | null>(null);
 
   const showToast = useCallback((msg: string) => {
@@ -365,31 +347,22 @@ export default function App() {
         const existing = new Set(prev.map((b) => b.id));
         const toAdd = newBlocks.filter((b) => !existing.has(b.id));
         if (toAdd.length === 0) return prev;
-        if (user && user.emailVerified) {
-          toAdd.forEach((b) => saveTimeBlockInCloud(user.uid, b, false).catch(console.error));
-        }
         return [...prev, ...toAdd];
       });
       setAppSegments((prev) => {
         const existing = new Set(prev.map((a) => a.id));
         const toAdd = newApps.filter((a) => !existing.has(a.id));
         if (toAdd.length === 0) return prev;
-        if (user && user.emailVerified) {
-          toAdd.forEach((a) => createAppSegmentInCloud(user.uid, a).catch(console.error));
-        }
         return [...prev, ...toAdd];
       });
       setDocumentSegments((prev) => {
         const existing = new Set(prev.map((d) => d.id));
         const toAdd = newDocs.filter((d) => !existing.has(d.id));
         if (toAdd.length === 0) return prev;
-        if (user && user.emailVerified) {
-          toAdd.forEach((d) => createDocSegmentInCloud(user.uid, d).catch(console.error));
-        }
         return [...prev, ...toAdd];
       });
     },
-    [autoSyncToTimeline, selectedDate, user]
+    [autoSyncToTimeline, selectedDate]
   );
 
   // Keep latest local dataset ref for initial account onboarding migration
@@ -422,132 +395,104 @@ export default function App() {
     preferences,
   ]);
 
-  // Listen to Firebase Auth state changes
-  useEffect(() => {
-    const fallbackTimer = window.setTimeout(() => {
-      setAuthReady(true);
-    }, 2000);
-
-    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
-      window.clearTimeout(fallbackTimer);
-      setUser(firebaseUser);
-      setAuthReady(true);
-
-      if (!firebaseUser) {
-        setProfileReadyUid(null);
+  const refreshAuthSession = useCallback(async () => {
+    try {
+      const [status, session] = await Promise.all([
+        fetchBootstrapStatus().catch(() => ({
+          needsInitialSetup: false,
+          demoModeEnabled: false,
+          hasOidcTenants: false,
+        })),
+        fetchAuthSession().catch(() => ({ authenticated: false, user: null })),
+      ]);
+      setNeedsInitialSetup(Boolean(status.needsInitialSetup));
+      if (session.authenticated && session.user) {
+        setUser(session.user);
+        setUserProfile({
+          ownerId: session.user.userId,
+          email: session.user.email,
+          displayName: session.user.name,
+          jobTitle: session.user.role,
+          hourlyRate: 150,
+          currency: 'USD',
+          preferences: latestWorkspaceRef.current.preferences,
+        });
+        setShowLanding(false);
+      } else {
+        setUser(null);
         setUserProfile(null);
-        setCloudSyncStatus('local');
-        return;
       }
-
-      if (!firebaseUser.emailVerified) {
-        setProfileReadyUid(null);
-        setAuthError(
-          'Your Google account email is not marked verified; cloud sync requires a verified email.'
-        );
-        setCloudSyncStatus('error');
-        return;
-      }
-
-      setAuthError(null);
-      setShowLanding(false);
-      setCloudSyncStatus('syncing');
-      try {
-        const snap = latestWorkspaceRef.current;
-        const { profile, isNewAccount } = await ensureUserProfile(
-          firebaseUser,
-          snap.preferences
-        );
-        setUserProfile(profile);
-        setPreferences(profile.preferences);
-
-        if (isNewAccount) {
-          await seedOrMigrateWorkspaceToCloud(firebaseUser.uid, snap);
-          showToast('Account created & local workspace synced to Cloud.');
-        }
-        setProfileReadyUid(firebaseUser.uid);
-        setCloudSyncStatus('synced');
-      } catch (err) {
-        setCloudSyncStatus('error');
-        setAuthError(
-          err instanceof Error
-            ? err.message
-            : 'Unable to initialize cloud user profile.'
-        );
-      }
-    });
-
-    return () => {
-      window.clearTimeout(fallbackTimer);
-      unsub();
-    };
-  }, [showToast]);
-
-  // Attach Firestore real-time listeners strictly when auth is ready & user profile is initialized
-  useEffect(() => {
-    if (!authReady || !user || !user.emailVerified || profileReadyUid !== user.uid) {
-      return;
+    } finally {
+      setAuthReady(true);
     }
+  }, []);
 
-    const unsub = subscribeToUserWorkspace(
-      user.uid,
-      {
-        onProfile: (profile) => {
-          setUserProfile(profile);
-          setPreferences(profile.preferences);
-          setCloudSyncStatus('synced');
-        },
-        onTasks: (cloudTasks) => {
-          if (cloudTasks.length > 0) setTasks(cloudTasks);
-        },
-        onTimeBlocks: (cloudBlocks) => {
-          if (cloudBlocks.length > 0) setTimeBlocks(cloudBlocks);
-        },
-        onActivitySegments: (cloudSegs) => {
-          if (cloudSegs.length > 0) setActivitySegments(cloudSegs);
-        },
-        onAppSegments: (cloudApps) => {
-          if (cloudApps.length > 0) setAppSegments(cloudApps);
-        },
-        onDocumentSegments: (cloudDocs) => {
-          if (cloudDocs.length > 0) setDocumentSegments(cloudDocs);
-        },
-        onReports: (cloudReports) => {
-          if (cloudReports.length > 0) setReports(cloudReports);
-        },
-      },
-      (err) => {
-        setCloudSyncStatus('error');
-        setAuthError(
-          err instanceof Error ? err.message : 'Cloud sync permission error.'
-        );
-      }
-    );
-
-    return () => unsub();
-  }, [authReady, user, profileReadyUid]);
+  useEffect(() => {
+    void refreshAuthSession();
+  }, [refreshAuthSession]);
 
   // Auth & Account Management Handlers
-  const handleSignInWithGoogle = async () => {
+  const handleLogin = async (payload: {
+    email: string;
+    password: string;
+    totpCode?: string;
+    isClientPortal?: boolean;
+  }) => {
     setAuthError(null);
     try {
-      await signInWithPopup(auth, googleProvider);
+      const res = await loginWithPassword(payload);
+      setUser(res.user);
+      setUserProfile({
+        ownerId: res.user.userId,
+        email: res.user.email,
+        displayName: res.user.name,
+        jobTitle: res.user.role,
+        hourlyRate: 150,
+        currency: 'USD',
+        preferences,
+      });
       setShowLanding(false);
-      showToast('Signed in with Google.');
+      showToast(`Signed in as ${res.user.email}.`);
     } catch (err: any) {
-      const code = err?.code || '';
-      if (code === 'auth/popup-closed-by-user') {
-        setAuthError('Google sign-in popup was closed before completion.');
-      } else {
-        setAuthError(err?.message || 'Google authentication failed.');
-      }
+      const msg = err?.message || 'Authentication failed.';
+      setAuthError(msg);
+      throw err;
+    }
+  };
+
+  const handleBootstrapFirm = async (payload: {
+    firmName: string;
+    name: string;
+    email: string;
+    password: string;
+  }) => {
+    setAuthError(null);
+    try {
+      const res = await bootstrapFirmAdmin(payload);
+      setNeedsInitialSetup(false);
+      setUser(res.user);
+      setUserProfile({
+        ownerId: res.user.userId,
+        email: res.user.email,
+        displayName: res.user.name,
+        jobTitle: res.user.role,
+        hourlyRate: 150,
+        currency: 'USD',
+        preferences,
+      });
+      setShowLanding(false);
+      showToast('Firm workspace initialized and signed in.');
+    } catch (err: any) {
+      const msg = err?.message || 'Firm initialization failed.';
+      setAuthError(msg);
+      throw err;
     }
   };
 
   const handleSignOut = async () => {
-    await signOut(auth);
+    await logoutSession();
+    setUser(null);
     setUserProfile(null);
-    setCloudSyncStatus('local');
     setAccountModalOpen(false);
     setShowLanding(true);
     showToast('Signed out.');
@@ -559,27 +504,19 @@ export default function App() {
     hourlyRate: number;
     currency: string;
   }) => {
-    if (!user) return;
-    await updateUserProfile(user.uid, updates);
-    setUserProfile((prev) => (prev ? { ...prev, ...updates } : prev));
-    showToast('Account profile updated.');
-  };
-
-  const handleSyncLocalToCloud = async () => {
-    if (!user) return;
-    setCloudSyncStatus('syncing');
-    await seedOrMigrateWorkspaceToCloud(user.uid, latestWorkspaceRef.current);
-    setCloudSyncStatus('synced');
-    showToast('Workspace synchronized to Firestore.');
-  };
-
-  const handleDeleteCloudWorkspace = async () => {
-    if (!user) return;
-    await clearAndDeleteUserWorkspace(user.uid);
-    await signOut(auth);
-    setUserProfile(null);
-    setCloudSyncStatus('local');
-    showToast('Cloud workspace data removed and signed out.');
+    setUserProfile((prev) =>
+      prev
+        ? { ...prev, ...updates }
+        : user
+          ? {
+              ownerId: user.userId,
+              email: user.email,
+              ...updates,
+              preferences,
+            }
+          : null
+    );
+    showToast('Workspace profile updated.');
   };
 
   // Reset idle counter on user mouse/keyboard/focus activity (unless Idle Modal is open)
@@ -690,7 +627,6 @@ export default function App() {
       linkedTaskId: timer.taskId,
     };
 
-    let addedApp = false;
     setAppSegments((prev) => {
       const recentSame = prev.find(
         (s) =>
@@ -699,10 +635,8 @@ export default function App() {
           Math.abs(s.endTime - nowMin) <= 2
       );
       if (recentSame) return prev;
-      addedApp = true;
       return [...prev, newAppSeg];
     });
-    let addedDoc = false;
     setDocumentSegments((prev) => {
       const recentSame = prev.find(
         (s) =>
@@ -711,19 +645,9 @@ export default function App() {
           Math.abs(s.endTime - nowMin) <= 2
       );
       if (recentSame) return prev;
-      addedDoc = true;
       return [...prev, newDocSeg];
     });
-
-    if (user && user.emailVerified) {
-      if (addedApp) {
-        createAppSegmentInCloud(user.uid, newAppSeg).catch(console.error);
-      }
-      if (addedDoc) {
-        createDocSegmentInCloud(user.uid, newDocSeg).catch(console.error);
-      }
-    }
-  }, [activeTab, selectedDate, todayDate, timer.taskId, user]);
+  }, [activeTab, selectedDate, todayDate, timer.taskId]);
 
   // Timer Handlers
   const handleStartTimer = (taskId?: string | null) => {
@@ -756,11 +680,6 @@ export default function App() {
           t.id === foundTask.id ? { ...t, status: 'in_progress' } : t
         )
       );
-      if (user && user.emailVerified) {
-        updateTaskInCloud(user.uid, foundTask.id, { status: 'in_progress' }).catch(
-          console.error
-        );
-      }
     }
     showToast(
       `Stopwatch started: ${
@@ -850,11 +769,6 @@ export default function App() {
     setTimeBlocks((prev) => [...prev, newBlock]);
     setAppSegments((prev) => [...prev, newAppSeg]);
     setDocumentSegments((prev) => [...prev, newDocSeg]);
-    if (user && user.emailVerified) {
-      saveTimeBlockInCloud(user.uid, newBlock, false).catch(console.error);
-      createAppSegmentInCloud(user.uid, newAppSeg).catch(console.error);
-      createDocSegmentInCloud(user.uid, newDocSeg).catch(console.error);
-    }
     setTimer((prev) => ({
       ...prev,
       isRunning: false,
@@ -904,10 +818,6 @@ export default function App() {
 
     setAppSegments((prev) => [...prev, newAppSeg]);
     setDocumentSegments((prev) => [...prev, newDocSeg]);
-    if (user && user.emailVerified) {
-      createAppSegmentInCloud(user.uid, newAppSeg).catch(console.error);
-      createDocSegmentInCloud(user.uid, newDocSeg).catch(console.error);
-    }
     showToast(`Recorded ${cleanApp} session: "${cleanDoc}"`);
   };
 
@@ -951,18 +861,6 @@ export default function App() {
       ),
       newSeg,
     ]);
-    if (user && user.emailVerified) {
-      saveActivitySegmentInCloud(user.uid, newSeg, false).catch(console.error);
-      activitySegments
-        .filter((s) => s.date === selectedDate && !s.reconciled)
-        .forEach((s) =>
-          saveActivitySegmentInCloud(
-            user.uid,
-            { ...s, reconciled: true },
-            true
-          ).catch(console.error)
-        );
-    }
     lastActivityMsRef.current = Date.now();
     setIdleSeconds(0);
     setIdleAlert((prev) => ({ ...prev, isOpen: false }));
@@ -985,18 +883,6 @@ export default function App() {
       ),
       newSeg,
     ]);
-    if (user && user.emailVerified) {
-      saveActivitySegmentInCloud(user.uid, newSeg, false).catch(console.error);
-      activitySegments
-        .filter((s) => s.date === selectedDate && !s.reconciled)
-        .forEach((s) =>
-          saveActivitySegmentInCloud(
-            user.uid,
-            { ...s, reconciled: true },
-            true
-          ).catch(console.error)
-        );
-    }
     lastActivityMsRef.current = Date.now();
     setIdleSeconds(0);
     setIdleAlert((prev) => ({ ...prev, isOpen: false }));
@@ -1037,18 +923,6 @@ export default function App() {
           : s
       )
     );
-    if (user && user.emailVerified) {
-      saveTimeBlockInCloud(user.uid, reconciledBlock, false).catch(console.error);
-      activitySegments
-        .filter((s) => s.date === selectedDate && !s.reconciled)
-        .forEach((s) =>
-          saveActivitySegmentInCloud(
-            user.uid,
-            { ...s, state: 'active', reconciled: true, label: payload.title },
-            true
-          ).catch(console.error)
-        );
-    }
     lastActivityMsRef.current = Date.now();
     setIdleSeconds(0);
     setIdleAlert((prev) => ({ ...prev, isOpen: false }));
@@ -1065,9 +939,6 @@ export default function App() {
       setTimeBlocks((prev) =>
         prev.map((b) => (b.id === existingId ? updatedBlock : b))
       );
-      if (user && user.emailVerified) {
-        saveTimeBlockInCloud(user.uid, updatedBlock, true).catch(console.error);
-      }
       showToast(`Updated timeline block "${blockData.title}".`);
     } else {
       const created: TimeBlock = {
@@ -1076,18 +947,12 @@ export default function App() {
       };
       setTimeBlocks((prev) => [...prev, created]);
       setSelectedDate(blockData.date);
-      if (user && user.emailVerified) {
-        saveTimeBlockInCloud(user.uid, created, false).catch(console.error);
-      }
       showToast(`Logged ${blockData.durationMinutes}m to ${blockData.date}.`);
     }
   };
 
   const handleDeleteTimeBlock = (blockId: string) => {
     setTimeBlocks((prev) => prev.filter((b) => b.id !== blockId));
-    if (user && user.emailVerified) {
-      deleteTimeBlockInCloud(user.uid, blockId).catch(console.error);
-    }
     showToast('Timeline block removed.');
   };
 
@@ -1099,9 +964,6 @@ export default function App() {
       createdAt: todayDate,
     };
     setTasks((prev) => [created, ...prev]);
-    if (user && user.emailVerified) {
-      createTaskInCloud(user.uid, created).catch(console.error);
-    }
     showToast(`Task "${created.title}" added to ${created.project}.`);
   };
 
@@ -1109,16 +971,10 @@ export default function App() {
     setTasks((prev) =>
       prev.map((t) => (t.id === taskId ? { ...t, ...updates } : t))
     );
-    if (user && user.emailVerified) {
-      updateTaskInCloud(user.uid, taskId, updates).catch(console.error);
-    }
   };
 
   const handleDeleteTask = (taskId: string) => {
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
-    if (user && user.emailVerified) {
-      deleteTaskInCloud(user.uid, taskId).catch(console.error);
-    }
     showToast('Task deleted.');
   };
 
@@ -1171,17 +1027,6 @@ export default function App() {
         setDocumentSegments(nextDoc);
         setReports(nextReports);
 
-        if (user && user.emailVerified) {
-          seedOrMigrateWorkspaceToCloud(user.uid, {
-            tasks: parsed.tasks,
-            timeBlocks: parsed.timeBlocks,
-            activitySegments: nextActivity,
-            appSegments: nextApp,
-            documentSegments: nextDoc,
-            reports: nextReports,
-          }).catch(console.error);
-        }
-
         showToast('Workspace state restored from JSON backup.');
         return true;
       }
@@ -1199,9 +1044,6 @@ export default function App() {
     setAppSegments(seed.appSegments);
     setDocumentSegments(seed.documentSegments);
     setReports(seed.reports);
-    if (user && user.emailVerified) {
-      seedOrMigrateWorkspaceToCloud(user.uid, seed).catch(console.error);
-    }
     showToast('Workspace reset to default 7-day sample data.');
   };
 
@@ -1225,11 +1067,13 @@ export default function App() {
       <LandingPage
         authReady={authReady}
         authError={authError}
+        needsInitialSetup={needsInitialSetup}
         darkMode={preferences.darkMode}
         onToggleTheme={() =>
           setPreferences((prev) => ({ ...prev, darkMode: !prev.darkMode }))
         }
-        onSignInWithGoogle={handleSignInWithGoogle}
+        onLogin={handleLogin}
+        onBootstrapFirm={handleBootstrapFirm}
         onContinueLocal={() => {
           lastActivityMsRef.current = Date.now();
           setIdleSeconds(0);
@@ -1279,15 +1123,7 @@ export default function App() {
           onSimulateIdle={handleSimulateIdle}
           onOpenPreferences={() => setPrefsModalOpen(true)}
           onToggleTheme={() => {
-            setPreferences((prev) => {
-              const next = { ...prev, darkMode: !prev.darkMode };
-              if (user && user.emailVerified) {
-                updateUserProfile(user.uid, { preferences: next }).catch(
-                  console.error
-                );
-              }
-              return next;
-            });
+            setPreferences((prev) => ({ ...prev, darkMode: !prev.darkMode }));
           }}
         />
 
@@ -1384,11 +1220,12 @@ export default function App() {
           {activeTab === 'autotrack' && (
             <AutoTrackView
               selectedDate={selectedDate}
-              firebaseUser={user}
+              currentUser={user}
               autoSyncToTimeline={autoSyncToTimeline}
               onToggleAutoSyncToTimeline={setAutoSyncToTimeline}
               onSyncEngineSessionsToTimeline={handleSyncEngineSessionsToTimeline}
               onNotify={showToast}
+              onOpenAccount={() => setAccountModalOpen(true)}
               onPushConfirmedToTimeline={({ session, title, project, category, notes }) => {
                 const startDateObj = new Date(session.startTimeUtc);
                 const endDateObj = new Date(session.endTimeUtc);
@@ -1444,11 +1281,6 @@ export default function App() {
                 setTimeBlocks((prev) => [...prev, newBlock]);
                 setAppSegments((prev) => [...prev, newAppSeg]);
                 setDocumentSegments((prev) => [...prev, newDocSeg]);
-                if (user && user.emailVerified) {
-                  saveTimeBlockInCloud(user.uid, newBlock, false).catch(console.error);
-                  createAppSegmentInCloud(user.uid, newAppSeg).catch(console.error);
-                  createDocSegmentInCloud(user.uid, newDocSeg).catch(console.error);
-                }
                 showToast(`Pushed "${title}" (${endMin - startMin}m) to Day Timeline.`);
               }}
             />
@@ -1464,9 +1296,6 @@ export default function App() {
               reports={reports}
               onSaveReport={(newReport) => {
                 setReports((prev) => [newReport, ...prev]);
-                if (user && user.emailVerified) {
-                  createReportInCloud(user.uid, newReport).catch(console.error);
-                }
               }}
             />
           )}
@@ -1562,15 +1391,7 @@ export default function App() {
           isOpen={prefsModalOpen}
           preferences={preferences}
           onUpdatePreferences={(updates) => {
-            setPreferences((prev) => {
-              const next = { ...prev, ...updates };
-              if (user && user.emailVerified) {
-                updateUserProfile(user.uid, { preferences: next }).catch(
-                  console.error
-                );
-              }
-              return next;
-            });
+            setPreferences((prev) => ({ ...prev, ...updates }));
           }}
           onExportJson={handleExportJson}
           onImportJson={handleImportJson}
@@ -1583,13 +1404,13 @@ export default function App() {
           user={user}
           userProfile={userProfile}
           authReady={authReady}
-          cloudSyncStatus={cloudSyncStatus}
+          needsInitialSetup={needsInitialSetup}
           authError={authError}
-          onSignInWithGoogle={handleSignInWithGoogle}
+          onLogin={handleLogin}
+          onBootstrapFirm={handleBootstrapFirm}
           onSignOut={handleSignOut}
           onSaveProfile={handleSaveProfile}
-          onSyncLocalToCloud={handleSyncLocalToCloud}
-          onDeleteCloudWorkspace={handleDeleteCloudWorkspace}
+          onRefreshSession={refreshAuthSession}
           onExportJson={handleExportJson}
           onOpenPreferences={() => setPrefsModalOpen(true)}
           onClose={() => setAccountModalOpen(false)}
