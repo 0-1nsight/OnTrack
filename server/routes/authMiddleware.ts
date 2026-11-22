@@ -84,6 +84,34 @@ export async function resolveHttpAuthContext(
           : 'Complete two-factor verification to continue.'
       );
     }
+    if (
+      appConfig.demoModeEnabled &&
+      verifiedSession.isDemoSandbox &&
+      verifiedSession.role === 'admin_it'
+    ) {
+      const requestedPreview = req.query.previewRole || req.query.viewerRole || req.body?.previewRole;
+      if (typeof requestedPreview === 'string') {
+        const previewRole = normalizeRole(requestedPreview, 'admin_it');
+        if (previewRole !== 'admin_it' && previewRole !== 'client') {
+          const demoUser =
+            previewRole === 'team_lead'
+              ? 'demo_u_lead_01'
+              : previewRole === 'line_manager'
+              ? 'demo_u_mgr_01'
+              : previewRole === 'executive'
+              ? 'demo_u_exec_01'
+              : 'demo_u_acc_01';
+          return {
+            ...verifiedSession,
+            userId: demoUser,
+            role: previewRole,
+            teamId: 'team_audit',
+            canDrilldownTimeline:
+              previewRole === 'team_lead' || previewRole === 'line_manager',
+          };
+        }
+      }
+    }
     return verifiedSession;
   }
 

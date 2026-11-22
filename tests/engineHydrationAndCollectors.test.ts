@@ -404,4 +404,303 @@ describe('Engine Hydration, Task CRUD, Package Bundles & Authenticated Loopback 
       );
     }
   });
+
+  it('returns 404 JSON for unknown /api/* routes instead of falling through to HTML', async () => {
+    const res = await request(ctx.app).get('/api/does-not-exist-endpoint');
+    expect(res.status).toBe(404);
+    expect(res.headers['content-type']).toMatch(/json/i);
+    expect(res.body.code).toBe('NOT_FOUND');
+  });
+
+  it('preserves manual, timer, and reconciled entry_* time blocks across snapshot reload even without client matching', async () => {
+    const loginRes = await request(ctx.app)
+      .post('/api/auth/demo-login')
+      .send({ userId: 'demo_u_acc_01' });
+    expect(loginRes.status).toBe(200);
+    const cookie = loginRes.headers['set-cookie'];
+
+    const nowMs = Date.now();
+    const syncRes = await request(ctx.app)
+      .post('/api/engine/sync')
+      .set('Cookie', cookie)
+      .send({
+        deviceId: 'dev-manual-persist',
+        events: [
+          {
+            event_id: `ev-manual-${nowMs}`,
+            schema_version: 1,
+            tenant_id: 'firm_demo',
+            user_id: 'demo_u_acc_01',
+            device_id: 'dev-manual-persist',
+            seq: 101,
+            type: 'activity.window',
+            priority: 'activity',
+            event_time_utc: new Date(nowMs - 3_600_000).toISOString(),
+            received_at: null,
+            payload: {
+              app: 'OnTrack Manual',
+              window_title: 'Unmatched Internal Policy Review',
+              duration_ms: 1800000,
+              entry_source: 'manual',
+              entry_project: 'Internal Practice',
+              entry_category: 'admin',
+              entry_title: 'Unmatched Internal Policy Review',
+            },
+          },
+          {
+            event_id: `ev-timer-${nowMs}`,
+            schema_version: 1,
+            tenant_id: 'firm_demo',
+            user_id: 'demo_u_acc_01',
+            device_id: 'dev-manual-persist',
+            seq: 102,
+            type: 'activity.window',
+            priority: 'activity',
+            event_time_utc: new Date(nowMs - 1_800_000).toISOString(),
+            received_at: null,
+            payload: {
+              app: 'OnTrack Web',
+              window_title: 'Advisory Strategy Call',
+              duration_ms: 1200000,
+              entry_source: 'timer',
+              entry_project: 'Advisory Board',
+              entry_category: 'collaborative',
+              entry_title: 'Advisory Strategy Call',
+            },
+          },
+        ],
+      });
+    expect(syncRes.status).toBe(200);
+    expect(syncRes.body.acceptedCount).toBe(2);
+
+    const snapRes = await request(ctx.app)
+      .get('/api/engine/snapshot')
+      .set('Cookie', cookie);
+    expect(snapRes.status).toBe(200);
+
+    const adapted = adaptEngineSnapshotToWorkspace({
+      snapshot: snapRes.body as EngineSnapshot,
+      existingTasks: [],
+      existingBlocks: [],
+      existingActivity: [],
+      existingApps: [],
+      existingDocs: [],
+      boards: [],
+      includeAllSessionBlocks: false,
+      isDemoSandbox: true,
+    });
+
+    const manualBlock = adapted.timeBlocks.find(
+      (b) => b.title === 'Unmatched Internal Policy Review'
+    );
+    expect(manualBlock).toBeTruthy();
+    expect(manualBlock?.source).toBe('manual');
+    expect(manualBlock?.project).toBe('Internal Practice');
+    expect(manualBlock?.category).toBe('admin');
+
+    const timerBlock = adapted.timeBlocks.find(
+      (b) => b.title === 'Advisory Strategy Call'
+    );
+    expect(timerBlock).toBeTruthy();
+    expect(timerBlock?.source).toBe('timer');
+    expect(timerBlock?.project).toBe('Advisory Board');
+    expect(timerBlock?.category).toBe('collaborative');
+  });
+
+  it('strips demo artifact IDs from workspace state when isDemoSandbox is false', () => {
+    const today = toLocalDateString(new Date());
+    const emptySnapshot: EngineSnapshot = {
+      authMode: 'session',
+      dialect: 'sqlite',
+      config: {
+        id: 'firm_live',
+        name: 'Live Accounting LLP',
+        confidenceThresholds: {
+          detected: 0.85,
+          suggested: 0.5,
+        },
+        sessionizer: {
+          maxInterruptionSeconds: 30,
+          idleCloseSeconds: 180,
+        },
+        heartbeatIntervalSeconds: 12,
+        delayedThresholdSeconds: 120,
+        retentionDays: 60,
+        focusFactor: 0.85,
+        monitoringPolicy: 'mandatory',
+        serverUrl: 'http://127.0.0.1:3000',
+      },
+      visibility: {
+        viewerRole: 'accountant',
+        viewerUserId: 'u_live_1',
+        targetUserId: 'u_live_1',
+        timelinePermitted: true,
+        clientContentVisible: true,
+      },
+      staffUsers: [],
+      deviceTokens: [],
+      storedFiles: [],
+      clients: [],
+      activityRules: [],
+      privacyRules: [],
+      templates: [],
+      tasks: [],
+      learnedRules: [],
+      sessions: [],
+      attributions: [],
+      checklistItems: [],
+      revisionsPublished: [],
+      handoffs: [],
+      devices: [],
+      freshnessSummary: {
+        dataAsOfUtc: new Date().toISOString(),
+        totalActiveShiftStaff: 0,
+        reportingLiveCount: 0,
+        delayedCount: 0,
+        offlineCount: 0,
+        offShiftCount: 0,
+        provisional: false,
+        recentlyUpdatedNotice: null,
+      },
+      latencyStats: {
+        lastBroadcastMs: 0,
+        p95BroadcastMs: 0,
+        sampleCount: 0,
+      },
+      conflicts: [],
+      auditLogs: [],
+    };
+
+    const result = adaptEngineSnapshotToWorkspace({
+      snapshot: emptySnapshot,
+      existingTasks: [
+        {
+          id: 'demo_tsk_1',
+          boardId: 'brd-1',
+          title: 'Demo Task',
+          description: '',
+          project: 'Demo',
+          category: 'billable',
+          status: 'todo',
+          priority: 'medium',
+          dueDate: today,
+          estimatedMinutes: 60,
+          tags: [],
+          subtasks: [],
+          createdAt: new Date().toISOString(),
+        },
+        {
+          id: 'live-draft-1',
+          boardId: 'brd-1',
+          title: 'Live Draft Task',
+          description: '',
+          project: 'Client A',
+          category: 'billable',
+          status: 'todo',
+          priority: 'medium',
+          dueDate: today,
+          estimatedMinutes: 60,
+          tags: [],
+          subtasks: [],
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      existingBlocks: [
+        {
+          id: 'demo-blk-1',
+          taskId: null,
+          title: 'Demo Block',
+          project: 'Demo',
+          category: 'billable',
+          tags: [],
+          date: today,
+          startTime: 540,
+          endTime: 600,
+          durationMinutes: 60,
+          source: 'manual',
+          isBillable: true,
+          notes: '',
+        },
+        {
+          id: 'blk-live-1',
+          taskId: null,
+          title: 'Live Block',
+          project: 'Client A',
+          category: 'billable',
+          tags: [],
+          date: today,
+          startTime: 600,
+          endTime: 660,
+          durationMinutes: 60,
+          source: 'manual',
+          isBillable: true,
+          notes: '',
+        },
+      ],
+      existingActivity: [
+        {
+          id: 'demo-seg-1',
+          date: today,
+          startTime: 540,
+          endTime: 600,
+          state: 'active',
+          label: 'Demo Seg',
+          reconciled: true,
+        },
+      ],
+      existingApps: [
+        {
+          id: 'demo-app-1',
+          date: today,
+          startTime: 540,
+          endTime: 600,
+          appName: 'Excel',
+          appCategory: 'docs',
+        },
+      ],
+      existingDocs: [
+        {
+          id: 'demo-doc-1',
+          date: today,
+          startTime: 540,
+          endTime: 600,
+          appName: 'Excel',
+          documentTitle: 'Demo.xlsx',
+          domainOrPath: 'Demo.xlsx',
+          linkedTaskId: null,
+        },
+      ],
+      boards: [],
+      isDemoSandbox: false,
+    });
+
+    expect(result.tasks.map((t) => t.id)).toEqual(['live-draft-1']);
+    expect(result.timeBlocks.map((b) => b.id)).toEqual(['blk-live-1']);
+    expect(result.activitySegments).toEqual([]);
+    expect(result.appSegments).toEqual([]);
+    expect(result.documentSegments).toEqual([]);
+  });
+
+  it('allows demo_u_admin_01 cookie session to preview executive role-overview while blocking client portal access', async () => {
+    const loginRes = await request(ctx.app)
+      .post('/api/auth/demo-login')
+      .send({ userId: 'demo_u_admin_01' });
+    expect(loginRes.status).toBe(200);
+    const adminCookie = loginRes.headers['set-cookie'];
+
+    const execOverviewRes = await request(ctx.app)
+      .get('/api/engine/role-overview?viewerRole=executive')
+      .set('Cookie', adminCookie);
+    expect(execOverviewRes.status).toBe(200);
+    expect(execOverviewRes.body.role).toBe('executive');
+    expect(execOverviewRes.body.clientProfitability.length).toBeGreaterThan(0);
+    expect(execOverviewRes.body.adminAlerts).toBeNull();
+
+    const portalRes = await request(ctx.app)
+      .get('/api/portal/overview?viewerRole=client')
+      .set('Cookie', adminCookie);
+    expect(portalRes.status).toBe(403);
+    expect(portalRes.body.code).toBe('ADMIN_NO_CLIENT_CONTENT');
+  });
 });
+

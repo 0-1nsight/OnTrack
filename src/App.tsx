@@ -238,8 +238,8 @@ export default function App() {
     startedAtMs: null,
     accumulatedSeconds: 0,
     startMinuteOfDay: getCurrentMinuteOfDay(),
-    activeAppName: 'onTrack Web',
-    activeDocumentTitle: 'Workspace — onTrack',
+    activeAppName: 'OnTrack Web',
+    activeDocumentTitle: 'Workspace — OnTrack',
   });
 
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
@@ -303,16 +303,55 @@ export default function App() {
     hierarchyBoardsRef.current = workspaceHierarchy.boards;
   }, [workspaceHierarchy.boards]);
 
-  const canSwitchPreviewRole = !user || user.role === 'admin_it';
+  const canSwitchPreviewRole =
+    demoModeEnabled && (!user || (user.isDemoSandbox && user.role === 'admin_it'));
   const activeRole: UserRole = user
-    ? user.role === 'admin_it' && previewRoleOverride
+    ? user.isDemoSandbox && demoModeEnabled && user.role === 'admin_it' && previewRoleOverride
       ? previewRoleOverride
       : user.role
-    : previewRoleOverride ?? 'accountant';
+    : demoModeEnabled
+    ? previewRoleOverride ?? 'accountant'
+    : 'accountant';
   const rolePolicy = getRolePolicy(activeRole);
   const effectiveTab: NavigationTab = rolePolicy.allowedTabs.some((t) => t.id === activeTab)
     ? activeTab
     : rolePolicy.defaultTab;
+
+  const resetWorkspaceState = useCallback(() => {
+    const empty = createEmptyWorkspaceDataset();
+    setTasks(empty.tasks);
+    setTimeBlocks(empty.timeBlocks);
+    setActivitySegments(empty.activitySegments);
+    setAppSegments(empty.appSegments);
+    setDocumentSegments(empty.documentSegments);
+    setReports(empty.reports);
+    setWorkspaceHierarchy(createDefaultWorkspaceHierarchy());
+    setEnginePrivacyRules([]);
+    setSyncConflicts([]);
+    setEngineTaskVersions({});
+    setEngineSyncStatus('idle');
+    demoSeedAppliedRef.current = false;
+    setElapsedSeconds(0);
+    setTimer((prev) => ({
+      ...prev,
+      isRunning: false,
+      isPaused: false,
+      taskId: null,
+      customTitle: '',
+      startedAtMs: null,
+      accumulatedSeconds: 0,
+    }));
+    try {
+      localStorage.removeItem(STORAGE_KEYS.TASKS);
+      localStorage.removeItem(STORAGE_KEYS.BLOCKS);
+      localStorage.removeItem(STORAGE_KEYS.SEGMENTS);
+      localStorage.removeItem(STORAGE_KEYS.APP_SEGMENTS);
+      localStorage.removeItem(STORAGE_KEYS.DOC_SEGMENTS);
+      localStorage.removeItem(STORAGE_KEYS.REPORTS);
+    } catch {
+      // ignore storage cleanup errors
+    }
+  }, []);
 
   const showToast = useCallback((msg: string) => {
     setToastBanner(msg);
@@ -443,7 +482,10 @@ export default function App() {
     async (targetUser?: AuthUser | null, roleOverride?: UserRole) => {
       const currentUser = targetUser ?? user;
       const role = roleOverride ?? activeRole;
-      if (!currentUser || role === 'client') return;
+      if (!currentUser || !currentUser.mfaVerified || role === 'client') {
+        setEngineSyncStatus('idle');
+        return;
+      }
 
       await Promise.resolve();
       setEngineSyncStatus('syncing');
@@ -474,6 +516,7 @@ export default function App() {
           existingDocs: latest.documentSegments,
           boards: hierarchyBoardsRef.current,
           includeAllSessionBlocks: false,
+          isDemoSandbox: Boolean(currentUser.isDemoSandbox),
         });
 
         setTasks(adapted.tasks);
@@ -500,7 +543,7 @@ export default function App() {
       payload: Record<string, unknown>;
       eventTimeUtc?: string;
     }) => {
-      if (!user || activeRole === 'client') return;
+      if (!user || !user.mfaVerified || activeRole === 'client') return;
       const deviceId = getOrCreateLocalDeviceId();
       const ev = buildLocalTrackingEvent({
         tenantId: user.tenantId,
@@ -564,6 +607,9 @@ export default function App() {
         setDemoAccounts([]);
       }
       if (session.authenticated && session.user) {
+        if (!session.user.isDemoSandbox) {
+          setReports((prev) => prev.filter((r) => !r.id.startsWith('demo-rep-')));
+        }
         setUser(session.user);
         setUserProfile({
           ownerId: session.user.userId,
@@ -596,6 +642,11 @@ export default function App() {
     const runHydration = async () => {
       await Promise.resolve();
       if (cancelled) return;
+
+      if (user && !user.mfaVerified) {
+        setEngineSyncStatus('idle');
+        return;
+      }
 
       if (user && activeRole !== 'client') {
         if (user.isDemoSandbox && demoModeEnabled && !demoSeedAppliedRef.current) {
@@ -641,7 +692,7 @@ export default function App() {
 
   // Global /ws/engine live updates + online queue flush (SYNC-5)
   useEffect(() => {
-    if (!authReady || !user || activeRole === 'client') return;
+    if (!authReady || !user || !user.mfaVerified || activeRole === 'client') return;
 
     const deviceId = getOrCreateLocalDeviceId();
     const handleOnline = () => {
@@ -701,6 +752,9 @@ export default function App() {
     setAuthError(null);
     try {
       const res = await loginWithPassword(payload);
+      if (res.user.userId !== user?.userId || res.user.tenantId !== user?.tenantId) {
+        resetWorkspaceState();
+      }
       setUser(res.user);
       setPreviewRoleOverride(null);
       setActiveTab(getRolePolicy(res.user.role).defaultTab);
@@ -714,7 +768,12 @@ export default function App() {
         preferences,
       });
       setShowLanding(false);
-      showToast(`Signed in as ${res.user.email}.`);
+      if (!res.user.mfaVerified) {
+        setAccountModalOpen(true);
+        showToast('Two-factor authentication setup is required before accessing workspace data.');
+      } else {
+        showToast(`Signed in as ${res.user.email}.`);
+      }
     } catch (err: any) {
       const msg = err?.message || 'Authentication failed.';
       setAuthError(msg);
@@ -726,6 +785,9 @@ export default function App() {
     setAuthError(null);
     try {
       const res = await loginWithDemoAccount(userId);
+      if (res.user.userId !== user?.userId || res.user.tenantId !== user?.tenantId) {
+        resetWorkspaceState();
+      }
       setUser(res.user);
       setPreviewRoleOverride(null);
       setActiveTab(getRolePolicy(res.user.role).defaultTab);
@@ -756,8 +818,11 @@ export default function App() {
     setAuthError(null);
     try {
       const res = await bootstrapFirmAdmin(payload);
+      resetWorkspaceState();
       setNeedsInitialSetup(false);
       setUser(res.user);
+      setPreviewRoleOverride(null);
+      setActiveTab(getRolePolicy(res.user.role).defaultTab);
       setUserProfile({
         ownerId: res.user.userId,
         email: res.user.email,
@@ -768,7 +833,12 @@ export default function App() {
         preferences,
       });
       setShowLanding(false);
-      showToast('Firm workspace initialized and signed in.');
+      if (!res.user.mfaVerified) {
+        setAccountModalOpen(true);
+        showToast('Firm workspace initialized. Complete 2FA setup to unlock Admin Console.');
+      } else {
+        showToast('Firm workspace initialized and signed in.');
+      }
     } catch (err: any) {
       const msg = err?.message || 'Firm initialization failed.';
       setAuthError(msg);
@@ -778,6 +848,7 @@ export default function App() {
 
   const handleSignOut = async () => {
     await logoutSession();
+    resetWorkspaceState();
     setUser(null);
     setUserProfile(null);
     setPreviewRoleOverride(null);
@@ -1104,6 +1175,10 @@ export default function App() {
         window_title: activeDoc,
         duration_ms: durationMinutes * 60 * 1000,
         active_task_id: timer.taskId,
+        entry_source: 'timer',
+        entry_project: newBlock.project,
+        entry_category: newBlock.category,
+        entry_title: newBlock.title,
       },
     });
     showToast(
@@ -1301,6 +1376,10 @@ export default function App() {
         window_title: `${payload.project} · ${payload.title}`,
         idle: false,
         duration_ms: durationMinutes * 60 * 1000,
+        entry_source: 'reconciled',
+        entry_project: payload.project,
+        entry_category: payload.category,
+        entry_title: payload.title,
       },
     });
     showToast(`Reconciled away interval into "${payload.title}".`);
@@ -1325,6 +1404,10 @@ export default function App() {
           window_title: blockData.documentTitle || blockData.title,
           duration_ms: blockData.durationMinutes * 60 * 1000,
           active_task_id: blockData.taskId,
+          entry_source: blockData.source === 'timer' ? 'timer' : 'manual',
+          entry_project: blockData.project,
+          entry_category: blockData.category,
+          entry_title: blockData.title,
         },
       });
       showToast(`Updated timeline block "${blockData.title}".`);
@@ -1344,6 +1427,10 @@ export default function App() {
           window_title: blockData.documentTitle || blockData.title,
           duration_ms: blockData.durationMinutes * 60 * 1000,
           active_task_id: blockData.taskId,
+          entry_source: blockData.source === 'timer' ? 'timer' : 'manual',
+          entry_project: blockData.project,
+          entry_category: blockData.category,
+          entry_title: blockData.title,
         },
       });
       showToast(`Logged ${blockData.durationMinutes}m to ${blockData.date}.`);
@@ -1712,6 +1799,35 @@ export default function App() {
 
         {/* Main 1440px Workspace Viewport */}
         <main className="flex-1 w-full max-w-[1440px] mx-auto px-6 py-6">
+          {user && !user.mfaVerified ? (
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-8 max-w-xl mx-auto space-y-4">
+              <div className="space-y-1.5">
+                <h1 className="font-display text-lg font-bold text-slate-900 dark:text-white">
+                  Two-Factor Authenticator Setup Required
+                </h1>
+                <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                  Signed in as <span className="font-mono font-semibold">{user.email}</span> ({rolePolicy.label}). Complete TOTP authenticator setup before accessing firm workspace data.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setAccountModalOpen(true)}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg cursor-pointer"
+                >
+                  Set Up 2FA Authenticator
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleSignOut()}
+                  className="px-3.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg cursor-pointer"
+                >
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
           {(effectiveTab === 'overview' || effectiveTab === 'admin') && (
             <RoleDashboardView
               activeRole={activeRole}
@@ -1955,6 +2071,8 @@ export default function App() {
                 );
               }}
             />
+          )}
+            </>
           )}
         </main>
 

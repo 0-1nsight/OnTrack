@@ -241,7 +241,11 @@ export async function fetchRoleOverviewApi(params: {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Role overview failed (${res.status})`);
+    throw new PortalApiError(
+      err.error || `Role overview failed (${res.status})`,
+      res.status,
+      err.code || 'ROLE_OVERVIEW_FAILED'
+    );
   }
   return res.json();
 }

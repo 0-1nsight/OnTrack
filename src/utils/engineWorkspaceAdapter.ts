@@ -142,11 +142,26 @@ export function mapEngineTaskToWorkspaceTask(
   };
 }
 
+function getSignalValue(signals: string[] | undefined, prefix: string): string | null {
+  if (!signals) return null;
+  const match = signals.find((sig) => sig.startsWith(prefix));
+  return match ? match.slice(prefix.length) : null;
+}
+
 function resolveSessionCategory(
   session: WorkSession,
   attr: AttributionRecord | undefined
 ): WorkCategory {
   if (session.isIdle) return 'admin';
+  const explicitCat = getSignalValue(session.entities.signals, 'entry_category:');
+  if (
+    explicitCat === 'deep_work' ||
+    explicitCat === 'collaborative' ||
+    explicitCat === 'billable' ||
+    explicitCat === 'admin'
+  ) {
+    return explicitCat;
+  }
   const activityLower = (session.entities.activityType || '').toLowerCase();
   const appLower = session.primaryApp.toLowerCase();
   if (appLower.includes('teams') || appLower.includes('slack') || appLower.includes('zoom')) {
@@ -234,33 +249,52 @@ export function adaptEngineSessionsToTimeline(params: {
       linkedTaskId: attr?.taskId || null,
     });
 
+    const entrySource = getSignalValue(s.entities.signals, 'entry_source:');
+    const entryProject = getSignalValue(s.entities.signals, 'entry_project:');
+    const entryTitle = getSignalValue(s.entities.signals, 'entry_title:');
+    const entryTaskId = getSignalValue(s.entities.signals, 'entry_task:');
+    const isUserLogged =
+      entrySource === 'manual' ||
+      entrySource === 'timer' ||
+      entrySource === 'reconciled' ||
+      s.primaryApp === 'OnTrack Manual' ||
+      s.primaryApp === 'OnTrack Reconciled';
+
     const shouldCreateBlock =
       includeAllAttributions ||
+      isUserLogged ||
       (attr && (attr.status === 'confirmed' || attr.status === 'detected'));
 
     if (shouldCreateBlock) {
       const category = resolveSessionCategory(s, attr);
+      const blockSource: TimeBlock['source'] =
+        entrySource === 'manual'
+          ? 'manual'
+          : entrySource === 'timer'
+          ? 'timer'
+          : 'reconciled';
       timeBlocks.push({
         id: `blk-eng-sync-${s.id}`,
-        taskId: attr?.taskId || null,
-        title: attr?.taskTitle || s.primaryTitle,
+        taskId: entryTaskId || attr?.taskId || null,
+        title: entryTitle || attr?.taskTitle || s.primaryTitle,
         project:
+          entryProject ||
           attr?.clientName ||
           s.entities.clientName ||
           (category === 'billable' ? 'Tax & Close' : 'Core Platform'),
         category,
-        tags: [
-          'auto-tracked',
-          attr?.status || 'detected',
-          s.osPlatform,
-        ].filter(Boolean),
+        tags: isUserLogged
+          ? [blockSource, s.osPlatform].filter(Boolean)
+          : ['auto-tracked', attr?.status || 'detected', s.osPlatform].filter(Boolean),
         date: dateStr,
         startTime: startMin,
         endTime: endMin,
         durationMinutes: endMin - startMin,
-        source: 'reconciled',
+        source: blockSource,
         isBillable: category === 'billable',
-        notes: `${attr?.reason || 'Captured by OnTrack Engine'} · ${s.primaryApp}`,
+        notes: isUserLogged
+          ? `Synced ${blockSource} time block · ${s.primaryApp}`
+          : `${attr?.reason || 'Captured by OnTrack Engine'} · ${s.primaryApp}`,
         appName: s.primaryApp,
         documentTitle: s.primaryTitle,
       });
@@ -297,6 +331,7 @@ export function adaptEngineSnapshotToWorkspace(params: {
   existingDocs: DocumentUsageSegment[];
   boards: WorkspaceBoard[];
   includeAllSessionBlocks?: boolean;
+  isDemoSandbox?: boolean;
 }): {
   tasks: Task[];
   timeBlocks: TimeBlock[];
@@ -313,14 +348,39 @@ export function adaptEngineSnapshotToWorkspace(params: {
     existingDocs,
     boards,
     includeAllSessionBlocks = false,
+    isDemoSandbox = snapshot.authMode === 'demo',
   } = params;
 
-  const existingTaskMap = new Map(existingTasks.map((t) => [t.id, t]));
+  const isDemoArtifactId = (id: string) =>
+    id.startsWith('demo_tsk_') ||
+    id.startsWith('demo-tsk-') ||
+    id.startsWith('demo-blk-') ||
+    id.startsWith('demo-seg-') ||
+    id.startsWith('demo-app-') ||
+    id.startsWith('demo-doc-');
+
+  const scopedExistingTasks = isDemoSandbox
+    ? existingTasks
+    : existingTasks.filter((t) => !isDemoArtifactId(t.id));
+  const scopedExistingBlocks = isDemoSandbox
+    ? existingBlocks
+    : existingBlocks.filter((b) => !isDemoArtifactId(b.id));
+  const scopedExistingActivity = isDemoSandbox
+    ? existingActivity
+    : existingActivity.filter((s) => !isDemoArtifactId(s.id));
+  const scopedExistingApps = isDemoSandbox
+    ? existingApps
+    : existingApps.filter((a) => !isDemoArtifactId(a.id));
+  const scopedExistingDocs = isDemoSandbox
+    ? existingDocs
+    : existingDocs.filter((d) => !isDemoArtifactId(d.id));
+
+  const existingTaskMap = new Map(scopedExistingTasks.map((t) => [t.id, t]));
   const engineTasksMapped = snapshot.tasks.map((et) =>
     mapEngineTaskToWorkspaceTask(et, existingTaskMap.get(et.id), boards)
   );
   const engineTaskIds = new Set(engineTasksMapped.map((t) => t.id));
-  const localDraftTasks = existingTasks.filter(
+  const localDraftTasks = scopedExistingTasks.filter(
     (t) =>
       !engineTaskIds.has(t.id) &&
       !t.id.startsWith('tsk-eng-') &&
@@ -336,7 +396,7 @@ export function adaptEngineSnapshotToWorkspace(params: {
   });
 
   const timeBlocks = mergeByIdWithDedupe(
-    existingBlocks,
+    scopedExistingBlocks,
     derived.timeBlocks,
     'blk-eng-sync-',
     (localB, engB) =>
@@ -346,13 +406,13 @@ export function adaptEngineSnapshotToWorkspace(params: {
   );
 
   const activitySegments = mergeByIdWithDedupe(
-    existingActivity,
+    scopedExistingActivity,
     derived.activitySegments,
     'seg-eng-sync-'
   );
 
   const appSegments = mergeByIdWithDedupe(
-    existingApps,
+    scopedExistingApps,
     derived.appSegments,
     'app-eng-sync-',
     (localA, engA) =>
@@ -362,7 +422,7 @@ export function adaptEngineSnapshotToWorkspace(params: {
   );
 
   const documentSegments = mergeByIdWithDedupe(
-    existingDocs,
+    scopedExistingDocs,
     derived.documentSegments,
     'doc-eng-sync-',
     (localD, engD) =>

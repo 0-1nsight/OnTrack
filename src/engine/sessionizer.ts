@@ -83,6 +83,22 @@ export function sessionizeEvents(
         }
       : extractEntitiesFromPayload(ev.payload, clients, activityRules);
 
+    if (!isIdle && ev.payload.entry_source) {
+      entities.signals.push(`entry_source:${ev.payload.entry_source}`);
+      if (ev.payload.entry_project) {
+        entities.signals.push(`entry_project:${ev.payload.entry_project}`);
+      }
+      if (ev.payload.entry_category) {
+        entities.signals.push(`entry_category:${ev.payload.entry_category}`);
+      }
+      if (ev.payload.entry_title) {
+        entities.signals.push(`entry_title:${ev.payload.entry_title}`);
+      }
+      if (ev.payload.active_task_id) {
+        entities.signals.push(`entry_task:${ev.payload.active_task_id}`);
+      }
+    }
+
     return { event: ev, startMs, endMs, durMs, isIdle, entities };
   });
 
@@ -151,8 +167,15 @@ export function sessionizeEvents(
 
     const gapMs = Math.max(0, unit.startMs - current.endMs);
 
-    // Long idle gap closes current session cleanly
-    if (gapMs >= idleCloseMs || unit.isIdle !== current.isIdle) {
+    // Long idle gap closes current session cleanly; explicit user-logged entries never merge across boundaries
+    const currentIsExplicit = Boolean(current.events[0]?.event.payload.entry_source);
+    const unitIsExplicit = Boolean(unit.event.payload.entry_source);
+    if (
+      gapMs >= idleCloseMs ||
+      unit.isIdle !== current.isIdle ||
+      currentIsExplicit ||
+      unitIsExplicit
+    ) {
       flushCurrent();
       i--;
       continue;

@@ -47,6 +47,10 @@ export interface TrackingEventPayload {
   os_platform?: OSPlatform;
   extension_connected?: boolean;
   active_task_id?: string | null;
+  entry_source?: 'manual' | 'timer' | 'reconciled';
+  entry_project?: string;
+  entry_category?: 'deep_work' | 'collaborative' | 'billable' | 'admin';
+  entry_title?: string;
   provisional_match?: ProvisionalMatch;
 
   // State change fields (high-priority, never batched)

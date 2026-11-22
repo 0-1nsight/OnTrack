@@ -202,6 +202,11 @@ export async function createOnTrackServer(options?: CreateServerOptions) {
     })
   );
 
+  // Explicit JSON 404 for unknown /api/* routes before Vite/SPA HTML fallback
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'API endpoint not found', code: 'NOT_FOUND' });
+  });
+
   // Centralized Error Handler before Vite/SPA fallback
   app.use('/api', centralErrorHandler);
 

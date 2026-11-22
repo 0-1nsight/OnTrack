@@ -83,7 +83,7 @@ export const TRACKED_APPS: { name: string; category: AppCategory }[] = [
   { name: 'Microsoft Teams', category: 'comms' },
   { name: 'Figma', category: 'design' },
   { name: 'Adobe Acrobat', category: 'docs' },
-  { name: 'onTrack Web', category: 'browser' },
+  { name: 'OnTrack Web', category: 'browser' },
 ];
 
 export const APP_COLORS: Record<string, ColorStyleTokens> = {
@@ -141,7 +141,7 @@ export const APP_COLORS: Record<string, ColorStyleTokens> = {
     text: 'text-amber-800 dark:text-amber-200',
     bar: 'bg-amber-600',
   },
-  'onTrack Web': {
+  'OnTrack Web': {
     bg: 'bg-indigo-50 dark:bg-indigo-950/50',
     border: 'border-indigo-200 dark:border-indigo-800',
     text: 'text-indigo-800 dark:text-indigo-200',

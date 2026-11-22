@@ -285,7 +285,9 @@ export async function flushQueuedEventsOverHttp(params: {
   clockOffsetMs: number;
   conflictsCreated: SyncConflict[];
 }> {
-  const queue = loadLocalQueue();
+  const queue = loadLocalQueue().filter(
+    (e) => e.tenant_id === params.tenantId && e.user_id === params.userId
+  );
   if (queue.length === 0) {
     return {
       acceptedCount: 0,

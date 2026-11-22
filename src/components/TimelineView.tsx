@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Play,
   Plus,
@@ -28,6 +28,7 @@ import {
   formatMinutesToHHMM,
   formatDuration,
 } from '../utils/workspaceConstants';
+import { toLocalDateString } from '../utils/engineWorkspaceAdapter';
 
 interface TimelineViewProps {
   selectedDate: string;
@@ -75,10 +76,25 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   const [projectFilter, setProjectFilter] = useState<string>('all');
   const [detailsTab, setDetailsTab] = useState<'blocks' | 'apps' | 'docs'>('blocks');
   const [detailsSearch, setDetailsSearch] = useState('');
+  const [nowDate, setNowDate] = useState<Date>(() => new Date());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNowDate(new Date());
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const todayDateStr = toLocalDateString(nowDate);
+  const nowMinutes = nowDate.getHours() * 60 + nowDate.getMinutes();
 
   const rangeStartMin = zoomMode === 'workday' ? 8 * 60 : 0; // 08:00 or 00:00
   const rangeEndMin = zoomMode === 'workday' ? 20 * 60 : 24 * 60; // 20:00 or 24:00
   const totalRangeMins = rangeEndMin - rangeStartMin;
+  const isTodaySelected = selectedDate === todayDateStr;
+  const showDayNowLine =
+    isTodaySelected && nowMinutes >= rangeStartMin && nowMinutes <= rangeEndMin;
+  const dayNowLeftPct = ((nowMinutes - rangeStartMin) / totalRangeMins) * 100;
 
   const dayBlocks = useMemo(() => {
     return timeBlocks
@@ -667,6 +683,27 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
                           </button>
                         );
                       })}
+
+                      {/* Current Time ("Now") Line across today's column in Week Grid */}
+                      {d === todayDateStr &&
+                        nowMinutes >= weekRangeStart &&
+                        nowMinutes <= weekRangeStart + weekRangeMins && (
+                          <div
+                            aria-label={`Current time ${formatMinutesToHHMM(nowMinutes)}`}
+                            style={{
+                              top: `${(
+                                ((nowMinutes - weekRangeStart) / weekRangeMins) *
+                                100
+                              ).toFixed(2)}%`,
+                            }}
+                            className="pointer-events-none absolute left-0 right-0 z-20 flex items-center"
+                          >
+                            <span className="-ml-1 px-1 py-px rounded bg-rose-500 text-white font-mono text-[9px] font-bold tabular-nums leading-none shadow-xs">
+                              {formatMinutesToHHMM(nowMinutes)}
+                            </span>
+                            <div className="h-[2px] flex-1 bg-rose-400 shadow-[0_0_6px_rgba(251,113,133,0.45)]" />
+                          </div>
+                        )}
                     </div>
                   );
                 })}
@@ -696,6 +733,28 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
             <span>Add Manual Time Block</span>
           </button>
         </div>
+
+        {/* Synchronized Time Ruler + 5 Activity Tracks Container (shared coordinates for Now Line) */}
+        <div className="relative">
+          {showDayNowLine && (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 z-20 grid grid-cols-[185px_1fr] gap-4"
+            >
+              <div />
+              <div className="relative h-full">
+                <div
+                  style={{ left: `${dayNowLeftPct.toFixed(2)}%` }}
+                  className="absolute top-0 bottom-0 -translate-x-1/2 flex flex-col items-center"
+                >
+                  <span className="px-1.5 py-0.5 rounded bg-rose-500 text-white font-mono text-[10px] font-bold tabular-nums leading-none shadow-xs whitespace-nowrap">
+                    {formatMinutesToHHMM(nowMinutes)}
+                  </span>
+                  <div className="w-[2.5px] flex-1 bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.5)]" />
+                </div>
+              </div>
+            </div>
+          )}
 
         {/* Time Ruler Header */}
         <div className="grid grid-cols-[185px_1fr] gap-4 items-center mb-2">
@@ -992,11 +1051,33 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
             <span>Collaborative (Amber)</span>
             <span>·</span>
             <span>Admin & Ops (Slate)</span>
+            {showDayNowLine && (
+              <>
+                <span>·</span>
+                <span className="inline-flex items-center gap-1.5 font-mono tabular-nums text-rose-600 dark:text-rose-400 font-semibold">
+                  <span className="inline-block w-0.5 h-3 bg-rose-400" aria-hidden="true" />
+                  <span>Now {formatMinutesToHHMM(nowMinutes)}</span>
+                </span>
+              </>
+            )}
+            {isTodaySelected && !showDayNowLine && zoomMode === 'workday' && (
+              <>
+                <span>·</span>
+                <button
+                  type="button"
+                  onClick={() => setZoomMode('full24')}
+                  className="font-mono tabular-nums text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
+                >
+                  Now ({formatMinutesToHHMM(nowMinutes)}) outside 08:00–20:00 · Switch to Full 24h
+                </button>
+              </>
+            )}
           </div>
           <div className="font-mono tabular-nums">
             Showing {formatMinutesToHHMM(rangeStartMin)} to{' '}
             {formatMinutesToHHMM(rangeEndMin)}
           </div>
+        </div>
         </div>
       </div>
 

@@ -40,6 +40,7 @@ import {
   fetchRoleOverviewApi,
   InviteRecord,
   listInvitesApi,
+  PortalApiError,
   RoleOverviewData,
   updatePortalBrandingApi,
   updateTemplateMilestonesApi,
@@ -70,6 +71,7 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
   const [invites, setInvites] = useState<InviteRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
 
   // Admin invite form state
   const [inviteName, setInviteName] = useState('');
@@ -132,8 +134,13 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
   );
 
   const loadData = useCallback(async () => {
+    if (currentUser && !currentUser.mfaVerified) {
+      return;
+    }
+
     setLoading(true);
     setError(null);
+    setErrorCode(null);
     try {
       const overview = await fetchRoleOverviewApi({
         tenantId,
@@ -170,12 +177,17 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
       }
     } catch (err: any) {
       setError(err?.message || 'Unable to load role operational overview.');
+      setErrorCode(err instanceof PortalApiError ? err.code : null);
     } finally {
       setLoading(false);
     }
   }, [tenantId, activeRole, currentUser, syncPortalConfigState]);
 
   useEffect(() => {
+    if (currentUser && !currentUser.mfaVerified) {
+      return;
+    }
+
     let active = true;
     const run = async () => {
       try {
@@ -190,6 +202,7 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
           setDelayedThresholdDraft(overview.adminAlerts.delayedThresholdSeconds ?? 120);
         }
         setError(null);
+        setErrorCode(null);
         if (activeRole === 'admin_it') {
           if (currentUser) {
             const inv = await listInvitesApi().catch(() => ({ invites: [] }));
@@ -210,6 +223,7 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
       } catch (err: any) {
         if (active) {
           setError(err?.message || 'Unable to load role operational overview.');
+          setErrorCode(err instanceof PortalApiError ? err.code : null);
         }
       } finally {
         if (active) setLoading(false);
@@ -379,7 +393,14 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
     }
   };
 
-  if (loading && !data) {
+  const mfaBlocked = Boolean(currentUser && !currentUser.mfaVerified);
+  const effectiveError = mfaBlocked
+    ? currentUser?.mustEnrollMfa
+      ? 'Two-factor authenticator setup is required for your role before accessing workspace data.'
+      : 'Complete two-factor verification to continue.'
+    : error;
+
+  if (!mfaBlocked && loading && !data) {
     return (
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-8 text-sm text-slate-500 dark:text-slate-400">
         Loading {policy.label} workspace...
@@ -387,16 +408,22 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
     );
   }
 
-  if (error && !data) {
+  if (mfaBlocked || (effectiveError && !data)) {
+    const isMfaError =
+      mfaBlocked ||
+      errorCode === 'MFA_ENROLLMENT_REQUIRED' ||
+      errorCode === 'MFA_VERIFICATION_REQUIRED';
     return (
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-8 space-y-4">
         <div className="flex items-start gap-3">
           <Lock className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
           <div>
             <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
-              Authentication Required for {policy.label}
+              {isMfaError
+                ? 'Two-Factor Authenticator Setup Required'
+                : `Authentication Required for ${policy.label}`}
             </h2>
-            <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">{error}</p>
+            <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">{effectiveError}</p>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -406,7 +433,7 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
               onClick={onOpenAccount}
               className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg cursor-pointer"
             >
-              Sign In
+              {isMfaError ? 'Set Up 2FA Authenticator' : 'Sign In'}
             </button>
           )}
           <button
