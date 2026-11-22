@@ -215,7 +215,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
             </div>
           </div>
 
-          {/* Right: ManicTime Presence Sensor, Date Picker & Workspace Settings */}
+          {/* Right: OnTrack Presence Sensor, Date Picker & Workspace Settings */}
           <div className="flex items-center gap-3">
             {/* Presence & Idle Sensor Readout */}
             <div className="flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs">
@@ -241,7 +241,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
                 type="button"
                 onClick={onSimulateIdle}
                 className="ml-1 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:text-amber-300 bg-amber-100/80 dark:bg-amber-500/20 hover:bg-amber-200/80 rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                title="Trigger ManicTime-style Away/Idle reconciliation prompt to test idle handling"
+                title="Trigger OnTrack Away/Idle reconciliation prompt to test idle handling"
               >
                 Test Idle Prompt
               </button>
@@ -312,7 +312,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
           </div>
         </div>
 
-        {/* Secondary Row: ManicTime Active Application & Document Context Tracker */}
+        {/* Secondary Row: OnTrack Active Application & Document Context Tracker */}
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-200/70 dark:border-slate-800 text-xs">
           <div className="flex flex-wrap items-center gap-2.5 flex-1">
             <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap">
@@ -360,7 +360,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
                 )
               }
               className="px-2.5 py-1 text-[11px] font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 border border-indigo-200 dark:border-indigo-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              title="Record current application and opened document onto today's ManicTime timeline"
+              title="Record current application and opened document onto today's OnTrack timeline"
             >
               Record App & Doc Session
             </button>

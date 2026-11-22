@@ -55,7 +55,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
     null
   );
   const mode: 'login' | 'setup' =
-    modeOverride ?? (needsInitialSetup ? 'setup' : 'login');
+    modeOverride ?? (needsInitialSetup && !demoModeEnabled ? 'setup' : 'login');
   const setMode = (next: 'login' | 'setup') => setModeOverride(next);
   const [firmName, setFirmName] = useState('');
   const [fullName, setFullName] = useState('');
@@ -421,7 +421,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       <ArrowRight className="w-3.5 h-3.5 shrink-0" />
                     </button>
 
-                    {demoModeEnabled && demoAccounts.length > 0 && onDemoLogin && mode === 'login' && (
+                    {demoModeEnabled && demoAccounts.length > 0 && onDemoLogin && (
                       <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
                         <div className="flex items-center justify-between text-[11px] font-semibold text-slate-600 dark:text-slate-300">
                           <span>Demo Accounts by Role &amp; Shift</span>

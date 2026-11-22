@@ -3,7 +3,6 @@ import {
   AlertTriangle,
   ArrowLeft,
   Bell,
-  Building2,
   CheckCircle2,
   Clock,
   Download,
@@ -179,12 +178,63 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const [wsConnected, setWsConnected] = useState(false);
   const [liveNotifications, setLiveNotifications] = useState<PortalLiveNotification[]>([]);
   const seenMilestoneIdsRef = useRef<Set<string>>(new Set());
+  const prevClientIdRef = useRef<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const applyOverview = useCallback((overview: PortalOverviewData) => {
+    if (prevClientIdRef.current !== overview.clientId) {
+      prevClientIdRef.current = overview.clientId;
+      seenMilestoneIdsRef.current.clear();
+      for (const m of overview.milestones) {
+        seenMilestoneIdsRef.current.add(m.id);
+      }
+      setLiveNotifications([]);
+    } else {
+      const newNotes: PortalLiveNotification[] = [];
+      for (const m of overview.milestones) {
+        if (!seenMilestoneIdsRef.current.has(m.id) && m.status === 'confirmed') {
+          newNotes.push({
+            id: `notif-${m.id}`,
+            title: `Milestone Confirmed: ${m.title}`,
+            detail: `Confirmed by ${m.confirmedBy}`,
+            timeUtc: m.confirmedAtUtc,
+            tone: 'confirmed',
+          });
+        }
+      }
+      if (newNotes.length > 0) {
+        setLiveNotifications((existing) => [...newNotes, ...existing].slice(0, 6));
+      }
+      for (const m of overview.milestones) {
+        seenMilestoneIdsRef.current.add(m.id);
+      }
+    }
+
+    setData(overview);
+    setErrorInfo(null);
+
+    if (overview.requests.length > 0) {
+      setSelectedRequestId((prev) =>
+        prev && overview.requests.some((r) => r.id === prev)
+          ? prev
+          : overview.requests[0].id
+      );
+    } else {
+      setSelectedRequestId('');
+    }
+
+    if (overview.templates.length > 0) {
+      setNewReqTemplateId((prev) =>
+        prev && overview.templates.some((t) => t.id === prev)
+          ? prev
+          : overview.templates[0].id
+      );
+    }
+  }, []);
 
   const loadPortal = useCallback(
     async (opts?: { silent?: boolean; clientIdOverride?: string }) => {
       if (!opts?.silent) setLoading(true);
-      setErrorInfo(null);
       try {
         const overview = await fetchPortalOverviewApi({
           tenantId,
@@ -197,49 +247,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               ? selectedClientId || undefined
               : undefined,
         });
-
-        setData((prev) => {
-          // Track newly confirmed milestones to surface notifications
-          if (prev && prev.clientId === overview.clientId) {
-            const newNotes: PortalLiveNotification[] = [];
-            for (const m of overview.milestones) {
-              if (!seenMilestoneIdsRef.current.has(m.id) && m.status === 'confirmed') {
-                newNotes.push({
-                  id: `notif-${m.id}`,
-                  title: `Milestone Confirmed: ${m.title}`,
-                  detail: `Confirmed by ${m.confirmedBy}`,
-                  timeUtc: m.confirmedAtUtc,
-                  tone: 'confirmed',
-                });
-              }
-            }
-            if (newNotes.length > 0) {
-              setLiveNotifications((existing) => [...newNotes, ...existing].slice(0, 6));
-            }
-          }
-          for (const m of overview.milestones) {
-            seenMilestoneIdsRef.current.add(m.id);
-          }
-          return overview;
-        });
-
-        if (overview.requests.length > 0) {
-          setSelectedRequestId((prev) =>
-            prev && overview.requests.some((r) => r.id === prev)
-              ? prev
-              : overview.requests[0].id
-          );
-        } else {
-          setSelectedRequestId('');
-        }
-
-        if (overview.templates.length > 0) {
-          setNewReqTemplateId((prev) =>
-            prev && overview.templates.some((t) => t.id === prev)
-              ? prev
-              : overview.templates[0].id
-          );
-        }
+        applyOverview(overview);
       } catch (err: any) {
         const code =
           err instanceof PortalApiError ? err.code : 'PORTAL_LOAD_FAILED';
@@ -251,15 +259,46 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         if (!opts?.silent) setLoading(false);
       }
     },
-    [tenantId, activeRole, currentUser, isStaffManager, selectedClientId]
+    [tenantId, activeRole, currentUser, isStaffManager, selectedClientId, applyOverview]
   );
 
-  // Initial + dependency-triggered load
+  // Initial + dependency-triggered load (purely async state updates after await)
   useEffect(() => {
-    seenMilestoneIdsRef.current.clear();
-    setLiveNotifications([]);
-    void loadPortal();
-  }, [loadPortal, currentUser?.userId, currentUser?.clientId]);
+    let active = true;
+    const run = async () => {
+      try {
+        const overview = await fetchPortalOverviewApi({
+          tenantId,
+          viewerRole: activeRole,
+          previewUserId: !currentUser ? 'demo_u_client_01' : undefined,
+          clientId: isStaffManager ? selectedClientId || undefined : undefined,
+        });
+        if (!active) return;
+        applyOverview(overview);
+      } catch (err: any) {
+        if (!active) return;
+        const code =
+          err instanceof PortalApiError ? err.code : 'PORTAL_LOAD_FAILED';
+        setErrorInfo({
+          code,
+          message: err?.message || 'Unable to load Client Portal.',
+        });
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void run();
+    return () => {
+      active = false;
+    };
+  }, [
+    tenantId,
+    activeRole,
+    currentUser,
+    isStaffManager,
+    selectedClientId,
+    applyOverview,
+  ]);
 
   // Real-time WebSocket subscription + HTTPS polling fallback (SYNC-1 / PORT-1)
   useEffect(() => {
@@ -295,27 +334,28 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
             (msg.type === 'state:updated' && msg.portalVisible === true)
           ) {
             if (msg.kind === 'milestone_confirmed' && msg.title) {
-              setLiveNotifications((prev) => [
-                {
-                  id: `ws-${Date.now()}`,
-                  title: `Confirmed Milestone Published: ${String(msg.title)}`,
-                  detail: 'Live update received via real-time gateway',
-                  timeUtc: msg.sentAtUtc || new Date().toISOString(),
-                  tone: 'confirmed',
-                },
-                ...prev.filter((p) => p.title !== `Confirmed Milestone Published: ${String(msg.title)}`),
-              ].slice(0, 6));
+              const confirmedItem: PortalLiveNotification = {
+                id: `ws-${Date.now()}`,
+                title: `Confirmed Milestone Published: ${String(msg.title)}`,
+                detail: 'Live update received via real-time gateway',
+                timeUtc: msg.sentAtUtc || new Date().toISOString(),
+                tone: 'confirmed',
+              };
+              setLiveNotifications((prev) =>
+                [
+                  confirmedItem,
+                  ...prev.filter((p) => p.title !== confirmedItem.title),
+                ].slice(0, 6)
+              );
             } else if (msg.kind === 'milestone_withdrawn') {
-              setLiveNotifications((prev) => [
-                {
-                  id: `ws-${Date.now()}`,
-                  title: 'Milestone Correction Notice Published',
-                  detail: String(msg.reason || 'Confirmed milestone withdrawn by firm.'),
-                  timeUtc: msg.sentAtUtc || new Date().toISOString(),
-                  tone: 'withdrawn',
-                },
-                ...prev,
-              ].slice(0, 6));
+              const withdrawnItem: PortalLiveNotification = {
+                id: `ws-${Date.now()}`,
+                title: 'Milestone Correction Notice Published',
+                detail: String(msg.reason || 'Confirmed milestone withdrawn by firm.'),
+                timeUtc: msg.sentAtUtc || new Date().toISOString(),
+                tone: 'withdrawn',
+              };
+              setLiveNotifications((prev) => [withdrawnItem, ...prev].slice(0, 6));
             }
             void loadPortal({ silent: true });
           }
@@ -324,7 +364,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         }
       };
     } catch {
-      setWsConnected(false);
+      // WebSocket unsupported or blocked; HTTPS polling fallback handles sync
     }
 
     // HTTPS polling fallback (5s when WS is offline, 30s safety refresh otherwise)
@@ -565,15 +605,12 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     return data.requests.filter((r) => r.stage === stageFilter);
   }, [data, stageFilter]);
 
-  const activeReq = useMemo(() => {
-    if (!data) return null;
-    return (
-      data.requests.find((r) => r.id === selectedRequestId) ||
+  const activeReq = data
+    ? data.requests.find((r) => r.id === selectedRequestId) ||
       filteredRequests[0] ||
       data.requests[0] ||
       null
-    );
-  }, [data, selectedRequestId, filteredRequests]);
+    : null;
 
   if (loading && !data) {
     return (

@@ -158,7 +158,7 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
 
     onCreateTask({
       title: newTitle.trim(),
-      description: 'Created from ClickUp task workspace.',
+      description: 'Created from OnTrack task workspace.',
       project: newProject,
       status: 'todo',
       priority: newPriority,
@@ -179,7 +179,7 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-2 border-b border-slate-200 dark:border-slate-800">
         <div>
           <h1 className="font-display text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
-            ClickUp Task & Time Workspace
+            OnTrack Task &amp; Time Workspace
           </h1>
           <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5">
             Manage deliverables, compare planned estimates vs. actual timeline logs, and launch live timers

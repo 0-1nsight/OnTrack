@@ -362,6 +362,13 @@ export function createPortalRouter(deps: {
     asyncHandler(async (req, res) => {
       const authCtx = await requirePortalAccess(req);
       const parsed = DocUploadSchema.parse(req.body);
+      const scopedClientId = authCtx.role === 'client' ? authCtx.clientId || 'demo_cli-acme' : null;
+      await deps.portalStore.assertDocumentRequestUploadAccess({
+        tenantId: authCtx.tenantId,
+        docReqId: req.params.docReqId,
+        scopedClientId,
+      });
+
       const buffer = Buffer.from(parsed.contentBase64, 'base64');
       const saved = savePortableFileToDisk({
         tenantId: authCtx.tenantId,
@@ -386,7 +393,7 @@ export function createPortalRouter(deps: {
       const out = await deps.portalStore.attachDocumentUpload({
         tenantId: authCtx.tenantId,
         docReqId: req.params.docReqId,
-        scopedClientId: authCtx.role === 'client' ? authCtx.clientId || 'demo_cli-acme' : null,
+        scopedClientId,
         fileId: fileRecord.fileId,
         fileName: fileRecord.originalName,
       });

@@ -53,14 +53,24 @@ import { AccountModal } from './components/AccountModal';
 import { LandingPage } from './components/LandingPage';
 
 const STORAGE_KEYS = {
-  TASKS: 'chronoflow_tasks_v1',
-  BLOCKS: 'chronoflow_blocks_v1',
-  SEGMENTS: 'chronoflow_segments_v1',
-  APP_SEGMENTS: 'chronoflow_app_segments_v1',
-  DOC_SEGMENTS: 'chronoflow_doc_segments_v1',
-  REPORTS: 'chronoflow_reports_v1',
-  PREFS: 'chronoflow_prefs_v1',
+  TASKS: 'ontrack_tasks_v1',
+  BLOCKS: 'ontrack_blocks_v1',
+  SEGMENTS: 'ontrack_segments_v1',
+  APP_SEGMENTS: 'ontrack_app_segments_v1',
+  DOC_SEGMENTS: 'ontrack_doc_segments_v1',
+  REPORTS: 'ontrack_reports_v1',
+  PREFS: 'ontrack_prefs_v1',
 };
+
+function readStorageJson<T>(primaryKey: string): T | null {
+  try {
+    const raw = localStorage.getItem(primaryKey);
+    if (!raw) return null;
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
 
 function getCurrentMinuteOfDay(): number {
   const now = new Date();
@@ -76,79 +86,32 @@ export default function App() {
 
   // Workspace Persistent State
   const [tasks, setTasks] = useState<Task[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.TASKS);
-      if (saved) return JSON.parse(saved);
-    } catch {
-      // ignore
-    }
-    return createSeedDataset().tasks;
+    return readStorageJson<Task[]>(STORAGE_KEYS.TASKS) || createSeedDataset().tasks;
   });
 
   const [timeBlocks, setTimeBlocks] = useState<TimeBlock[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.BLOCKS);
-      if (saved) return JSON.parse(saved);
-    } catch {
-      // ignore
-    }
-    return createSeedDataset().timeBlocks;
+    return readStorageJson<TimeBlock[]>(STORAGE_KEYS.BLOCKS) || createSeedDataset().timeBlocks;
   });
 
-  const [activitySegments, setActivitySegments] = useState<ActivitySegment[]>(
-    () => {
-      try {
-        const saved = localStorage.getItem(STORAGE_KEYS.SEGMENTS);
-        if (saved) return JSON.parse(saved);
-      } catch {
-        // ignore
-      }
-      return createSeedDataset().activitySegments;
-    }
-  );
+  const [activitySegments, setActivitySegments] = useState<ActivitySegment[]>(() => {
+    return readStorageJson<ActivitySegment[]>(STORAGE_KEYS.SEGMENTS) || createSeedDataset().activitySegments;
+  });
 
-  const [appSegments, setAppSegments] = useState<ApplicationUsageSegment[]>(
-    () => {
-      try {
-        const saved = localStorage.getItem(STORAGE_KEYS.APP_SEGMENTS);
-        if (saved) return JSON.parse(saved);
-      } catch {
-        // ignore
-      }
-      return createSeedDataset().appSegments;
-    }
-  );
+  const [appSegments, setAppSegments] = useState<ApplicationUsageSegment[]>(() => {
+    return readStorageJson<ApplicationUsageSegment[]>(STORAGE_KEYS.APP_SEGMENTS) || createSeedDataset().appSegments;
+  });
 
-  const [documentSegments, setDocumentSegments] = useState<
-    DocumentUsageSegment[]
-  >(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.DOC_SEGMENTS);
-      if (saved) return JSON.parse(saved);
-    } catch {
-      // ignore
-    }
-    return createSeedDataset().documentSegments;
+  const [documentSegments, setDocumentSegments] = useState<DocumentUsageSegment[]>(() => {
+    return readStorageJson<DocumentUsageSegment[]>(STORAGE_KEYS.DOC_SEGMENTS) || createSeedDataset().documentSegments;
   });
 
   const [reports, setReports] = useState<WeeklyReport[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.REPORTS);
-      if (saved) return JSON.parse(saved);
-    } catch {
-      // ignore
-    }
-    return createSeedDataset().reports;
+    return readStorageJson<WeeklyReport[]>(STORAGE_KEYS.REPORTS) || createSeedDataset().reports;
   });
 
   const [preferences, setPreferences] = useState<WorkspacePreferences>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.PREFS);
-      if (saved) return { ...DEFAULT_PREFERENCES, ...JSON.parse(saved) };
-    } catch {
-      // ignore
-    }
-    return DEFAULT_PREFERENCES;
+    const saved = readStorageJson<Partial<WorkspacePreferences>>(STORAGE_KEYS.PREFS);
+    return saved ? { ...DEFAULT_PREFERENCES, ...saved } : DEFAULT_PREFERENCES;
   });
 
   // Persist to localStorage
@@ -223,7 +186,7 @@ export default function App() {
     isRunning: false,
     isPaused: false,
     taskId: 'tsk-101',
-    customTitle: 'Architect ManicTime-style timeline query indexer',
+    customTitle: 'Architect multi-track timeline query indexer',
     project: 'Core Platform',
     category: 'deep_work',
     tags: ['architecture', 'timeline-engine'],
@@ -232,7 +195,7 @@ export default function App() {
     accumulatedSeconds: 0,
     startMinuteOfDay: getCurrentMinuteOfDay(),
     activeAppName: 'VS Code',
-    activeDocumentTitle: 'src/engine/intervalTree.ts — ontrack',
+    activeDocumentTitle: 'src/engine/intervalTree.ts — OnTrack',
   });
 
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
@@ -556,7 +519,11 @@ export default function App() {
     await logoutSession();
     setUser(null);
     setUserProfile(null);
+    setPreviewRoleOverride(null);
+    setActiveTab('timeline');
     setAccountModalOpen(false);
+    setPrefsModalOpen(false);
+    setQuickLogOpen(false);
     setShowLanding(true);
     showToast('Signed out.');
   };
@@ -645,34 +612,34 @@ export default function App() {
     return () => clearInterval(interval);
   }, [timer, idleAlert.isOpen, preferences.idleThresholdSeconds, showLanding, user, activeRole]);
 
-  // Sync browser document.title with active work context (ManicTime-style live window capture)
+  // Sync browser document.title with active work context
   useEffect(() => {
     if (showLanding && !user) {
-      document.title = 'onTrack — Task Workspace & Timeline Tracker';
+      document.title = 'OnTrack — Accounting Resource Management & Auto-Tracking';
       return;
     }
     if (activeRole === 'client') {
-      document.title = 'onTrack — Client Portal';
+      document.title = 'OnTrack — Client Portal';
       return;
     }
     const docLabel = timer.activeDocumentTitle || timer.customTitle || 'Workspace';
-    document.title = `${timer.isRunning && !timer.isPaused ? '● ' : ''}${timer.activeAppName} · ${docLabel} — onTrack`;
+    document.title = `${timer.isRunning && !timer.isPaused ? '● ' : ''}${timer.activeAppName} · ${docLabel} — OnTrack`;
   }, [timer.activeAppName, timer.activeDocumentTitle, timer.customTitle, timer.isRunning, timer.isPaused, showLanding, user, activeRole]);
 
-  // Record in-app onTrack tab focus switches inside explicit navigation handler (never for external client)
+  // Record in-app OnTrack tab focus switches inside explicit navigation handler (never for external client)
   const navigateTab = useCallback(
     (nextTab: NavigationTab) => {
       setActiveTab(nextTab);
       if (activeRole === 'client') return;
       const tabLabels: Record<NavigationTab, string> = {
-        overview: `${rolePolicy.label} Overview — onTrack`,
-        timeline: `Day Timeline (${selectedDate}) — onTrack`,
-        tasks: 'Task Board & Backlog — onTrack',
-        autotrack: 'Automated Tracking & Attribution Engine — onTrack',
-        portal: 'Client Portal — onTrack',
-        admin: 'Admin & Fleet Governance — onTrack',
-        report: 'Weekly Executive Progress Report — onTrack',
-        analytics: 'Productivity & App Usage Analytics — onTrack',
+        overview: `${rolePolicy.label} Overview — OnTrack`,
+        timeline: `Day Timeline (${selectedDate}) — OnTrack`,
+        tasks: 'Task Board & Backlog — OnTrack',
+        autotrack: 'Automated Tracking & Attribution Engine — OnTrack',
+        portal: 'Client Portal — OnTrack',
+        admin: 'Admin & Fleet Governance — OnTrack',
+        report: 'Weekly Executive Progress Report — OnTrack',
+        analytics: 'Productivity & App Usage Analytics — OnTrack',
       };
       const nowMin = Math.min(1440, Math.max(20, getCurrentMinuteOfDay()));
       const startMin = Math.max(0, nowMin - 10);
@@ -684,7 +651,7 @@ export default function App() {
         date: todayDate,
         startTime: startMin,
         endTime: nowMin,
-        appName: 'onTrack Web',
+        appName: 'OnTrack Web',
         appCategory: 'browser',
       };
       const newDocSeg: DocumentUsageSegment = {
@@ -692,7 +659,7 @@ export default function App() {
         date: todayDate,
         startTime: startMin,
         endTime: nowMin,
-        appName: 'onTrack Web',
+        appName: 'OnTrack Web',
         documentTitle: docTitle,
         domainOrPath: `ontrack.local/${nextTab}`,
         linkedTaskId: timer.taskId,
@@ -702,7 +669,7 @@ export default function App() {
         const recentSame = prev.find(
           (s) =>
             s.date === todayDate &&
-            s.appName === 'onTrack Web' &&
+            s.appName === 'OnTrack Web' &&
             Math.abs(s.endTime - nowMin) <= 2
         );
         if (recentSame) return prev;
@@ -810,7 +777,7 @@ export default function App() {
       durationMinutes,
       source: 'timer',
       isBillable: timer.isBillable,
-      notes: 'Logged directly via onTrack active stopwatch.',
+      notes: 'Logged directly via OnTrack active stopwatch.',
       appName: timer.activeAppName || 'VS Code',
       documentTitle: timer.activeDocumentTitle || undefined,
     };
@@ -855,7 +822,7 @@ export default function App() {
     );
   };
 
-  // Manual or Live App + Document Window Switch Logger (ManicTime Track 2 & 3)
+  // Manual or Live App + Document Window Switch Logger (Track 2 & 3)
   const handleLogAppDocSwitch = (appName: string, documentTitle: string) => {
     const cleanApp = appName.trim() || 'VS Code';
     const cleanDoc = documentTitle.trim() || `${cleanApp} Active Window`;
@@ -883,7 +850,7 @@ export default function App() {
       appName: cleanApp,
       documentTitle: cleanDoc,
       domainOrPath:
-        cleanApp === 'Google Chrome' || cleanApp === 'onTrack Web'
+        cleanApp === 'Google Chrome' || cleanApp === 'OnTrack Web'
           ? 'browser.active/tab'
           : `~/workspace/${cleanDoc.split(' ')[0].replace(/[^a-zA-Z0-9._/-]/g, '')}`,
       linkedTaskId: timer.taskId,
@@ -903,7 +870,7 @@ export default function App() {
       idleStartedAtMs: Date.now() - 25 * 60 * 1000,
       idleDurationSeconds: 25 * 60,
       activeTaskTitle:
-        timer.customTitle || 'Architect ManicTime-style timeline query indexer',
+        timer.customTitle || 'Architect multi-track timeline query indexer',
       startMinuteOfDay: startMin,
       endMinuteOfDay: endMin,
     });
@@ -1125,7 +1092,7 @@ export default function App() {
       <div className={preferences.darkMode ? 'dark' : ''}>
         <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex items-center justify-center px-6">
           <div className="text-center space-y-2">
-            <div className="font-display text-lg font-bold tracking-tight">onTrack</div>
+            <div className="font-display text-lg font-bold tracking-tight">OnTrack</div>
             <div className="text-xs text-slate-500 dark:text-slate-400">
               Initializing workspace session...
             </div>
@@ -1198,9 +1165,10 @@ export default function App() {
             }));
           }}
           onOpenAccount={() => setAccountModalOpen(true)}
+          onSignOut={handleSignOut}
         />
 
-        {/* Global Active Task Timer & ManicTime Presence Sensor Strip (Accountant & Team Lead only) */}
+        {/* Global Active Task Timer & Workstation Presence Sensor Strip (Accountant & Team Lead only) */}
         {rolePolicy.showTimerBar && (
           <ActiveTimerBar
             timer={timer}
@@ -1449,6 +1417,8 @@ export default function App() {
               appSegments={appSegments}
               documentSegments={documentSegments}
               reports={reports}
+              activeRole={activeRole}
+              currentUser={user}
               onSaveReport={(newReport) => {
                 setReports((prev) => [newReport, ...prev]);
               }}
@@ -1463,6 +1433,8 @@ export default function App() {
               activitySegments={activitySegments}
               appSegments={appSegments}
               documentSegments={documentSegments}
+              activeRole={activeRole}
+              currentUser={user}
               onSelectDateAndGoToTimeline={(date) => {
                 setSelectedDate(date);
                 setActiveTab(
@@ -1479,9 +1451,9 @@ export default function App() {
         <footer className="no-print border-t border-slate-200 dark:border-slate-800 px-6 py-4 text-xs text-slate-500 dark:text-slate-400">
           <div className="max-w-[1440px] mx-auto flex flex-wrap items-center justify-between gap-4">
             <span>
-              onTrack Workspace · {rolePolicy.label} ·{' '}
+              OnTrack Workspace · {rolePolicy.label} ·{' '}
               {user
-                ? `Cloud synced as ${user.email}`
+                ? `Synced as ${user.email}`
                 : 'Local browser mode (Sign in to sync across devices)'}
             </span>
             <div className="flex items-center gap-4">

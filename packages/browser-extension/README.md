@@ -1,4 +1,4 @@
-# onTrack Browser Extension (Manifest V3)
+# OnTrack Browser Extension (Manifest V3)
 
 Compatible with Chrome, Microsoft Edge, and Firefox (MV3).
 

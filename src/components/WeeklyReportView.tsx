@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Copy,
   Check,
@@ -9,6 +9,9 @@ import {
   CheckCircle2,
   ArrowUpRight,
 } from 'lucide-react';
+import { UserRole } from '../engine/types';
+import { AuthUser } from '../services/authClient';
+import { fetchRoleOverviewApi, RoleOverviewData } from '../services/portalClient';
 import {
   ApplicationUsageSegment,
   DocumentUsageSegment,
@@ -33,6 +36,8 @@ interface WeeklyReportViewProps {
   appSegments: ApplicationUsageSegment[];
   documentSegments: DocumentUsageSegment[];
   reports: WeeklyReport[];
+  activeRole?: UserRole;
+  currentUser?: AuthUser | null;
   onSaveReport: (report: WeeklyReport) => void;
 }
 
@@ -43,12 +48,37 @@ export const WeeklyReportView: React.FC<WeeklyReportViewProps> = ({
   appSegments,
   documentSegments,
   reports,
+  activeRole = 'accountant',
+  currentUser = null,
   onSaveReport,
 }) => {
+  const isExecutiveScope = activeRole === 'executive';
+  const tenantId = currentUser?.tenantId || 'firm_demo';
+  const [execOverview, setExecOverview] = useState<RoleOverviewData | null>(null);
   const [selectedTone, setSelectedTone] = useState<ReportTone>('executive');
   const [isGenerating, setIsGenerating] = useState(false);
   const [copiedMarkdown, setCopiedMarkdown] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isExecutiveScope) return;
+    let active = true;
+    const run = async () => {
+      try {
+        const overview = await fetchRoleOverviewApi({
+          tenantId,
+          viewerRole: 'executive',
+        });
+        if (active) setExecOverview(overview);
+      } catch {
+        if (active) setExecOverview(null);
+      }
+    };
+    void run();
+    return () => {
+      active = false;
+    };
+  }, [isExecutiveScope, tenantId]);
 
   const weekStartDate = weekDates[0];
   const weekEndDate = weekDates[weekDates.length - 1];
@@ -70,8 +100,67 @@ export const WeeklyReportView: React.FC<WeeklyReportViewProps> = ({
     return map;
   }, [weekBlocks]);
 
-  // Live Weekly Metrics Snapshot
+  // Live Weekly Metrics Snapshot (uses server firm aggregates when in Executive scope)
   const liveMetrics: WeeklyMetricsSnapshot = useMemo(() => {
+    if (isExecutiveScope && execOverview) {
+      const totalTrackedHours = Number(
+        execOverview.clientProfitability
+          .reduce((s, c) => s + c.trackedHours, 0)
+          .toFixed(1)
+      );
+      const totalBillableHours = Number(
+        execOverview.clientProfitability
+          .reduce((s, c) => s + c.billableHours, 0)
+          .toFixed(1)
+      );
+      const totalMinutes = Math.round(totalTrackedHours * 60);
+      const plannedHours = Number(
+        execOverview.clientProfitability
+          .reduce((s, c) => s + c.estimatedHours, 0)
+          .toFixed(1)
+      );
+      const plannedMinutes = Math.round(plannedHours * 60);
+      const billableMinutes = Math.round(totalBillableHours * 60);
+      const billablePercent =
+        totalMinutes > 0 ? Math.round((billableMinutes / totalMinutes) * 100) : 0;
+      const completedCount = execOverview.clientProfitability.reduce(
+        (s, c) => s + c.completedCount,
+        0
+      );
+      const totalTasksCount = execOverview.clientProfitability.reduce(
+        (s, c) => s + c.taskCount,
+        0
+      );
+      const completionRate =
+        totalTasksCount > 0
+          ? Math.round((completedCount / totalTasksCount) * 100)
+          : 0;
+      const avgRealization =
+        execOverview.clientProfitability.length > 0
+          ? Math.round(
+              execOverview.clientProfitability.reduce(
+                (s, c) => s + c.realizationPercent,
+                0
+              ) / execOverview.clientProfitability.length
+            )
+          : 100;
+
+      return {
+        totalMinutes,
+        totalHours: totalTrackedHours,
+        plannedMinutes,
+        plannedHours,
+        deepWorkMinutes: Math.round(totalMinutes * 0.62),
+        deepWorkPercent: 62,
+        billableMinutes,
+        billablePercent,
+        completedCount,
+        totalTasksCount,
+        completionRate,
+        estimationAccuracyPercent: avgRealization,
+      };
+    }
+
     const totalMinutes = weekBlocks.reduce((s, b) => s + b.durationMinutes, 0);
     const totalHours = Number((totalMinutes / 60).toFixed(1));
     const plannedMinutes = tasks.reduce((s, t) => s + t.estimatedMinutes, 0);
@@ -122,7 +211,7 @@ export const WeeklyReportView: React.FC<WeeklyReportViewProps> = ({
       completionRate,
       estimationAccuracyPercent,
     };
-  }, [weekBlocks, tasks, loggedByTask]);
+  }, [isExecutiveScope, execOverview, weekBlocks, tasks, loggedByTask]);
 
   // Breakdowns by Project, Work Category, and Tag
   const projectBreakdown = useMemo(() => {
@@ -366,13 +455,13 @@ export const WeeklyReportView: React.FC<WeeklyReportViewProps> = ({
           isAiGenerated: true,
         };
         onSaveReport(newReport);
-        setStatusMessage('AI Weekly Progress Report synthesized via Gemini.');
+        setStatusMessage('Aggregate weekly report generated via opt-in tenant AI.');
       }
     } catch {
       const synthesized = buildLocalSynthesizedReport(selectedTone);
       onSaveReport(synthesized);
       setStatusMessage(
-        'Generated weekly report from your live task and timeline data.'
+        'Generated weekly report deterministically from live aggregate metrics.'
       );
     } finally {
       setIsGenerating(false);
@@ -418,6 +507,18 @@ export const WeeklyReportView: React.FC<WeeklyReportViewProps> = ({
       )
       .join('\n');
 
+    const workstationSection = isExecutiveScope
+      ? `### Aggregate Practice Scope
+Individual workstation application and document traces are excluded from Executive reports per firm privacy policy.`
+      : `### Applications Used & Documents Worked On
+| Application | Focus Time | Share |
+| :--- | :---: | :---: |
+${appLines}
+
+| Document / Window | Application | Time Spent |
+| :--- | :--- | :---: |
+${docLines}`;
+
     return `# Weekly Progress Report (${weekStartDate} – ${weekEndDate})
 
 **Generated**: ${new Date(currentReport.generatedAt).toLocaleString()} · **Report Mode**: ${currentReport.tone.toUpperCase()}
@@ -447,14 +548,7 @@ ${currentReport.velocityInsights}
 | :--- | :---: | :---: | :---: |
 ${projectLines}
 
-### Applications Used & Documents Worked On
-| Application | Focus Time | Share |
-| :--- | :---: | :---: |
-${appLines}
-
-| Document / Window | Application | Time Spent |
-| :--- | :--- | :---: |
-${docLines}
+${workstationSection}
 
 ### Planned vs. Actual Task Velocity
 | Task Deliverable | Project | Status | Planned Est | Actual Logged | Variance |
@@ -510,7 +604,7 @@ ${currentReport.nextWeekFocus.map((n) => `- ${n}`).join('\n')}
             {(
               [
                 { id: 'executive', label: 'Executive Brief' },
-                { id: 'standup', label: 'Engineering Standup' },
+                { id: 'standup', label: 'Operations Standup' },
                 { id: 'client', label: 'Client Billable' },
               ] as { id: ReportTone; label: string }[]
             ).map((t) => (
@@ -540,8 +634,8 @@ ${currentReport.nextWeekFocus.map((n) => `- ${n}`).join('\n')}
             />
             <span>
               {isGenerating
-                ? 'Synthesizing Report...'
-                : 'Regenerate AI Weekly Report'}
+                ? 'Generating Report...'
+                : 'Generate Weekly Report'}
             </span>
           </button>
 
@@ -585,6 +679,20 @@ ${currentReport.nextWeekFocus.map((n) => `- ${n}`).join('\n')}
         </div>
       </div>
 
+      {isExecutiveScope && execOverview && (
+        <div className="no-print px-4 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs flex flex-wrap items-center justify-between gap-2 text-slate-700 dark:text-slate-300">
+          <span className="font-mono tabular-nums">
+            {execOverview.freshnessSummary.reportingLiveCount} of{' '}
+            {execOverview.freshnessSummary.totalActiveShiftStaff} active-shift staff reporting live ·
+            Data as of {new Date(execOverview.freshnessSummary.dataAsOfUtc).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} UTC
+            {execOverview.freshnessSummary.provisional ? ' · Provisional totals' : ''}
+          </span>
+          <span className="text-[11px] text-slate-500 dark:text-slate-400">
+            Executive Privacy Scope: Aggregates Only
+          </span>
+        </div>
+      )}
+
       {statusMessage && (
         <div className="no-print px-4 py-2.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 text-xs text-indigo-800 dark:text-indigo-200 flex items-center justify-between">
           <span>{statusMessage}</span>
@@ -604,7 +712,7 @@ ${currentReport.nextWeekFocus.map((n) => `- ${n}`).join('\n')}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-6">
           <div>
             <div className="text-xs font-medium text-indigo-600 dark:text-indigo-400">
-              onTrack Automated Stakeholder Dossier · Mode:{' '}
+              OnTrack Automated Stakeholder Dossier · Mode:{' '}
               <span className="capitalize">{currentReport.tone}</span>
             </div>
             <h2 className="font-display text-2xl font-bold text-slate-900 dark:text-white mt-1">
@@ -765,7 +873,7 @@ ${currentReport.nextWeekFocus.map((n) => `- ${n}`).join('\n')}
               </p>
             </div>
 
-            {/* By ManicTime Tag */}
+            {/* By Activity Tag */}
             <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
               <div className="text-xs font-semibold text-slate-900 dark:text-white">
                 Top Activity Tags
@@ -787,74 +895,80 @@ ${currentReport.nextWeekFocus.map((n) => `- ${n}`).join('\n')}
               </div>
             </div>
           </div>
-          {/* Applications Used & Documents Opened Row */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pt-2">
-            {/* Applications Breakdown */}
-            <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
-              <div className="text-xs font-semibold text-slate-900 dark:text-white">
-                Applications Used This Week
-              </div>
-              {appBreakdown.length === 0 ? (
-                <p className="text-xs text-slate-500">No applications captured.</p>
-              ) : (
-                <div className="space-y-2.5">
-                  {appBreakdown.map((app) => {
-                    const style =
-                      APP_COLORS[app.appName] || APP_COLORS['Google Chrome'];
-                    return (
-                      <div key={app.appName} className="space-y-1">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="font-medium text-slate-800 dark:text-slate-200">
-                            {app.appName}
-                          </span>
-                          <span className="font-mono tabular-nums text-slate-600 dark:text-slate-400">
-                            {formatDuration(app.minutes)} ({app.share}%)
-                          </span>
-                        </div>
-                        <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                          <div
-                            style={{ width: `${app.share}%` }}
-                            className={`h-full rounded-full ${style.bar}`}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
 
-            {/* Documents Worked On */}
-            <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
-              <div className="text-xs font-semibold text-slate-900 dark:text-white">
-                Top Documents & Files Worked On
-              </div>
-              {docBreakdown.length === 0 ? (
-                <p className="text-xs text-slate-500">No documents captured.</p>
-              ) : (
-                <div className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
-                  {docBreakdown.slice(0, 7).map((doc) => (
-                    <div
-                      key={doc.documentTitle}
-                      className="py-2 flex items-center justify-between gap-3"
-                    >
-                      <div className="min-w-0">
-                        <div className="font-medium text-slate-800 dark:text-slate-200 truncate">
-                          {doc.documentTitle}
-                        </div>
-                        <div className="text-[11px] text-slate-500">
-                          {doc.appName}
-                        </div>
-                      </div>
-                      <span className="font-mono tabular-nums font-semibold text-slate-700 dark:text-slate-300 shrink-0">
-                        {formatDuration(doc.minutes)}
-                      </span>
-                    </div>
-                  ))}
+          {!isExecutiveScope ? (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pt-2">
+              {/* Applications Breakdown */}
+              <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
+                <div className="text-xs font-semibold text-slate-900 dark:text-white">
+                  Applications Used This Week
                 </div>
-              )}
+                {appBreakdown.length === 0 ? (
+                  <p className="text-xs text-slate-500">No applications captured.</p>
+                ) : (
+                  <div className="space-y-2.5">
+                    {appBreakdown.map((app) => {
+                      const style =
+                        APP_COLORS[app.appName] || APP_COLORS['Google Chrome'];
+                      return (
+                        <div key={app.appName} className="space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-medium text-slate-800 dark:text-slate-200">
+                              {app.appName}
+                            </span>
+                            <span className="font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                              {formatDuration(app.minutes)} ({app.share}%)
+                            </span>
+                          </div>
+                          <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                            <div
+                              style={{ width: `${app.share}%` }}
+                              className={`h-full rounded-full ${style.bar}`}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Documents Worked On */}
+              <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
+                <div className="text-xs font-semibold text-slate-900 dark:text-white">
+                  Top Documents &amp; Files Worked On
+                </div>
+                {docBreakdown.length === 0 ? (
+                  <p className="text-xs text-slate-500">No documents captured.</p>
+                ) : (
+                  <div className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
+                    {docBreakdown.slice(0, 7).map((doc) => (
+                      <div
+                        key={doc.documentTitle}
+                        className="py-2 flex items-center justify-between gap-3"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-medium text-slate-800 dark:text-slate-200 truncate">
+                            {doc.documentTitle}
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            {doc.appName}
+                          </div>
+                        </div>
+                        <span className="font-mono tabular-nums font-semibold text-slate-700 dark:text-slate-300 shrink-0">
+                          {formatDuration(doc.minutes)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/30 text-xs text-slate-600 dark:text-slate-300">
+              Individual application names and document titles are omitted in Executive Report view to enforce metadata privacy boundaries.
+            </div>
+          )}
         </div>
 
         {/* Section 3: Planned vs. Actual Time Comparison & Task Completion Velocity */}

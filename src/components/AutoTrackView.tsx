@@ -601,7 +601,7 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
         priority: 'activity',
         payload: {
           app: 'Web Browser',
-          window_title: document.title || `onTrack Workspace (${reason})`,
+          window_title: document.title || `OnTrack Workspace (${reason})`,
           domain: window.location.hostname || 'ontrack.local',
           url: `${window.location.origin}${window.location.pathname}`,
           duration_ms: elapsedMs,
@@ -1688,7 +1688,7 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
                   <span>Enrolled Workstation Pairing Keys (AUTH-1 · SHA-256)</span>
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Issue cryptographic pairing keys (`cf_dev_*`) for Windows, macOS, Linux, or VDI
+                  Issue cryptographic pairing keys (`ontrack_dev_*`) for Windows, macOS, Linux, or VDI
                   Desktop Agents so telemetry authenticates securely to your tenant.
                 </p>
               </div>
@@ -1743,8 +1743,7 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
                     href={getPackageDownloadUrl(
                       'desktop-agent',
                       tenantId,
-                      targetUserId,
-                      newPairedRawToken
+                      targetUserId
                     )}
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-700 text-white font-medium"
                   >
@@ -2770,8 +2769,7 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
                   href={getPackageDownloadUrl(
                     'desktop-agent',
                     tenantId,
-                    targetUserId,
-                    newPairedRawToken || undefined
+                    targetUserId
                   )}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-indigo-600 text-white rounded hover:bg-indigo-500 shrink-0"
                 >

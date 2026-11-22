@@ -731,6 +731,32 @@ export class PortalSQLStore {
     };
   }
 
+  public async assertDocumentRequestUploadAccess(params: {
+    tenantId: string;
+    docReqId: string;
+    scopedClientId?: string | null;
+  }): Promise<string> {
+    await this.engineStore.ready();
+    await this.ensureDemoPortalSeeded(params.tenantId);
+    return this.engineStore.db.withTenantTransaction(
+      { tenantId: params.tenantId },
+      async (tx) => {
+        const row = await tx.get<any>(
+          'SELECT client_id FROM client_document_requests WHERE tenant_id = ? AND id = ?',
+          params.tenantId,
+          params.docReqId
+        );
+        if (!row) {
+          throw new HttpError(404, 'DOC_REQ_NOT_FOUND', 'Document request not found.');
+        }
+        if (params.scopedClientId && row.client_id !== params.scopedClientId) {
+          throw new HttpError(403, 'FORBIDDEN', 'Cannot upload to another client document request.');
+        }
+        return row.client_id as string;
+      }
+    );
+  }
+
   public async attachDocumentUpload(params: {
     tenantId: string;
     docReqId: string;

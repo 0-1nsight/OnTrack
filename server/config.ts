@@ -96,7 +96,7 @@ export function loadAppConfig(overrides?: Partial<Record<string, string>>): AppC
   const env = parsed.data;
   const projectRoot = resolveProjectRoot();
   const isProduction = env.NODE_ENV === 'production';
-  const isTest = env.NODE_ENV === 'test';
+  const isTest = env.NODE_ENV === 'test' || process.env.VITEST === 'true';
 
   const dataDir = env.DATA_DIR
     ? path.resolve(projectRoot, env.DATA_DIR)

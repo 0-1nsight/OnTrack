@@ -1,4 +1,4 @@
-# onTrack Cross-Platform Desktop Agent
+# OnTrack Cross-Platform Desktop Agent
 
 Metadata-only workstation collector for **Windows, macOS, Linux, and VDI/RDP sessions**.
 

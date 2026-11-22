@@ -150,7 +150,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
     };
   }, [dayBlocks, daySegments, dayApps, dayDocs]);
 
-  // Aggregated Application Usage Summary (like ManicTime Summary pane)
+  // Aggregated Application Usage Summary (Application Summary pane)
   const appSummary = useMemo(() => {
     const map = new Map<string, number>();
     let totalAppMins = 0;
@@ -319,7 +319,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
           <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5">
             {timelineMode === 'day' ? (
               <>
-                ManicTime-style presence, applications used, documents opened, and task blocks for{' '}
+                Multi-track presence, applications used, documents opened, and task blocks for{' '}
                 <span className="font-mono font-semibold text-slate-900 dark:text-slate-200 tabular-nums">
                   {selectedDate}
                 </span>
@@ -330,7 +330,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
                 <span className="font-mono font-semibold text-slate-900 dark:text-slate-200 tabular-nums">
                   {weekDates[0]} → {weekDates[weekDates.length - 1]}
                 </span>
-                {' · Click any block to edit or any day header to inspect ManicTime tracks'}
+                {' · Click any block to edit or any day header to inspect workstation tracks'}
               </>
             )}
           </p>
@@ -530,7 +530,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
                           onSelectDate(d);
                           setTimelineMode('day');
                         }}
-                        title={`Open 5-track ManicTime Day View for ${d}`}
+                        title={`Open 4-track OnTrack Day View for ${d}`}
                         className="text-left cursor-pointer group"
                       >
                         <div className="flex items-center gap-1.5">
@@ -676,12 +676,12 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
         </div>
       ) : (
         <>
-      {/* ManicTime 5-Track Synchronized Timeline Instrument */}
+      {/* OnTrack Multi-Track Synchronized Timeline Instrument */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
           <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600 dark:text-slate-400">
             <span className="font-semibold text-slate-900 dark:text-white">
-              Synchronized ManicTime Tracks
+              Synchronized OnTrack Activity Tracks
             </span>
             <span>
               Click any document or app segment to tag it as a task block, or click Track 4 to log time
@@ -773,7 +773,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
           </div>
         </div>
 
-        {/* Track 2: Applications Used (ManicTime Applications Track) */}
+        {/* Track 2: Applications Used (Workstation Applications Track) */}
         <div className="grid grid-cols-[185px_1fr] gap-4 items-center py-2 border-b border-slate-100 dark:border-slate-800/70">
           <div>
             <div className="text-xs font-semibold text-slate-900 dark:text-white">
@@ -814,7 +814,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
           </div>
         </div>
 
-        {/* Track 3: Documents & Windows Opened (ManicTime Documents Track) */}
+        {/* Track 3: Documents & Windows Opened (Workstation Documents Track) */}
         <div className="grid grid-cols-[185px_1fr] gap-4 items-center py-2 border-b border-slate-100 dark:border-slate-800/70">
           <div>
             <div className="text-xs font-semibold text-slate-900 dark:text-white">
@@ -872,7 +872,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
               4. Task Blocks
             </div>
             <div className="text-[11px] text-slate-500 dark:text-slate-400">
-              ClickUp task allocations
+              Practice task allocations
             </div>
           </div>
           <div
@@ -1092,7 +1092,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
 
       {/* Lower Split: Tabbed Details Log (Left 2/3) + Applications / Documents / Projects Summary (Right 1/3) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
-        {/* Left 2 Columns: ManicTime Day Details Log Table (Task Blocks | Applications | Documents) */}
+        {/* Left 2 Columns: OnTrack Day Details Log Table (Task Blocks | Applications | Documents) */}
         <div className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
@@ -1412,7 +1412,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
           )}
         </div>
 
-        {/* Right 1 Column: ManicTime Day Summary (Applications, Documents, Projects, Tags) */}
+        {/* Right 1 Column: OnTrack Day Summary (Applications, Documents, Projects, Tags) */}
         <div className="space-y-5">
           {/* Top Applications Used Card */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
@@ -1558,7 +1558,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
             <div className="flex items-center gap-2 mb-3">
               <Tag className="w-4 h-4 text-emerald-600" />
               <h3 className="font-display text-sm font-bold text-slate-900 dark:text-white">
-                ManicTime Tag Combos
+                Activity Tag Combos
               </h3>
             </div>
 

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "onTrack Auto-Track Browser Collector",
+  "name": "OnTrack Auto-Track Browser Collector",
   "version": "1.1.0",
-  "description": "Metadata-only browser extension that captures active domain/path and page titles (ignoring incognito windows), syncs exclusions from the Desktop Agent, and bridges to onTrack.",
+  "description": "Metadata-only browser extension that captures active domain/path and page titles (ignoring incognito windows), syncs exclusions from the Desktop Agent, and bridges to OnTrack.",
   "permissions": [
     "tabs",
     "webNavigation",

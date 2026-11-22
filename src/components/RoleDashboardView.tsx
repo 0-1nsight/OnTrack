@@ -104,7 +104,7 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
       for (const tpl of cfg.templates || []) {
         drafts[tpl.id] = {
           name: tpl.name,
-          milestonesText: (tpl.milestoneNames || []).join('\n'),
+          milestonesText: (tpl.steps || []).map((s) => s.title).join('\n'),
         };
       }
       setTemplateDrafts(drafts);
@@ -939,7 +939,7 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
                   {templates.map((tpl) => {
                     const draft = templateDrafts[tpl.id] || {
                       name: tpl.name,
-                      milestonesText: tpl.milestoneNames.join('\n'),
+                      milestonesText: (tpl.steps || []).map((s) => s.title).join('\n'),
                     };
                     return (
                       <div
@@ -959,7 +959,7 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
                             className="flex-1 px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-semibold"
                           />
                           <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
-                            {tpl.category}
+                            {tpl.defaultCategory}
                           </span>
                         </div>
                         <textarea
@@ -1285,6 +1285,92 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
               </div>
             </section>
           </div>
+
+          {activeRole === 'executive' && (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              <section className="lg:col-span-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-3">
+                <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Users className="w-4 h-4 text-indigo-600" />
+                  <span>Practice Team Capacity Rollup</span>
+                </h2>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Aggregated department capacity across shifts without exposing raw individual workstation timelines.
+                </p>
+                <div className="space-y-2.5">
+                  {Array.from(
+                    data.staffCapacity.reduce((map, row) => {
+                      const prev = map.get(row.teamId) || {
+                        teamId: row.teamId,
+                        members: 0,
+                        available: 0,
+                        assigned: 0,
+                        tracked: 0,
+                      };
+                      prev.members += 1;
+                      prev.available += row.availableHoursWeek;
+                      prev.assigned += row.assignedHoursWeek;
+                      prev.tracked += row.trackedHoursWeek;
+                      map.set(row.teamId, prev);
+                      return map;
+                    }, new Map<string, { teamId: string; members: number; available: number; assigned: number; tracked: number }>())
+                      .values()
+                  ).map((team) => {
+                    const loadPct =
+                      team.available > 0
+                        ? Math.round((Math.max(team.assigned, team.tracked) / team.available) * 100)
+                        : 0;
+                    return (
+                      <div
+                        key={team.teamId}
+                        className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 flex items-center justify-between text-xs"
+                      >
+                        <div>
+                          <div className="font-mono font-semibold text-slate-900 dark:text-white">
+                            {team.teamId}
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {team.members} staff · {team.assigned.toFixed(1)}h assigned / {team.available}h shift cap.
+                          </div>
+                        </div>
+                        <span className="font-mono tabular-nums font-bold text-indigo-700 dark:text-indigo-300">
+                          {loadPct}%
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+
+              <section className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5">
+                <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2 mb-3">
+                  <ShieldCheck className="w-4 h-4 text-indigo-600" />
+                  <span>Executive Governance &amp; Drill-Down Audit Log</span>
+                </h2>
+                <div className="space-y-2 max-h-64 overflow-y-auto text-xs">
+                  {data.auditLogs.length === 0 ? (
+                    <p className="text-slate-500 dark:text-slate-400">No governance audit events recorded yet.</p>
+                  ) : (
+                    data.auditLogs.slice(0, 20).map((log) => (
+                      <div
+                        key={log.id}
+                        className="p-2.5 rounded border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40"
+                      >
+                        <div className="flex items-center justify-between font-mono text-[11px]">
+                          <span className="font-semibold text-indigo-700 dark:text-indigo-300">
+                            {log.action}
+                          </span>
+                          <span className="text-slate-500 dark:text-slate-400 tabular-nums">
+                            {new Date(log.createdAtUtc).toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-slate-700 dark:text-slate-300">{log.details}</div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+            </div>
+          )}
         </>
       )}
     </div>

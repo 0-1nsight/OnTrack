@@ -1,5 +1,8 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Clock, Target, Layers, AppWindow, FileText } from 'lucide-react';
+import { UserRole } from '../engine/types';
+import { AuthUser } from '../services/authClient';
+import { fetchRoleOverviewApi, RoleOverviewData } from '../services/portalClient';
 import {
   ActivitySegment,
   ApplicationUsageSegment,
@@ -20,6 +23,8 @@ interface AnalyticsViewProps {
   activitySegments: ActivitySegment[];
   appSegments: ApplicationUsageSegment[];
   documentSegments: DocumentUsageSegment[];
+  activeRole?: UserRole;
+  currentUser?: AuthUser | null;
   onSelectDateAndGoToTimeline: (date: string) => void;
 }
 
@@ -30,8 +35,33 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   activitySegments,
   appSegments,
   documentSegments,
+  activeRole = 'accountant',
+  currentUser = null,
   onSelectDateAndGoToTimeline,
 }) => {
+  const isExecutiveScope = activeRole === 'executive';
+  const tenantId = currentUser?.tenantId || 'firm_demo';
+  const [execOverview, setExecOverview] = useState<RoleOverviewData | null>(null);
+
+  useEffect(() => {
+    if (!isExecutiveScope) return;
+    let active = true;
+    const run = async () => {
+      try {
+        const overview = await fetchRoleOverviewApi({
+          tenantId,
+          viewerRole: 'executive',
+        });
+        if (active) setExecOverview(overview);
+      } catch {
+        if (active) setExecOverview(null);
+      }
+    };
+    void run();
+    return () => {
+      active = false;
+    };
+  }, [isExecutiveScope, tenantId]);
   // Daily breakdown across the 7-day window
   const dailySeries = useMemo(() => {
     return weekDates.map((date) => {
@@ -167,6 +197,131 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       .sort((a, b) => b.mins - a.mins)
       .slice(0, 8);
   }, [documentSegments, weekDates]);
+
+  if (isExecutiveScope && execOverview) {
+    const fs = execOverview.freshnessSummary;
+    const totalEstimatedHrs = execOverview.clientProfitability.reduce(
+      (s, c) => s + c.estimatedHours,
+      0
+    );
+    const totalTrackedHrs = execOverview.clientProfitability.reduce(
+      (s, c) => s + c.trackedHours,
+      0
+    );
+    const totalFeeUsd = execOverview.clientProfitability.reduce(
+      (s, c) => s + c.estimatedFeeUsd,
+      0
+    );
+    const avgUtil =
+      execOverview.staffCapacity.length > 0
+        ? Math.round(
+            execOverview.staffCapacity.reduce((s, r) => s + r.utilizationPercent, 0) /
+              execOverview.staffCapacity.length
+          )
+        : 0;
+
+    return (
+      <div className="space-y-6">
+        <div className="pb-2 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 className="font-display text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+              Firm Analytics &amp; Realization Matrix
+            </h1>
+            <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5">
+              Aggregated client realization, shift capacity balance, and portfolio throughput ({execOverview.tenantName})
+            </p>
+          </div>
+          <div className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
+            {fs.reportingLiveCount}/{fs.totalActiveShiftStaff} live · As of{' '}
+            {new Date(fs.dataAsOfUtc).toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            })}{' '}
+            UTC{fs.provisional ? ' · Provisional' : ''}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl">
+            <div className="text-xs font-medium text-slate-500">Firm Utilization</div>
+            <div className="mt-2 font-mono text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
+              {avgUtil}%
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              Across {execOverview.staffCapacity.length} scheduled staff members
+            </div>
+          </div>
+
+          <div className="p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl">
+            <div className="text-xs font-medium text-slate-500">Portfolio Tracked vs Estimated</div>
+            <div className="mt-2 font-mono text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
+              {totalTrackedHrs.toFixed(1)}h / {totalEstimatedHrs.toFixed(1)}h
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              Firm engagement totals (raw individual timelines hidden)
+            </div>
+          </div>
+
+          <div className="p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl">
+            <div className="text-xs font-medium text-slate-500">Estimated Fee Portfolio</div>
+            <div className="mt-2 font-mono text-2xl font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+              ${totalFeeUsd.toLocaleString()}
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              Across {execOverview.clientProfitability.length} visible client engagements
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800">
+            <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
+              Client Engagement Realization &amp; Profitability
+            </h2>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-slate-800 text-[11px] font-semibold text-slate-500 bg-slate-50/70 dark:bg-slate-800/40">
+                  <th className="py-2.5 px-5">Client Engagement</th>
+                  <th className="py-2.5 px-5 text-right">Completed / Total</th>
+                  <th className="py-2.5 px-5 text-right">Estimated Hours</th>
+                  <th className="py-2.5 px-5 text-right">Tracked Hours</th>
+                  <th className="py-2.5 px-5 text-right">Est. Fee</th>
+                  <th className="py-2.5 px-5 text-right">Realization</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-xs">
+                {execOverview.clientProfitability.map((row) => (
+                  <tr key={row.clientId}>
+                    <td className="py-3.5 px-5 font-semibold text-slate-900 dark:text-white">
+                      {row.clientName}
+                    </td>
+                    <td className="py-3.5 px-5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                      {row.completedCount} / {row.taskCount}
+                    </td>
+                    <td className="py-3.5 px-5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                      {row.estimatedHours}h
+                    </td>
+                    <td className="py-3.5 px-5 text-right font-mono font-semibold tabular-nums text-slate-900 dark:text-white">
+                      {row.trackedHours}h
+                    </td>
+                    <td className="py-3.5 px-5 text-right font-mono tabular-nums text-slate-900 dark:text-white">
+                      ${row.estimatedFeeUsd.toLocaleString()}
+                    </td>
+                    <td className="py-3.5 px-5 text-right font-mono tabular-nums font-semibold text-emerald-600 dark:text-emerald-400">
+                      {row.realizationPercent}%
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -321,7 +476,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             Project Estimation Accuracy & Delivery Matrix
           </h2>
           <p className="text-xs text-slate-500">
-            Compares ClickUp task estimates against ManicTime-logged blocks per project
+            Compares practice task estimates against OnTrack-logged blocks per project
           </p>
         </div>
 

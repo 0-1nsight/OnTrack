@@ -75,7 +75,7 @@ export const DataPreferencesModal: React.FC<DataPreferencesModalProps> = ({
               Automatic Idle Detection Threshold
             </label>
             <p className="text-slate-500 dark:text-slate-400 mb-2">
-              How long without mouse or keyboard input before onTrack flags an unattended idle gap and opens the reconciliation prompt:
+              How long without mouse or keyboard input before OnTrack flags an unattended idle gap and opens the reconciliation prompt:
             </p>
             <select
               value={preferences.idleThresholdSeconds}
@@ -89,7 +89,7 @@ export const DataPreferencesModal: React.FC<DataPreferencesModalProps> = ({
               <option value={30}>30 seconds (Fast Demo Evaluation Mode)</option>
               <option value={60}>1 minute (Recommended Interactive Default)</option>
               <option value={180}>3 minutes</option>
-              <option value={300}>5 minutes (Standard ManicTime Threshold)</option>
+              <option value={300}>5 minutes (Standard Idle Threshold)</option>
               <option value={900}>15 minutes</option>
             </select>
           </div>
@@ -118,10 +118,10 @@ export const DataPreferencesModal: React.FC<DataPreferencesModalProps> = ({
         {/* LocalStorage JSON Portability */}
         <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800 text-xs">
           <div className="font-semibold text-slate-900 dark:text-white">
-            Local Browser Storage & JSON Portability
+            Local Browser Storage &amp; JSON Portability
           </div>
           <p className="text-slate-500 dark:text-slate-400">
-            All tasks, ManicTime timeline blocks, presence segments, and generated reports are persisted locally in your browser. Export a full snapshot or restore from a JSON file at any time.
+            All tasks, timeline blocks, presence segments, and generated reports are persisted locally in your browser. Export a full snapshot or restore from a JSON file at any time.
           </p>
 
           <div className="flex flex-wrap items-center gap-2.5 pt-1">

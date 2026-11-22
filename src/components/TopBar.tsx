@@ -1,5 +1,5 @@
 import React from 'react';
-import { UserCircle2 } from 'lucide-react';
+import { LogOut, UserCircle2 } from 'lucide-react';
 import { UserRole } from '../engine/types';
 import { AuthUser } from '../services/authClient';
 import { NavigationTab, UserProfile } from '../types';
@@ -15,6 +15,7 @@ interface TopBarProps {
   canSwitchPreviewRole: boolean;
   onChangePreviewRole: (role: UserRole) => void;
   onOpenAccount: () => void;
+  onSignOut?: () => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -27,6 +28,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   canSwitchPreviewRole,
   onChangePreviewRole,
   onOpenAccount,
+  onSignOut,
 }) => {
   const policy = getRolePolicy(activeRole);
   const navItems = policy.allowedTabs;
@@ -49,7 +51,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         }}
         className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0"
       >
-        onTrack
+        OnTrack
       </a>
 
       {/* Zone 2: Concise single-line role-scoped navigation links */}
@@ -73,7 +75,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         })}
       </nav>
 
-      {/* Zone 3: Role Switcher / Badge, Account trigger & Role-gated Quick Log CTA */}
+      {/* Zone 3: Role Switcher / Badge, Account trigger, Sign Out & Role-gated Quick Log CTA */}
       <div className="flex items-center gap-2.5 shrink-0">
         {canSwitchPreviewRole ? (
           <label className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
@@ -106,6 +108,18 @@ export const TopBar: React.FC<TopBarProps> = ({
           <UserCircle2 className="w-4 h-4 text-slate-500 dark:text-slate-400" />
           <span>{user ? shortName : 'Sign In'}</span>
         </button>
+
+        {user && onSignOut && (
+          <button
+            type="button"
+            onClick={onSignOut}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            title="Sign out and return to OnTrack Landing Page"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Sign Out</span>
+          </button>
+        )}
 
         {policy.canQuickLog && (
           <button

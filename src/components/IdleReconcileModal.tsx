@@ -34,7 +34,7 @@ export const IdleReconcileModal: React.FC<IdleReconcileModalProps> = ({
   const [reassignCategory, setReassignCategory] =
     useState<WorkCategory>('collaborative');
   const [reassignNotes, setReassignNotes] = useState(
-    'Reconciled away interval detected by onTrack presence sensor.'
+    'Reconciled away interval detected by OnTrack presence sensor.'
   );
   const [showReassignForm, setShowReassignForm] = useState(false);
 
@@ -58,7 +58,7 @@ export const IdleReconcileModal: React.FC<IdleReconcileModalProps> = ({
                 Unattended / Idle Activity Detected
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                ManicTime-style presence monitor flagged an away interval
+                OnTrack workstation presence monitor flagged an away interval
               </p>
             </div>
           </div>

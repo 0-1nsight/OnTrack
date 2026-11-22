@@ -157,7 +157,7 @@ export const TaskCalendarView: React.FC<TaskCalendarViewProps> = ({
               {monthLabel}
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Task due dates, multi-day spans, and daily ManicTime logged hours
+              Task due dates, multi-day spans, and daily OnTrack logged hours
             </p>
           </div>
 

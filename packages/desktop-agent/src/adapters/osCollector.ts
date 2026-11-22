@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -29,33 +31,69 @@ function isRDPSession(): boolean {
   );
 }
 
-async function sampleWindows(): Promise<Partial<WindowSample>> {
-  const psScript = [
-    '$code = @"',
-    'using System; using System.Runtime.InteropServices; using System.Text;',
-    'public class WinFocus {',
+const WIN_PROBE_EXE = path.join(os.tmpdir(), 'ontrack-win-focus-v1.exe');
+
+async function ensureWindowsProbeBinary(): Promise<boolean> {
+  if (fs.existsSync(WIN_PROBE_EXE)) return true;
+  const csCode = [
+    'using System;',
+    'using System.Diagnostics;',
+    'using System.Runtime.InteropServices;',
+    'using System.Text;',
+    'public static class WinFocus {',
     '  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();',
     '  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);',
     '  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);',
     '  [StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }',
     '  [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);',
-    '  public static uint IdleMs() { LASTINPUTINFO lii = new LASTINPUTINFO(); lii.cbSize = (uint)Marshal.SizeOf(lii); GetLastInputInfo(ref lii); return ((uint)Environment.TickCount - lii.dwTime); }',
+    '  public static void Main() {',
+    '    IntPtr h = GetForegroundWindow();',
+    '    StringBuilder sb = new StringBuilder(512);',
+    '    GetWindowText(h, sb, 512);',
+    '    uint pid = 0; GetWindowThreadProcessId(h, out pid);',
+    '    string proc = "Windows App";',
+    '    try { if (pid > 0) proc = Process.GetProcessById((int)pid).ProcessName; } catch {}',
+    '    LASTINPUTINFO lii = new LASTINPUTINFO(); lii.cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO));',
+    '    GetLastInputInfo(ref lii);',
+    '    uint idleSec = ((uint)Environment.TickCount - lii.dwTime) / 1000;',
+    '    Console.WriteLine(proc + "||" + sb.ToString() + "||" + idleSec);',
+    '  }',
     '}',
-    '"@',
-    'Add-Type $code -ErrorAction SilentlyContinue',
-    '$h = [WinFocus]::GetForegroundWindow()',
-    '$sb = New-Object System.Text.StringBuilder 512',
-    '[WinFocus]::GetWindowText($h, $sb, 512) | Out-Null',
-    '$pidOut = 0; [WinFocus]::GetWindowThreadProcessId($h, [ref]$pidOut) | Out-Null',
-    '$proc = (Get-Process -Id $pidOut -ErrorAction SilentlyContinue).ProcessName',
-    '$idleSec = [Math]::Floor([WinFocus]::IdleMs() / 1000)',
-    'Write-Output "$proc||$($sb.ToString())||$idleSec"',
   ].join('\n');
 
+  const compileScript = `Add-Type -TypeDefinition @'\n${csCode}\n'@ -OutputAssembly '${WIN_PROBE_EXE.replace(/'/g, "''")}' -OutputType ConsoleApplication`;
+  try {
+    await execFileAsync(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command', compileScript],
+      { timeout: 10000 }
+    );
+    return fs.existsSync(WIN_PROBE_EXE);
+  } catch {
+    return false;
+  }
+}
+
+async function sampleWindows(): Promise<Partial<WindowSample>> {
+  const hasBinary = await ensureWindowsProbeBinary();
+  if (hasBinary) {
+    const { stdout } = await execFileAsync(WIN_PROBE_EXE, [], { timeout: 1200 });
+    const [appRaw = 'Unknown', titleRaw = '', idleRaw = '0'] = stdout.trim().split('||');
+    return {
+      app: appRaw.trim() || 'Windows App',
+      windowTitle: titleRaw.trim() || 'Active Window',
+      idleSeconds: Number.parseInt(idleRaw, 10) || 0,
+    };
+  }
+
+  const fallbackPs = [
+    '$p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1',
+    'Write-Output "$($p.ProcessName)||$($p.MainWindowTitle)||0"',
+  ].join('; ');
   const { stdout } = await execFileAsync(
     'powershell',
-    ['-NoProfile', '-NonInteractive', '-Command', psScript],
-    { timeout: 2500 }
+    ['-NoProfile', '-NonInteractive', '-Command', fallbackPs],
+    { timeout: 2000 }
   );
   const [appRaw = 'Unknown', titleRaw = '', idleRaw = '0'] = stdout.trim().split('||');
   return {

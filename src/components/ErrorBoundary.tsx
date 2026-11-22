@@ -27,21 +27,11 @@ export class ErrorBoundary extends Component<
   }
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('onTrack ErrorBoundary caught error:', error, errorInfo);
+    console.error('OnTrack ErrorBoundary caught error:', error, errorInfo);
   }
 
   public render() {
     if (this.state.hasError) {
-      let friendlyMessage = this.state.message;
-      try {
-        const parsed = JSON.parse(this.state.message);
-        if (parsed && parsed.error && parsed.operationType) {
-          friendlyMessage = `Cloud sync ${parsed.operationType} error at "${parsed.path || 'workspace'}": ${parsed.error}`;
-        }
-      } catch {
-        // Not structured JSON; display message directly
-      }
-
       return (
         <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
           <div className="max-w-md w-full bg-white border border-slate-200 rounded-xl p-6 shadow-lg space-y-4">
@@ -52,7 +42,7 @@ export class ErrorBoundary extends Component<
               </h1>
             </div>
             <p className="text-xs text-slate-600 leading-relaxed break-words">
-              {friendlyMessage}
+              {this.state.message}
             </p>
             <div className="flex items-center gap-3 pt-2">
               <button
@@ -68,7 +58,7 @@ export class ErrorBoundary extends Component<
                 className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                <span>Reload onTrack</span>
+                <span>Reload OnTrack</span>
               </button>
             </div>
           </div>

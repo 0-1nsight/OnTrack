@@ -460,9 +460,10 @@ export class AuthStore {
           row.id
         );
 
+        const isDemoSandbox = appConfig.demoModeEnabled && row.tenant_id === 'firm_demo';
         const role = row.user_role as UserRole;
         const totpEnabled = Boolean(row.totp_enabled);
-        const mustEnrollMfa = roleRequiresMfa(role) && !totpEnabled;
+        const mustEnrollMfa = !isDemoSandbox && roleRequiresMfa(role) && !totpEnabled;
         const mfaVerified = Boolean(row.mfa_verified) && !mustEnrollMfa;
         const principalType = row.principal_type === 'client' ? 'client' : 'staff';
 
@@ -481,7 +482,7 @@ export class AuthStore {
           mfaVerified,
           mustEnrollMfa,
           principalType,
-          isDemoSandbox: row.tenant_id === 'firm_demo',
+          isDemoSandbox,
           aiReportsEnabled: Boolean(row.ai_reports_enabled),
         };
 
@@ -499,7 +500,7 @@ export class AuthStore {
           canDrilldownTimeline: Boolean(row.can_drilldown_timeline),
           mfaVerified,
           mustEnrollMfa,
-          isDemoSandbox: row.tenant_id === 'firm_demo',
+          isDemoSandbox,
           summary,
         };
       }

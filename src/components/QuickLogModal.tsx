@@ -208,7 +208,7 @@ export const QuickLogModal: React.FC<QuickLogModalProps> = ({
         <form onSubmit={handleSubmit} className="space-y-4 pt-4 text-xs">
           <div>
             <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-              Bind to ClickUp Task (Optional)
+              Bind to Practice Task (Optional)
             </label>
             <select
               value={taskId}
@@ -329,7 +329,7 @@ export const QuickLogModal: React.FC<QuickLogModalProps> = ({
           <div className="grid grid-cols-2 gap-3 items-center">
             <div>
               <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                ManicTime Tags (comma-separated)
+                Activity Tags (comma-separated)
               </label>
               <input
                 type="text"

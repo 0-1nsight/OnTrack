@@ -94,9 +94,9 @@ export interface LocalAgentHealth {
   } | null;
 }
 
-const QUEUE_KEY = 'chronoflow_engine_queue_v1';
-const SEQ_KEY = 'chronoflow_engine_seq_v1';
-const DEVICE_KEY = 'chronoflow_engine_device_v1';
+const QUEUE_KEY = 'ontrack_engine_queue_v1';
+const SEQ_KEY = 'ontrack_engine_seq_v1';
+const DEVICE_KEY = 'ontrack_engine_device_v1';
 
 function buildAuthHeaders(extra: Record<string, string> = {}): Record<string, string> {
   return { ...extra };
@@ -105,7 +105,9 @@ function buildAuthHeaders(extra: Record<string, string> = {}): Record<string, st
 export function getOrCreateLocalDeviceId(): string {
   try {
     const existing = localStorage.getItem(DEVICE_KEY);
-    if (existing) return existing;
+    if (existing) {
+      return existing;
+    }
     const created = `dev-web-${Math.random().toString(36).slice(2, 8)}`;
     localStorage.setItem(DEVICE_KEY, created);
     return created;
@@ -116,7 +118,7 @@ export function getOrCreateLocalDeviceId(): string {
 
 export function nextLocalSeq(): number {
   try {
-    const prev = Number(localStorage.getItem(SEQ_KEY) || '200');
+    const prev = Number(localStorage.getItem(SEQ_KEY) ?? '200');
     const next = prev + 1;
     localStorage.setItem(SEQ_KEY, String(next));
     return next;
@@ -692,8 +694,7 @@ export async function runAcceptanceApi(
 export function getPackageDownloadUrl(
   kind: 'desktop-agent' | 'browser-extension',
   tenantId: string,
-  userId: string,
-  deviceToken?: string
+  userId: string
 ): string {
   const origin =
     typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
@@ -702,8 +703,5 @@ export function getPackageDownloadUrl(
     tenantId,
     userId,
   });
-  if (deviceToken) {
-    qs.set('deviceToken', deviceToken);
-  }
   return `/api/engine/package/${kind}?${qs.toString()}`;
 }
