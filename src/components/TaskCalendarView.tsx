@@ -15,7 +15,7 @@ import {
   CATEGORY_LABELS,
   formatDuration,
   formatMinutesToHHMM,
-} from '../data/seedData';
+} from '../utils/workspaceConstants';
 
 interface TaskCalendarViewProps {
   tasks: Task[];

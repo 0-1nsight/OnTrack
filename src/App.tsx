@@ -30,13 +30,29 @@ import {
   WorkspaceHierarchy,
   WorkspacePreferences,
 } from './types';
-import { AttributionRecord, UserRole, WorkSession } from './engine/types';
+import { AttributionRecord, EngineTask, PrivacyRule, SyncConflict, UserRole, WorkSession } from './engine/types';
+import {
+  buildLocalTrackingEvent,
+  createEngineTaskApi,
+  deleteEngineTaskApi,
+  fetchEngineSnapshot,
+  filterAndEnqueueEvent,
+  flushQueuedEventsOverHttp,
+  getOrCreateLocalDeviceId,
+  updateEngineTaskApi,
+} from './services/engineClient';
 import {
   DEFAULT_PREFERENCES,
-  createSeedDataset,
+  createEmptyWorkspaceDataset,
   getRecentWeekDates,
   inferAppCategory,
-} from './data/seedData';
+} from './utils/workspaceConstants';
+import { createDemoWorkspaceDataset } from './utils/demoWorkspaceSeed';
+import {
+  adaptEngineSnapshotToWorkspace,
+  buildTimeBlockStartTimestampUtc,
+  mapEngineTaskToWorkspaceTask,
+} from './utils/engineWorkspaceAdapter';
 import { getRolePolicy } from './utils/roleConfig';
 import { createDefaultWorkspaceHierarchy } from './utils/taskHierarchy';
 import { TopBar } from './components/TopBar';
@@ -89,27 +105,27 @@ export default function App() {
 
   // Workspace Persistent State
   const [tasks, setTasks] = useState<Task[]>(() => {
-    return readStorageJson<Task[]>(STORAGE_KEYS.TASKS) || createSeedDataset().tasks;
+    return readStorageJson<Task[]>(STORAGE_KEYS.TASKS) || createEmptyWorkspaceDataset().tasks;
   });
 
   const [timeBlocks, setTimeBlocks] = useState<TimeBlock[]>(() => {
-    return readStorageJson<TimeBlock[]>(STORAGE_KEYS.BLOCKS) || createSeedDataset().timeBlocks;
+    return readStorageJson<TimeBlock[]>(STORAGE_KEYS.BLOCKS) || createEmptyWorkspaceDataset().timeBlocks;
   });
 
   const [activitySegments, setActivitySegments] = useState<ActivitySegment[]>(() => {
-    return readStorageJson<ActivitySegment[]>(STORAGE_KEYS.SEGMENTS) || createSeedDataset().activitySegments;
+    return readStorageJson<ActivitySegment[]>(STORAGE_KEYS.SEGMENTS) || createEmptyWorkspaceDataset().activitySegments;
   });
 
   const [appSegments, setAppSegments] = useState<ApplicationUsageSegment[]>(() => {
-    return readStorageJson<ApplicationUsageSegment[]>(STORAGE_KEYS.APP_SEGMENTS) || createSeedDataset().appSegments;
+    return readStorageJson<ApplicationUsageSegment[]>(STORAGE_KEYS.APP_SEGMENTS) || createEmptyWorkspaceDataset().appSegments;
   });
 
   const [documentSegments, setDocumentSegments] = useState<DocumentUsageSegment[]>(() => {
-    return readStorageJson<DocumentUsageSegment[]>(STORAGE_KEYS.DOC_SEGMENTS) || createSeedDataset().documentSegments;
+    return readStorageJson<DocumentUsageSegment[]>(STORAGE_KEYS.DOC_SEGMENTS) || createEmptyWorkspaceDataset().documentSegments;
   });
 
   const [reports, setReports] = useState<WeeklyReport[]>(() => {
-    return readStorageJson<WeeklyReport[]>(STORAGE_KEYS.REPORTS) || createSeedDataset().reports;
+    return readStorageJson<WeeklyReport[]>(STORAGE_KEYS.REPORTS) || createEmptyWorkspaceDataset().reports;
   });
 
   const [preferences, setPreferences] = useState<WorkspacePreferences>(() => {
@@ -213,17 +229,17 @@ export default function App() {
   const [timer, setTimer] = useState<ActiveTimerState>({
     isRunning: false,
     isPaused: false,
-    taskId: 'tsk-101',
-    customTitle: 'Architect multi-track timeline query indexer',
+    taskId: null,
+    customTitle: '',
     project: 'Core Platform',
     category: 'deep_work',
-    tags: ['architecture', 'timeline-engine'],
+    tags: [],
     isBillable: false,
     startedAtMs: null,
     accumulatedSeconds: 0,
     startMinuteOfDay: getCurrentMinuteOfDay(),
-    activeAppName: 'VS Code',
-    activeDocumentTitle: 'src/engine/intervalTree.ts — OnTrack',
+    activeAppName: 'onTrack Web',
+    activeDocumentTitle: 'Workspace — onTrack',
   });
 
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
@@ -275,6 +291,17 @@ export default function App() {
     targetUserId?: string;
     drilldown?: boolean;
   }>({ key: 0 });
+
+  // Live Engine Sync State (Tasks, Sessions, Conflicts, Privacy Rules)
+  const [enginePrivacyRules, setEnginePrivacyRules] = useState<PrivacyRule[]>([]);
+  const [syncConflicts, setSyncConflicts] = useState<SyncConflict[]>([]);
+  const [engineTaskVersions, setEngineTaskVersions] = useState<Record<string, number>>({});
+  const [engineSyncStatus, setEngineSyncStatus] = useState<'idle' | 'syncing' | 'error'>('idle');
+  const demoSeedAppliedRef = useRef(false);
+  const hierarchyBoardsRef = useRef(workspaceHierarchy.boards);
+  useEffect(() => {
+    hierarchyBoardsRef.current = workspaceHierarchy.boards;
+  }, [workspaceHierarchy.boards]);
 
   const canSwitchPreviewRole = !user || user.role === 'admin_it';
   const activeRole: UserRole = user
@@ -412,6 +439,109 @@ export default function App() {
     preferences,
   ]);
 
+  const hydrateFromEngine = useCallback(
+    async (targetUser?: AuthUser | null, roleOverride?: UserRole) => {
+      const currentUser = targetUser ?? user;
+      const role = roleOverride ?? activeRole;
+      if (!currentUser || role === 'client') return;
+
+      await Promise.resolve();
+      setEngineSyncStatus('syncing');
+      try {
+        const snapshot = await fetchEngineSnapshot({
+          tenantId: currentUser.tenantId,
+          viewerUserId: currentUser.userId,
+          viewerRole: role,
+          targetUserId: currentUser.userId,
+          drilldownGranted: false,
+        });
+
+        setEnginePrivacyRules(snapshot.privacyRules || []);
+        setSyncConflicts(snapshot.conflicts || []);
+        const versionMap: Record<string, number> = {};
+        for (const t of snapshot.tasks) {
+          versionMap[t.id] = t.version;
+        }
+        setEngineTaskVersions(versionMap);
+
+        const latest = latestWorkspaceRef.current;
+        const adapted = adaptEngineSnapshotToWorkspace({
+          snapshot,
+          existingTasks: latest.tasks,
+          existingBlocks: latest.timeBlocks,
+          existingActivity: latest.activitySegments,
+          existingApps: latest.appSegments,
+          existingDocs: latest.documentSegments,
+          boards: hierarchyBoardsRef.current,
+          includeAllSessionBlocks: false,
+        });
+
+        setTasks(adapted.tasks);
+        setTimeBlocks(adapted.timeBlocks);
+        setActivitySegments(adapted.activitySegments);
+        setAppSegments(adapted.appSegments);
+        setDocumentSegments(adapted.documentSegments);
+        setEngineSyncStatus('idle');
+      } catch {
+        setEngineSyncStatus('error');
+      }
+    },
+    [user, activeRole]
+  );
+
+  const persistTrackingEvent = useCallback(
+    async (params: {
+      type:
+        | 'activity.window'
+        | 'activity.browser'
+        | 'activity.idle'
+        | 'state.task_status';
+      priority: 'state' | 'activity';
+      payload: Record<string, unknown>;
+      eventTimeUtc?: string;
+    }) => {
+      if (!user || activeRole === 'client') return;
+      const deviceId = getOrCreateLocalDeviceId();
+      const ev = buildLocalTrackingEvent({
+        tenantId: user.tenantId,
+        userId: user.userId,
+        deviceId,
+        type: params.type,
+        priority: params.priority,
+        payload: {
+          os_platform: 'web',
+          extension_connected: true,
+          ...params.payload,
+        },
+        eventTimeUtc: params.eventTimeUtc,
+      });
+      const queued = filterAndEnqueueEvent(ev, enginePrivacyRules);
+      if (!queued.allowed) {
+        if (queued.dropReason) showToast(queued.dropReason);
+        return;
+      }
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        return;
+      }
+      try {
+        const res = await flushQueuedEventsOverHttp({
+          tenantId: user.tenantId,
+          userId: user.userId,
+          deviceId,
+        });
+        if (res.conflictsCreated && res.conflictsCreated.length > 0) {
+          setSyncConflicts((prev) => [...res.conflictsCreated, ...prev]);
+          showToast(
+            `${res.conflictsCreated.length} sync conflict detected — resolve in Auto-Track.`
+          );
+        }
+      } catch {
+        // Keep in ontrack_engine_queue_v1 until connectivity returns
+      }
+    },
+    [user, activeRole, enginePrivacyRules, showToast]
+  );
+
   const refreshAuthSession = useCallback(async () => {
     try {
       const [status, session] = await Promise.all([
@@ -457,6 +587,109 @@ export default function App() {
   useEffect(() => {
     void refreshAuthSession();
   }, [refreshAuthSession]);
+
+  // Hydrate workspace from live Engine DB or Demo Sandbox seed when appropriate
+  useEffect(() => {
+    if (!authReady) return;
+    let cancelled = false;
+
+    const runHydration = async () => {
+      await Promise.resolve();
+      if (cancelled) return;
+
+      if (user && activeRole !== 'client') {
+        if (user.isDemoSandbox && demoModeEnabled && !demoSeedAppliedRef.current) {
+          const latest = latestWorkspaceRef.current;
+          if (latest.timeBlocks.length === 0 && latest.reports.length === 0) {
+            const demo = createDemoWorkspaceDataset(weekDates);
+            setTimeBlocks(demo.timeBlocks);
+            setActivitySegments(demo.activitySegments);
+            setAppSegments(demo.appSegments);
+            setDocumentSegments(demo.documentSegments);
+            setReports(demo.reports);
+          }
+          demoSeedAppliedRef.current = true;
+        }
+        await hydrateFromEngine(user, activeRole);
+        return;
+      }
+
+      if (!user && demoModeEnabled && !demoSeedAppliedRef.current) {
+        const latest = latestWorkspaceRef.current;
+        if (
+          latest.tasks.length === 0 &&
+          latest.timeBlocks.length === 0 &&
+          latest.appSegments.length === 0
+        ) {
+          const demo = createDemoWorkspaceDataset(weekDates);
+          setTasks(demo.tasks);
+          setTimeBlocks(demo.timeBlocks);
+          setActivitySegments(demo.activitySegments);
+          setAppSegments(demo.appSegments);
+          setDocumentSegments(demo.documentSegments);
+          setReports(demo.reports);
+        }
+        demoSeedAppliedRef.current = true;
+      }
+    };
+
+    void runHydration();
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, user, activeRole, demoModeEnabled, hydrateFromEngine, weekDates]);
+
+  // Global /ws/engine live updates + online queue flush (SYNC-5)
+  useEffect(() => {
+    if (!authReady || !user || activeRole === 'client') return;
+
+    const deviceId = getOrCreateLocalDeviceId();
+    const handleOnline = () => {
+      void flushQueuedEventsOverHttp({
+        tenantId: user.tenantId,
+        userId: user.userId,
+        deviceId,
+      })
+        .then(() => hydrateFromEngine(user, activeRole))
+        .catch(() => undefined);
+    };
+    window.addEventListener('online', handleOnline);
+
+    let ws: WebSocket | null = null;
+    let refreshTimer: number | null = null;
+    try {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const qs = new URLSearchParams({
+        tenantId: user.tenantId,
+        userId: user.userId,
+        role: activeRole,
+      });
+      ws = new WebSocket(`${proto}//${window.location.host}/ws/engine?${qs.toString()}`);
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(String(evt.data));
+          if (msg.type === 'state:updated' || msg.type === 'activity:updated') {
+            if (refreshTimer) window.clearTimeout(refreshTimer);
+            refreshTimer = window.setTimeout(() => {
+              void hydrateFromEngine(user, activeRole);
+            }, 350);
+          }
+        } catch {
+          // ignore malformed WS frames
+        }
+      };
+    } catch {
+      // Fall back cleanly if WebSocket unavailable
+    }
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+    };
+  }, [authReady, user, activeRole, hydrateFromEngine]);
 
   // Auth & Account Management Handlers
   const handleLogin = async (payload: {
@@ -748,6 +981,23 @@ export default function App() {
           t.id === foundTask.id ? { ...t, status: 'in_progress' } : t
         )
       );
+      if (user && activeRole !== 'client') {
+        const ver = engineTaskVersions[foundTask.id];
+        if (ver !== undefined || foundTask.id.startsWith('tsk-eng-') || foundTask.id.startsWith('demo_tsk_')) {
+          void updateEngineTaskApi(foundTask.id, { status: 'in_progress' }).catch(() => undefined);
+          void persistTrackingEvent({
+            type: 'state.task_status',
+            priority: 'state',
+            payload: {
+              task_id: foundTask.id,
+              from_value: 'todo',
+              to_value: 'in_progress',
+              expected_version: ver,
+              actor_role: activeRole,
+            },
+          });
+        }
+      }
     }
     showToast(
       `Stopwatch started: ${
@@ -845,6 +1095,17 @@ export default function App() {
       accumulatedSeconds: 0,
     }));
     setElapsedSeconds(0);
+    void persistTrackingEvent({
+      type: 'activity.window',
+      priority: 'activity',
+      eventTimeUtc: buildTimeBlockStartTimestampUtc(selectedDate, startMin),
+      payload: {
+        app: activeApp,
+        window_title: activeDoc,
+        duration_ms: durationMinutes * 60 * 1000,
+        active_task_id: timer.taskId,
+      },
+    });
     showToast(
       `Saved ${durationMinutes}m block + ${activeApp} document trace for "${newBlock.title}".`
     );
@@ -870,6 +1131,11 @@ export default function App() {
       appCategory: inferAppCategory(cleanApp),
     };
 
+    const domainOrPath =
+      cleanApp === 'Google Chrome' || cleanApp === 'OnTrack Web'
+        ? 'browser.active/tab'
+        : `~/workspace/${cleanDoc.split(' ')[0].replace(/[^a-zA-Z0-9._/-]/g, '')}`;
+
     const newDocSeg: DocumentUsageSegment = {
       id: `doc-${ts}`,
       date: selectedDate,
@@ -877,15 +1143,24 @@ export default function App() {
       endTime: nowMin,
       appName: cleanApp,
       documentTitle: cleanDoc,
-      domainOrPath:
-        cleanApp === 'Google Chrome' || cleanApp === 'OnTrack Web'
-          ? 'browser.active/tab'
-          : `~/workspace/${cleanDoc.split(' ')[0].replace(/[^a-zA-Z0-9._/-]/g, '')}`,
+      domainOrPath,
       linkedTaskId: timer.taskId,
     };
 
     setAppSegments((prev) => [...prev, newAppSeg]);
     setDocumentSegments((prev) => [...prev, newDocSeg]);
+    void persistTrackingEvent({
+      type: cleanApp === 'Google Chrome' ? 'activity.browser' : 'activity.window',
+      priority: 'activity',
+      eventTimeUtc: buildTimeBlockStartTimestampUtc(selectedDate, startMin),
+      payload: {
+        app: cleanApp,
+        window_title: cleanDoc,
+        file_path: domainOrPath,
+        duration_ms: 15 * 60 * 1000,
+        active_task_id: timer.taskId,
+      },
+    });
     showToast(`Recorded ${cleanApp} session: "${cleanDoc}"`);
   };
 
@@ -932,6 +1207,17 @@ export default function App() {
     lastActivityMsRef.current = Date.now();
     setIdleSeconds(0);
     setIdleAlert((prev) => ({ ...prev, isOpen: false }));
+    void persistTrackingEvent({
+      type: 'activity.idle',
+      priority: 'activity',
+      eventTimeUtc: buildTimeBlockStartTimestampUtc(selectedDate, idleAlert.startMinuteOfDay),
+      payload: {
+        app: 'Workstation',
+        window_title: 'Trimmed Idle Time (Marked Away)',
+        idle: true,
+        duration_ms: Math.max(15, idleAlert.endMinuteOfDay - idleAlert.startMinuteOfDay) * 60 * 1000,
+      },
+    });
     showToast('Idle interval trimmed and marked as Away on Track 1.');
   };
 
@@ -954,6 +1240,18 @@ export default function App() {
     lastActivityMsRef.current = Date.now();
     setIdleSeconds(0);
     setIdleAlert((prev) => ({ ...prev, isOpen: false }));
+    void persistTrackingEvent({
+      type: 'activity.window',
+      priority: 'activity',
+      eventTimeUtc: buildTimeBlockStartTimestampUtc(selectedDate, idleAlert.startMinuteOfDay),
+      payload: {
+        app: timer.activeAppName || 'OnTrack Web',
+        window_title: idleAlert.activeTaskTitle || 'Confirmed Active Desk Session',
+        idle: false,
+        duration_ms: Math.max(15, idleAlert.endMinuteOfDay - idleAlert.startMinuteOfDay) * 60 * 1000,
+        active_task_id: timer.taskId,
+      },
+    });
     showToast('Idle interval confirmed as active work time.');
   };
 
@@ -994,6 +1292,17 @@ export default function App() {
     lastActivityMsRef.current = Date.now();
     setIdleSeconds(0);
     setIdleAlert((prev) => ({ ...prev, isOpen: false }));
+    void persistTrackingEvent({
+      type: 'activity.window',
+      priority: 'activity',
+      eventTimeUtc: buildTimeBlockStartTimestampUtc(selectedDate, idleAlert.startMinuteOfDay),
+      payload: {
+        app: 'OnTrack Reconciled',
+        window_title: `${payload.project} · ${payload.title}`,
+        idle: false,
+        duration_ms: durationMinutes * 60 * 1000,
+      },
+    });
     showToast(`Reconciled away interval into "${payload.title}".`);
   };
 
@@ -1007,6 +1316,17 @@ export default function App() {
       setTimeBlocks((prev) =>
         prev.map((b) => (b.id === existingId ? updatedBlock : b))
       );
+      void persistTrackingEvent({
+        type: 'activity.window',
+        priority: 'activity',
+        eventTimeUtc: buildTimeBlockStartTimestampUtc(blockData.date, blockData.startTime),
+        payload: {
+          app: blockData.appName || 'OnTrack Manual',
+          window_title: blockData.documentTitle || blockData.title,
+          duration_ms: blockData.durationMinutes * 60 * 1000,
+          active_task_id: blockData.taskId,
+        },
+      });
       showToast(`Updated timeline block "${blockData.title}".`);
     } else {
       const created: TimeBlock = {
@@ -1015,6 +1335,17 @@ export default function App() {
       };
       setTimeBlocks((prev) => [...prev, created]);
       setSelectedDate(blockData.date);
+      void persistTrackingEvent({
+        type: 'activity.window',
+        priority: 'activity',
+        eventTimeUtc: buildTimeBlockStartTimestampUtc(blockData.date, blockData.startTime),
+        payload: {
+          app: blockData.appName || 'OnTrack Manual',
+          window_title: blockData.documentTitle || blockData.title,
+          duration_ms: blockData.durationMinutes * 60 * 1000,
+          active_task_id: blockData.taskId,
+        },
+      });
       showToast(`Logged ${blockData.durationMinutes}m to ${blockData.date}.`);
     }
   };
@@ -1024,25 +1355,103 @@ export default function App() {
     showToast('Timeline block removed.');
   };
 
-  // Task CRUD Handlers
+  // Task CRUD Handlers (Optimistic UI + Engine DB Sync)
   const handleCreateTask = (newTaskData: Omit<Task, 'id' | 'createdAt'>) => {
+    const tempId = `tsk-${Date.now()}`;
     const created: Task = {
       ...newTaskData,
-      id: `tsk-${Date.now()}`,
+      id: tempId,
       createdAt: todayDate,
     };
     setTasks((prev) => [created, ...prev]);
+
+    if (user && activeRole !== 'client') {
+      void createEngineTaskApi({
+        tenantId: user.tenantId,
+        project: newTaskData.project,
+        clientName: newTaskData.project,
+        title: newTaskData.title,
+        status: newTaskData.status,
+        estimatedMinutes: newTaskData.estimatedMinutes,
+        dueDateUtc: newTaskData.dueDate
+          ? `${newTaskData.dueDate}T17:00:00.000Z`
+          : new Date().toISOString(),
+        assignedUserId: user.userId,
+        period: new Date().toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+      })
+        .then(({ task: serverTask }: { task: EngineTask }) => {
+          const mapped = mapEngineTaskToWorkspaceTask(
+            serverTask,
+            created,
+            hierarchyBoardsRef.current
+          );
+          setEngineTaskVersions((prev) => ({ ...prev, [serverTask.id]: serverTask.version }));
+          setTasks((prev) =>
+            prev.map((t) => (t.id === tempId ? mapped : t))
+          );
+        })
+        .catch(() => {
+          showToast('Saved locally; server sync will retry when online.');
+        });
+    }
     showToast(`Task "${created.title}" added to ${created.project}.`);
   };
 
   const handleUpdateTask = (taskId: string, updates: Partial<Task>) => {
+    const previousTask = tasks.find((t) => t.id === taskId);
     setTasks((prev) =>
       prev.map((t) => (t.id === taskId ? { ...t, ...updates } : t))
     );
+
+    if (user && activeRole !== 'client') {
+      const isServerTask =
+        engineTaskVersions[taskId] !== undefined ||
+        taskId.startsWith('tsk-eng-') ||
+        taskId.startsWith('demo_tsk_');
+      if (isServerTask) {
+        const expectedVersion = engineTaskVersions[taskId];
+        void updateEngineTaskApi(taskId, {
+          title: updates.title,
+          status: updates.status,
+          estimatedMinutes: updates.estimatedMinutes,
+          dueDateUtc: updates.dueDate ? `${updates.dueDate}T17:00:00.000Z` : undefined,
+        })
+          .then(({ task: updatedServer }) => {
+            setEngineTaskVersions((prev) => ({
+              ...prev,
+              [updatedServer.id]: updatedServer.version,
+            }));
+          })
+          .catch(() => undefined);
+
+        if (updates.status && previousTask && updates.status !== previousTask.status) {
+          void persistTrackingEvent({
+            type: 'state.task_status',
+            priority: 'state',
+            payload: {
+              task_id: taskId,
+              from_value: previousTask.status,
+              to_value: updates.status,
+              expected_version: expectedVersion,
+              actor_role: activeRole,
+            },
+          });
+        }
+      }
+    }
   };
 
   const handleDeleteTask = (taskId: string) => {
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    if (user && activeRole !== 'client') {
+      const isServerTask =
+        engineTaskVersions[taskId] !== undefined ||
+        taskId.startsWith('tsk-eng-') ||
+        taskId.startsWith('demo_tsk_');
+      if (isServerTask) {
+        void deleteEngineTaskApi(taskId).catch(() => undefined);
+      }
+    }
     showToast('Task deleted.');
   };
 
@@ -1114,15 +1523,35 @@ export default function App() {
   };
 
   const handleResetToSeed = () => {
-    const seed = createSeedDataset();
-    setTasks(seed.tasks);
-    setTimeBlocks(seed.timeBlocks);
-    setActivitySegments(seed.activitySegments);
-    setAppSegments(seed.appSegments);
-    setDocumentSegments(seed.documentSegments);
-    setReports(seed.reports);
+    const canLoadDemo = demoModeEnabled && (!user || user.isDemoSandbox);
+    if (canLoadDemo) {
+      const demo = createDemoWorkspaceDataset(weekDates);
+      setTasks(demo.tasks);
+      setTimeBlocks(demo.timeBlocks);
+      setActivitySegments(demo.activitySegments);
+      setAppSegments(demo.appSegments);
+      setDocumentSegments(demo.documentSegments);
+      setReports(demo.reports);
+      setWorkspaceHierarchy(createDefaultWorkspaceHierarchy());
+      if (user) {
+        void hydrateFromEngine(user, activeRole);
+      }
+      showToast('Loaded 7-day sample accounting dataset.');
+      return;
+    }
+
+    const empty = createEmptyWorkspaceDataset();
+    setTasks(empty.tasks);
+    setTimeBlocks(empty.timeBlocks);
+    setActivitySegments(empty.activitySegments);
+    setAppSegments(empty.appSegments);
+    setDocumentSegments(empty.documentSegments);
+    setReports(empty.reports);
     setWorkspaceHierarchy(createDefaultWorkspaceHierarchy());
-    showToast('Workspace reset to default 7-day sample data.');
+    if (user && activeRole !== 'client') {
+      void hydrateFromEngine(user, activeRole);
+    }
+    showToast('Cleared local browser draft cache and synced from server.');
   };
 
   if (!authReady) {
@@ -1237,6 +1666,47 @@ export default function App() {
         {toastBanner && (
           <div className="no-print fixed bottom-5 right-5 z-40 bg-slate-900 dark:bg-indigo-600 text-white text-xs font-medium px-4 py-2.5 rounded-lg shadow-lg border border-slate-700">
             {toastBanner}
+          </div>
+        )}
+
+        {/* Unresolved Sync Conflict Banner (SYNC-6) */}
+        {syncConflicts.length > 0 && activeRole !== 'client' && (
+          <div className="no-print bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800 px-6 py-2">
+            <div className="max-w-[1440px] mx-auto flex flex-wrap items-center justify-between gap-3 text-xs">
+              <span className="text-amber-900 dark:text-amber-200 font-medium">
+                {syncConflicts.length} unresolved task sync conflict
+                {syncConflicts.length === 1 ? '' : 's'} detected across offline edits.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setAutoTrackNav((prev) => ({
+                    key: prev.key + 1,
+                    subTab: 'review',
+                  }));
+                  navigateTab('autotrack');
+                }}
+                className="px-2.5 py-1 font-semibold bg-amber-600 text-white rounded hover:bg-amber-500 cursor-pointer"
+              >
+                Review &amp; Resolve in Auto-Track
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Engine Sync Status Error Banner */}
+        {engineSyncStatus === 'error' && user && activeRole !== 'client' && (
+          <div className="no-print bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-2">
+            <div className="max-w-[1440px] mx-auto flex items-center justify-between gap-3 text-xs text-slate-600 dark:text-slate-300">
+              <span>Offline or reconnecting to OnTrack engine database; local edits remain queued.</span>
+              <button
+                type="button"
+                onClick={() => void hydrateFromEngine(user, activeRole)}
+                className="font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+              >
+                Retry Sync
+              </button>
+            </div>
           </div>
         )}
 
@@ -1569,6 +2039,7 @@ export default function App() {
         <DataPreferencesModal
           isOpen={prefsModalOpen}
           preferences={preferences}
+          demoModeEnabled={demoModeEnabled && (!user || Boolean(user.isDemoSandbox))}
           onUpdatePreferences={(updates) => {
             setPreferences((prev) => ({ ...prev, ...updates }));
           }}

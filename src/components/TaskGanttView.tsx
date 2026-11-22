@@ -13,7 +13,7 @@ import {
   PROJECTS,
   PROJECT_COLORS,
   formatDuration,
-} from '../data/seedData';
+} from '../utils/workspaceConstants';
 
 interface TaskGanttViewProps {
   tasks: Task[];

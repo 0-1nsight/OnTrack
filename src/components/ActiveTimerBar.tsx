@@ -23,7 +23,7 @@ import {
   CATEGORY_LABELS,
   TRACKED_APPS,
   formatSecondsToStopwatch,
-} from '../data/seedData';
+} from '../utils/workspaceConstants';
 
 interface ActiveTimerBarProps {
   timer: ActiveTimerState;

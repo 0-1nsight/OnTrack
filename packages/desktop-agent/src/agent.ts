@@ -4,6 +4,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { captureForegroundMetadata, WindowSample } from './adapters/osCollector.ts';
+import { createBridgeRequestHandler } from './bridge.ts';
 
 interface AgentConfig {
   serverUrl: string;
@@ -12,6 +13,7 @@ interface AgentConfig {
   deviceId: string;
   deviceToken: string;
   bridgePort: number;
+  bridgeSecret: string;
   heartbeatSeconds: number;
   pollSampleMs: number;
   idleThresholdSeconds: number;
@@ -29,6 +31,7 @@ const DEFAULT_CONFIG: AgentConfig = {
   deviceId: process.env.ONTRACK_DEVICE_ID || `dev-${os.hostname()}`,
   deviceToken: process.env.ONTRACK_DEVICE_TOKEN || '',
   bridgePort: Number(process.env.ONTRACK_BRIDGE_PORT || 47621),
+  bridgeSecret: process.env.ONTRACK_BRIDGE_SECRET || '',
   heartbeatSeconds: 12,
   pollSampleMs: 5000,
   idleThresholdSeconds: 180,
@@ -59,12 +62,15 @@ const FORBIDDEN_METADATA_KEYS = new Set([
   'longitude',
 ]);
 
+let hasEphemeralBridgeSecret = false;
+
 function loadConfig(): AgentConfig {
   const cfgPath = path.resolve(process.cwd(), 'agent.config.json');
+  let merged: AgentConfig = { ...DEFAULT_CONFIG };
   if (fs.existsSync(cfgPath)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-      return {
+      merged = {
         ...DEFAULT_CONFIG,
         ...parsed,
         exclusions: {
@@ -76,7 +82,11 @@ function loadConfig(): AgentConfig {
       // fall back to default
     }
   }
-  return DEFAULT_CONFIG;
+  if (!merged.bridgeSecret || !String(merged.bridgeSecret).trim()) {
+    merged.bridgeSecret = crypto.randomBytes(24).toString('base64url');
+    hasEphemeralBridgeSecret = true;
+  }
+  return merged;
 }
 
 const config = loadConfig();
@@ -359,9 +369,9 @@ function enqueueEvent(
   type: string,
   priority: 'state' | 'activity',
   payload: Record<string, any>
-) {
+): boolean {
   if (isExcluded(payload)) {
-    return;
+    return false;
   }
   const calibratedTime = new Date(Date.now() + clockSkewMs).toISOString();
   const event = {
@@ -381,109 +391,44 @@ function enqueueEvent(
   if (priority === 'state') {
     void flushQueue();
   }
-}
-
-function isAllowedBridgeOrigin(originHeader: string | undefined): boolean {
-  if (!originHeader) return true;
-  return /^(chrome-extension|moz-extension|safari-web-extension):\/\/|^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(
-    originHeader
-  );
+  return true;
 }
 
 // Local Native Messaging / HTTP Bridge (127.0.0.1:47621)
-const bridgeServer = http.createServer((req, res) => {
-  const originHeader =
-    typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
-  if (!isAllowedBridgeOrigin(originHeader)) {
-    res.writeHead(403, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Forbidden local bridge origin' }));
-    return;
-  }
-  if (originHeader) {
-    res.setHeader('Access-Control-Allow-Origin', originHeader);
-    res.setHeader('Vary', 'Origin');
-  }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/browser-event') {
-    let body = '';
-    let oversized = false;
-    req.on('data', (chunk) => {
-      body += chunk;
-      if (body.length > 64 * 1024) {
-        oversized = true;
-      }
-    });
-    req.on('end', () => {
-      if (oversized) {
-        res.writeHead(413);
-        res.end('Payload too large');
-        return;
-      }
-      try {
-        const msg = JSON.parse(body || '{}');
-        lastBrowserPingMs = Date.now();
-        enqueueEvent('activity.browser', 'activity', {
-          app: msg.browser || 'Google Chrome',
-          window_title: msg.pageTitle || 'Browser Tab',
-          url: msg.url || null,
-          domain: msg.domain || null,
-          file_path: msg.downloadFilename || null,
-          duration_ms: msg.durationMs || 10000,
-          idle: false,
-          incognito: Boolean(msg.incognito),
-          os_platform: msg.osPlatform || os.platform(),
-          extension_connected: true,
-        });
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
-      } catch {
-        res.writeHead(400);
-        res.end('Invalid payload');
-      }
-    });
-    return;
-  }
-
-  if (req.method === 'GET' && req.url === '/config') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        excludedDomains: config.exclusions.domains,
-        idleThresholdSeconds: config.idleThresholdSeconds,
-        deviceId: config.deviceId,
-      })
-    );
-    return;
-  }
-
-  if (req.method === 'GET' && req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        ok: true,
-        deviceId: config.deviceId,
-        tenantId: config.tenantId,
-        seq,
-        wsConnected,
-        clockSkewMs,
-        extensionConnected: Date.now() - lastBrowserPingMs < 45000,
-        latestSample,
-      })
-    );
-    return;
-  }
-
-  res.writeHead(404);
-  res.end('Not found');
-});
+const bridgeServer = http.createServer(
+  createBridgeRequestHandler({
+    getSecret: () => config.bridgeSecret,
+    getConfigInfo: () => ({
+      excludedDomains: config.exclusions.domains,
+      idleThresholdSeconds: config.idleThresholdSeconds,
+      deviceId: config.deviceId,
+    }),
+    getHealthInfo: () => ({
+      deviceId: config.deviceId,
+      tenantId: config.tenantId,
+      seq,
+      wsConnected,
+      clockSkewMs,
+      extensionConnected: Date.now() - lastBrowserPingMs < 45000,
+      latestSample,
+    }),
+    onBrowserEvent: (msg) => {
+      lastBrowserPingMs = Date.now();
+      return enqueueEvent('activity.browser', 'activity', {
+        app: msg.browser || 'Google Chrome',
+        window_title: msg.pageTitle || 'Browser Tab',
+        url: msg.url || null,
+        domain: msg.domain || null,
+        file_path: msg.downloadFilename || null,
+        duration_ms: msg.durationMs || 10000,
+        idle: false,
+        incognito: Boolean(msg.incognito),
+        os_platform: msg.osPlatform || os.platform(),
+        extension_connected: true,
+      });
+    },
+  })
+);
 
 bridgeServer.listen(config.bridgePort, '127.0.0.1', () => {
   console.log(
@@ -491,6 +436,11 @@ bridgeServer.listen(config.bridgePort, '127.0.0.1', () => {
       config.deviceToken ? 'ENROLLED' : 'UNPAIRED'
     }`
   );
+  if (hasEphemeralBridgeSecret) {
+    console.log(
+      `[OnTrack Agent] Generated runtime bridge secret (paste into Browser Extension popup): ${config.bridgeSecret}`
+    );
+  }
   void syncBootstrapFromServer().then(() => {
     connectWebSocket();
   });

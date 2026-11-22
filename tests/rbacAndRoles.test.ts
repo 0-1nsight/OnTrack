@@ -213,7 +213,7 @@ describe('Role-Based Access Control, Views & Client Portal Isolation', () => {
     );
     expect(weekendRow).toBeTruthy();
     expect(weekendRow.shiftPattern).toBe('weekend');
-    expect(weekendRow.availableHoursWeek).toBe(16);
+    expect(weekendRow.availableHoursWeek).toBe(13.6);
 
     // Demo login establishes an authenticated cookie session for multi-client portal isolation
     const loginRes = await request(ctx.app)

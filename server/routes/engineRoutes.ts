@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -63,6 +64,23 @@ const PortalBrandingPatchSchema = z.object({
 const TemplateUpdateSchema = z.object({
   name: z.string().trim().min(2).max(160).optional(),
   milestoneNames: z.array(z.string().trim().min(1).max(200)).min(1).max(12).optional(),
+});
+
+const TaskUpdateSchema = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+  status: z.enum(['todo', 'in_progress', 'blocked', 'completed']).optional(),
+  estimatedMinutes: z.number().int().min(5).max(10000).optional(),
+  dueDateUtc: z.string().trim().min(1).max(64).optional(),
+  period: z.string().trim().min(1).max(64).optional(),
+  assignedUserId: z.string().trim().min(1).max(120).optional(),
+  clientId: z.string().trim().min(1).max(120).optional(),
+  clientName: z.string().trim().min(1).max(160).optional(),
+});
+
+const PackageBuildBodySchema = z.object({
+  serverUrl: z.string().trim().url().optional(),
+  userId: z.string().trim().min(1).max(120).optional(),
+  bridgeSecret: z.string().trim().min(16).max(128).optional(),
 });
 
 export function createEngineRouter(deps: {
@@ -650,22 +668,32 @@ export function createEngineRouter(deps: {
     asyncHandler(async (req, res) => {
       const authCtx = await requireStaff(req);
       const b = req.body || {};
-      if (!b.title || !b.clientId) {
+      const title = typeof b.title === 'string' ? b.title.trim() : '';
+      const rawClientId = typeof b.clientId === 'string' ? b.clientId.trim() : '';
+      const rawProject = typeof b.project === 'string' ? b.project.trim() : '';
+      if (!title || (!rawClientId && !rawProject)) {
         throw new HttpError(400, 'MISSING_FIELDS', 'title and clientId are required.');
       }
+      const slug = (rawClientId || rawProject)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '') || 'internal';
+      const clientId = rawClientId || `cli-${slug}`;
+      const clientName = String(b.clientName || rawProject || 'Internal Firm');
+
       const created = await deps.engineStore.createEngineTask({
         tenantId: authCtx.tenantId,
-        clientId: String(b.clientId),
-        clientName: String(b.clientName || 'Client'),
+        clientId,
+        clientName,
         templateId:
           b.templateId ||
           `${authCtx.tenantId === 'firm_demo' ? 'demo_' : ''}tpl-monthly-close`,
-        title: String(b.title),
+        title,
         period: String(b.period || 'Oct 2026'),
         status: b.status || 'todo',
         dueDateUtc: b.dueDateUtc || new Date().toISOString(),
         assignedUserId: String(b.assignedUserId || authCtx.userId),
-        estimatedMinutes: Number(b.estimatedMinutes) || 120,
+        estimatedMinutes: Math.max(5, Number(b.estimatedMinutes) || 120),
       });
       await deps.wsGateway.publish({
         tenantId: authCtx.tenantId,
@@ -674,6 +702,76 @@ export function createEngineRouter(deps: {
         eventType: 'state:updated',
       });
       res.json({ task: created });
+    })
+  );
+
+  router.patch(
+    '/tasks/:taskId',
+    asyncHandler(async (req, res) => {
+      const authCtx = await requireStaff(req);
+      const parsed = TaskUpdateSchema.parse(req.body || {});
+      const existingTasks = await deps.engineStore.getTasks(authCtx.tenantId);
+      const target = existingTasks.find((t) => t.id === req.params.taskId);
+      if (!target) {
+        throw new HttpError(404, 'TASK_NOT_FOUND', 'Task not found.');
+      }
+      if (
+        authCtx.role === 'accountant' &&
+        target.assignedUserId !== authCtx.userId &&
+        !authCtx.isDemoSandbox
+      ) {
+        throw new HttpError(403, 'FORBIDDEN', 'Accountants can only update their assigned tasks.');
+      }
+      const updated = await deps.engineStore.updateEngineTask({
+        tenantId: authCtx.tenantId,
+        taskId: req.params.taskId,
+        updates: parsed,
+      });
+      await deps.wsGateway.publish({
+        tenantId: authCtx.tenantId,
+        affectedUserId: updated.assignedUserId,
+        affectedTeamId: authCtx.teamId,
+        eventType: 'state:updated',
+      });
+      res.json({ task: updated });
+    })
+  );
+
+  router.delete(
+    '/tasks/:taskId',
+    asyncHandler(async (req, res) => {
+      const authCtx = await requireStaff(req);
+      const existingTasks = await deps.engineStore.getTasks(authCtx.tenantId);
+      const target = existingTasks.find((t) => t.id === req.params.taskId);
+      if (!target) {
+        throw new HttpError(404, 'TASK_NOT_FOUND', 'Task not found.');
+      }
+      if (
+        authCtx.role === 'accountant' &&
+        target.assignedUserId !== authCtx.userId &&
+        !authCtx.isDemoSandbox
+      ) {
+        throw new HttpError(403, 'FORBIDDEN', 'Accountants can only delete their assigned tasks.');
+      }
+      const deleted = await deps.engineStore.deleteEngineTask({
+        tenantId: authCtx.tenantId,
+        taskId: req.params.taskId,
+      });
+      await deps.engineStore.recordAuditLog({
+        tenantId: authCtx.tenantId,
+        actorUserId: authCtx.userId,
+        actorRole: authCtx.role,
+        targetUserId: target.assignedUserId,
+        action: 'task.deleted',
+        details: `Deleted task "${deleted.title}" (${deleted.id})`,
+      });
+      await deps.wsGateway.publish({
+        tenantId: authCtx.tenantId,
+        affectedUserId: target.assignedUserId,
+        affectedTeamId: authCtx.teamId,
+        eventType: 'state:updated',
+      });
+      res.json({ ok: true });
     })
   );
 
@@ -937,69 +1035,138 @@ export function createEngineRouter(deps: {
     })
   );
 
+  const buildPackageZipResponse = async (params: {
+    kind: string;
+    tenantId: string;
+    viewerUserId: string;
+    viewerRole: string;
+    requestedUserId?: string;
+    serverUrl?: string;
+    bridgeSecret?: string;
+  }): Promise<{ buffer: Buffer; filename: string }> => {
+    const { kind } = params;
+    if (kind !== 'desktop-agent' && kind !== 'browser-extension') {
+      throw new HttpError(400, 'INVALID_PACKAGE_KIND', 'Invalid package kind.');
+    }
+
+    const packagesRoot = path.resolve(appConfig.projectRoot, 'packages');
+    const targetDir = path.resolve(packagesRoot, kind);
+    if (!targetDir.startsWith(packagesRoot + path.sep) || !fs.existsSync(targetDir)) {
+      throw new HttpError(404, 'PACKAGE_NOT_FOUND', 'Requested agent package not found.');
+    }
+
+    const targetUserId =
+      params.viewerRole === 'admin_it' && params.requestedUserId?.trim()
+        ? params.requestedUserId.trim()
+        : params.viewerUserId;
+
+    const serverUrl = params.serverUrl || appConfig.appUrl || 'http://localhost:3000';
+    const bridgeSecret =
+      params.bridgeSecret?.trim() || crypto.randomBytes(24).toString('base64url');
+
+    const zip = new JSZip();
+    const addDir = (dir: string, prefix: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          addDir(full, rel);
+        } else {
+          zip.file(rel, fs.readFileSync(full));
+        }
+      }
+    };
+    addDir(targetDir, '');
+
+    if (kind === 'desktop-agent') {
+      zip.file(
+        'agent.config.json',
+        JSON.stringify(
+          {
+            serverUrl,
+            tenantId: params.tenantId,
+            userId: targetUserId,
+            deviceId: `dev-${targetUserId}`,
+            deviceToken: '<PASTE_ONTRACK_DEV_TOKEN_HERE>',
+            bridgePort: 47621,
+            bridgeSecret,
+            heartbeatSeconds: 12,
+            pollSampleMs: 5000,
+            idleThresholdSeconds: 180,
+          },
+          null,
+          2
+        )
+      );
+      zip.file(
+        'start-agent.sh',
+        '#!/usr/bin/env bash\nset -e\ncd "$(dirname "$0")"\nnpm start\n',
+        { unixPermissions: '755' }
+      );
+      zip.file(
+        'start-agent.bat',
+        '@echo off\r\ncd /d "%~dp0"\r\nnpm start\r\n'
+      );
+    } else {
+      zip.file(
+        'config.defaults.json',
+        JSON.stringify(
+          {
+            bridgeUrl: 'http://127.0.0.1:47621/browser-event',
+            bridgeSecret,
+            excludedDomains: ['personalbank', 'mychart', 'chase.com'],
+          },
+          null,
+          2
+        )
+      );
+    }
+
+    const buffer = await zip.generateAsync({
+      type: 'nodebuffer',
+      platform: 'UNIX',
+    });
+    return { buffer, filename: `ontrack-${kind}.zip` };
+  };
+
   router.get(
     '/package/:kind',
     asyncHandler(async (req, res) => {
       const authCtx = await requireStaff(req);
-      const kind = req.params.kind;
-      if (kind !== 'desktop-agent' && kind !== 'browser-extension') {
-        throw new HttpError(400, 'INVALID_PACKAGE_KIND', 'Invalid package kind.');
-      }
-
-      const packagesRoot = path.resolve(appConfig.projectRoot, 'packages');
-      const targetDir = path.resolve(packagesRoot, kind);
-      if (!targetDir.startsWith(packagesRoot + path.sep) || !fs.existsSync(targetDir)) {
-        throw new HttpError(404, 'PACKAGE_NOT_FOUND', 'Requested agent package not found.');
-      }
-
-      const targetUserId =
-        authCtx.role === 'admin_it' && typeof req.query.userId === 'string' && req.query.userId.trim()
-          ? req.query.userId.trim()
-          : authCtx.userId;
-
-      const serverUrl = String(req.query.serverUrl || appConfig.appUrl || 'http://localhost:3000');
-
-      const zip = new JSZip();
-      const addDir = (dir: string, prefix: string) => {
-        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-          const full = path.join(dir, entry.name);
-          const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-          if (entry.isDirectory()) {
-            addDir(full, rel);
-          } else {
-            zip.file(rel, fs.readFileSync(full));
-          }
-        }
-      };
-      addDir(targetDir, '');
-
-      if (kind === 'desktop-agent') {
-        zip.file(
-          'agent.config.json',
-          JSON.stringify(
-            {
-              serverUrl,
-              tenantId: authCtx.tenantId,
-              userId: targetUserId,
-              deviceId: `dev-${targetUserId}`,
-              deviceToken: '<PASTE_ONTRACK_DEV_TOKEN_HERE>',
-              bridgePort: 47621,
-              heartbeatSeconds: 12,
-              pollSampleMs: 5000,
-              idleThresholdSeconds: 180,
-            },
-            null,
-            2
-          )
-        );
-      }
-
-      const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+      const { buffer, filename } = await buildPackageZipResponse({
+        kind: req.params.kind,
+        tenantId: authCtx.tenantId,
+        viewerUserId: authCtx.userId,
+        viewerRole: authCtx.role,
+        requestedUserId:
+          typeof req.query.userId === 'string' ? req.query.userId : undefined,
+        serverUrl:
+          typeof req.query.serverUrl === 'string' && req.query.serverUrl.trim()
+            ? req.query.serverUrl.trim()
+            : undefined,
+      });
       res.setHeader('Content-Type', 'application/zip');
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename="ontrack-${kind}.zip"`
-      );
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(buffer);
+    })
+  );
+
+  router.post(
+    '/package/:kind',
+    asyncHandler(async (req, res) => {
+      const authCtx = await requireStaff(req);
+      const parsed = PackageBuildBodySchema.parse(req.body || {});
+      const { buffer, filename } = await buildPackageZipResponse({
+        kind: req.params.kind,
+        tenantId: authCtx.tenantId,
+        viewerUserId: authCtx.userId,
+        viewerRole: authCtx.role,
+        requestedUserId: parsed.userId,
+        serverUrl: parsed.serverUrl,
+        bridgeSecret: parsed.bridgeSecret,
+      });
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
       res.send(buffer);
     })
   );

@@ -1042,7 +1042,7 @@ export class PortalSQLStore {
     tenantId: string;
     docReqId: string;
     verifiedBy: string;
-  }): Promise<{ docReqId: string; clientId: string; updatedAtUtc: string }> {
+  }): Promise<{ docReqId: string; clientId: string; status: 'verified'; updatedAtUtc: string }> {
     await this.engineStore.ready();
     const nowIso = new Date().toISOString();
 
@@ -1085,7 +1085,7 @@ export class PortalSQLStore {
       }
     );
 
-    return { docReqId: params.docReqId, clientId, updatedAtUtc: nowIso };
+    return { docReqId: params.docReqId, clientId, status: 'verified', updatedAtUtc: nowIso };
   }
 
   public async verifyPortalFileAccess(params: {

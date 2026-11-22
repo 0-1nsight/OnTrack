@@ -146,6 +146,12 @@ export function saveLocalQueue(events: TrackingEvent[]): void {
   }
 }
 
+export function acknowledgeLocalEventIds(ackedIds: Set<string>): void {
+  if (ackedIds.size === 0) return;
+  const remaining = loadLocalQueue().filter((ev) => !ackedIds.has(ev.event_id));
+  saveLocalQueue(remaining);
+}
+
 export function buildLocalTrackingEvent(params: {
   tenantId: string;
   userId: string;
@@ -295,6 +301,7 @@ export async function flushQueuedEventsOverHttp(params: {
     if (a.priority === b.priority) return a.seq - b.seq;
     return a.priority === 'state' ? -1 : 1;
   });
+  const sentIds = new Set(ordered.map((e) => e.event_id));
 
   const res = await fetch('/api/engine/sync', {
     method: 'POST',
@@ -313,7 +320,7 @@ export async function flushQueuedEventsOverHttp(params: {
   }
 
   const data = await res.json();
-  saveLocalQueue([]);
+  acknowledgeLocalEventIds(sentIds);
   return data;
 }
 
@@ -436,14 +443,17 @@ export async function updateEngineConfigApi(
 
 export async function createEngineTaskApi(payload: {
   tenantId: string;
-  clientId: string;
-  clientName: string;
+  clientId?: string;
+  clientName?: string;
+  project?: string;
   templateId?: string;
   title: string;
-  period: string;
-  assignedUserId: string;
+  period?: string;
+  status?: EngineTask['status'];
+  dueDateUtc?: string;
+  assignedUserId?: string;
   estimatedMinutes: number;
-}) {
+}): Promise<{ task: EngineTask }> {
   const res = await fetch('/api/engine/tasks', {
     method: 'POST',
     credentials: 'include',
@@ -451,6 +461,39 @@ export async function createEngineTaskApi(payload: {
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error('Failed to create task');
+  return res.json();
+}
+
+export async function updateEngineTaskApi(
+  taskId: string,
+  updates: {
+    title?: string;
+    status?: EngineTask['status'];
+    estimatedMinutes?: number;
+    dueDateUtc?: string;
+    period?: string;
+    assignedUserId?: string;
+    clientId?: string;
+    clientName?: string;
+  }
+): Promise<{ task: EngineTask }> {
+  const res = await fetch(`/api/engine/tasks/${encodeURIComponent(taskId)}`, {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) throw new Error('Failed to update task');
+  return res.json();
+}
+
+export async function deleteEngineTaskApi(taskId: string): Promise<{ ok: boolean }> {
+  const res = await fetch(`/api/engine/tasks/${encodeURIComponent(taskId)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: buildAuthHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to delete task');
   return res.json();
 }
 
@@ -704,4 +747,33 @@ export function getPackageDownloadUrl(
     userId,
   });
   return `/api/engine/package/${kind}?${qs.toString()}`;
+}
+
+export async function downloadPackageZip(params: {
+  kind: 'desktop-agent' | 'browser-extension';
+  userId?: string;
+  bridgeSecret?: string;
+}): Promise<void> {
+  const origin =
+    typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+  const res = await fetch(`/api/engine/package/${params.kind}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      serverUrl: origin,
+      userId: params.userId,
+      bridgeSecret: params.bridgeSecret,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Package download failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ontrack-${params.kind}.zip`;
+  a.click();
+  URL.revokeObjectURL(url);
 }

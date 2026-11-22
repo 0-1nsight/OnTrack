@@ -1,0 +1,5 @@
+{
+  "bridgeUrl": "http://127.0.0.1:47621/browser-event",
+  "bridgeSecret": "",
+  "excludedDomains": ["personalbank", "mychart", "chase.com"]
+}

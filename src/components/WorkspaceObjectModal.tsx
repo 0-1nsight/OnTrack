@@ -10,7 +10,7 @@ import {
   WorkspaceBoard,
   WorkspaceHierarchy,
 } from '../types';
-import { CATEGORY_LABELS } from '../data/seedData';
+import { CATEGORY_LABELS } from '../utils/workspaceConstants';
 import {
   createAccountingCloseSections,
   createStandardSections,

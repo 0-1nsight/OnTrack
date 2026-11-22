@@ -47,13 +47,13 @@ import {
   deleteChecklistItemApi,
   deleteClientApi,
   deletePrivacyRuleApi,
+  downloadPackageZip,
   downloadPortableFileWithAuth,
   EngineSnapshot,
   fetchEngineSnapshot,
   filterAndEnqueueEvent,
   flushQueuedEventsOverHttp,
   getOrCreateLocalDeviceId,
-  getPackageDownloadUrl,
   importClientsRawApi,
   importStaffCsvApi,
   loadLocalQueue,
@@ -148,6 +148,22 @@ function formatDurationSeconds(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
   return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+function generatePairingBridgeSecret(): string {
+  const bytes = new Uint8Array(24);
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
 export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
@@ -252,6 +268,12 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
   const [customFilePath, setCustomFilePath] = useState<string>('Clients/Acme_Ltd/Oct2026_Bank.xlsx');
   const [newDeviceLabel, setNewDeviceLabel] = useState<string>('Workstation Laptop');
   const [newPairedRawToken, setNewPairedRawToken] = useState<string | null>(null);
+  const [pairingBridgeSecret, setPairingBridgeSecret] = useState<string>(() =>
+    generatePairingBridgeSecret()
+  );
+  const [downloadingPkg, setDownloadingPkg] = useState<
+    'desktop-agent' | 'browser-extension' | 'paired' | null
+  >(null);
 
   // Dictionaries, Privacy & Portable Vault Forms
   const [manualLegalName, setManualLegalName] = useState<string>('');
@@ -1739,17 +1761,35 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
                     <Copy className="w-3 h-3" />
                     <span>Copy Key</span>
                   </button>
-                  <a
-                    href={getPackageDownloadUrl(
-                      'desktop-agent',
-                      tenantId,
-                      targetUserId
-                    )}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-700 text-white font-medium"
+                  <button
+                    type="button"
+                    disabled={downloadingPkg !== null}
+                    onClick={async () => {
+                      setDownloadingPkg('desktop-agent');
+                      try {
+                        await downloadPackageZip({
+                          kind: 'desktop-agent',
+                          userId: targetUserId,
+                          bridgeSecret: pairingBridgeSecret,
+                        });
+                        onNotify('Downloaded ontrack-desktop-agent.zip');
+                      } catch (err) {
+                        onNotify(
+                          err instanceof Error ? err.message : 'Desktop agent download failed'
+                        );
+                      } finally {
+                        setDownloadingPkg(null);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-700 text-white font-medium disabled:opacity-60 cursor-pointer"
                   >
                     <Download className="w-3 h-3" />
-                    <span>Download Pre-Paired Agent .zip</span>
-                  </a>
+                    <span>
+                      {downloadingPkg === 'desktop-agent'
+                        ? 'Packaging...'
+                        : 'Download Pre-Paired Agent .zip'}
+                    </span>
+                  </button>
                 </div>
               </div>
             )}
@@ -2752,6 +2792,87 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
       {/* ===================================================================== */}
       {subTab === 'packages' && (
         <div className="space-y-5">
+          {/* Paired Collector Bridge Secret & One-Click Bundle Bar */}
+          <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                  <span>Authenticated Loopback Bridge &amp; Paired Collector Bundle</span>
+                </h2>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  Both packages share a per-install cryptographic secret (<code className="font-mono">X-OnTrack-Bridge-Secret</code>)
+                  embedded into <code className="font-mono">agent.config.json</code> and <code className="font-mono">config.defaults.json</code> so untrusted browser tabs cannot spoof local telemetry.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={downloadingPkg !== null}
+                onClick={async () => {
+                  setDownloadingPkg('paired');
+                  try {
+                    await downloadPackageZip({
+                      kind: 'desktop-agent',
+                      userId: targetUserId,
+                      bridgeSecret: pairingBridgeSecret,
+                    });
+                    await downloadPackageZip({
+                      kind: 'browser-extension',
+                      userId: targetUserId,
+                      bridgeSecret: pairingBridgeSecret,
+                    });
+                    onNotify('Downloaded paired Desktop Agent & Browser Extension bundles');
+                  } catch (err) {
+                    onNotify(
+                      err instanceof Error ? err.message : 'Failed to download paired packages'
+                    );
+                  } finally {
+                    setDownloadingPkg(null);
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-indigo-600 text-white rounded hover:bg-indigo-500 disabled:opacity-60 cursor-pointer shrink-0"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>
+                  {downloadingPkg === 'paired'
+                    ? 'Packaging...'
+                    : 'Download Paired Bundle (.zip x2)'}
+                </span>
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 p-3 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                Pairing Secret:
+              </span>
+              <code className="text-[11px] font-mono text-slate-900 dark:text-slate-100 select-all break-all flex-1">
+                {pairingBridgeSecret}
+              </code>
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(pairingBridgeSecret);
+                  onNotify('Copied bridge secret to clipboard');
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"
+              >
+                <Copy className="w-3 h-3" />
+                <span>Copy</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPairingBridgeSecret(generatePairingBridgeSecret());
+                  onNotify('Generated fresh pairing secret for next download');
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>Regenerate</span>
+              </button>
+            </div>
+          </section>
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-3">
               <div className="flex items-start justify-between gap-3">
@@ -2760,26 +2881,43 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
                     Cross-OS Desktop Agent Package
                   </h2>
                   <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                    Windows, macOS (`ioreg`), Linux (`xprintidle`) &amp; Citrix/RDP VDI support ·
-                    Bearer device key auth, `/api/engine/agent/bootstrap` dynamic privacy rules,
-                    WebSocket stream + HTTP fallback, and local bridge (:47621).
+                    Windows, macOS (<code className="font-mono">ioreg</code>), Linux (<code className="font-mono">xprintidle</code>) &amp; Citrix/RDP VDI support ·
+                    Bearer device key auth, authenticated loopback bridge (<code className="font-mono">:47621</code>), WebSocket stream + HTTP fallback, and OS launchers.
                   </p>
                 </div>
-                <a
-                  href={getPackageDownloadUrl(
-                    'desktop-agent',
-                    tenantId,
-                    targetUserId
-                  )}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-indigo-600 text-white rounded hover:bg-indigo-500 shrink-0"
+                <button
+                  type="button"
+                  disabled={downloadingPkg !== null}
+                  onClick={async () => {
+                    setDownloadingPkg('desktop-agent');
+                    try {
+                      await downloadPackageZip({
+                        kind: 'desktop-agent',
+                        userId: targetUserId,
+                        bridgeSecret: pairingBridgeSecret,
+                      });
+                      onNotify('Downloaded ontrack-desktop-agent.zip');
+                    } catch (err) {
+                      onNotify(
+                        err instanceof Error ? err.message : 'Desktop agent download failed'
+                      );
+                    } finally {
+                      setDownloadingPkg(null);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-indigo-600 text-white rounded hover:bg-indigo-500 disabled:opacity-60 cursor-pointer shrink-0"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  <span>Download .zip</span>
-                </a>
+                  <span>
+                    {downloadingPkg === 'desktop-agent' ? 'Packaging...' : 'Download .zip'}
+                  </span>
+                </button>
               </div>
               <pre className="p-3 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-[11px] font-mono text-slate-700 dark:text-slate-300 overflow-x-auto">
 {`unzip ontrack-desktop-agent.zip -d ontrack-agent
-cd ontrack-agent && npm start`}
+cd ontrack-agent
+# macOS / Linux: chmod +x start-agent.sh && ./start-agent.sh
+# Windows:       start-agent.bat`}
               </pre>
             </div>
 
@@ -2791,22 +2929,42 @@ cd ontrack-agent && npm start`}
                   </h2>
                   <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                     Captures active tab domains/paths, SPA URL updates (QuickBooks, Xero),
-                    download filenames, dynamically syncs privacy exclusions via `:47621/config`,
-                    and strictly drops incognito windows.
+                    download filenames, syncs exclusions via authenticated <code className="font-mono">:47621/config</code>,
+                    includes a status/pairing popup, and drops incognito windows.
                   </p>
                 </div>
-                <a
-                  href={getPackageDownloadUrl('browser-extension', tenantId, targetUserId)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-slate-900 dark:bg-indigo-600 text-white rounded hover:opacity-90 shrink-0"
+                <button
+                  type="button"
+                  disabled={downloadingPkg !== null}
+                  onClick={async () => {
+                    setDownloadingPkg('browser-extension');
+                    try {
+                      await downloadPackageZip({
+                        kind: 'browser-extension',
+                        userId: targetUserId,
+                        bridgeSecret: pairingBridgeSecret,
+                      });
+                      onNotify('Downloaded ontrack-browser-extension.zip');
+                    } catch (err) {
+                      onNotify(
+                        err instanceof Error ? err.message : 'Extension download failed'
+                      );
+                    } finally {
+                      setDownloadingPkg(null);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-slate-900 dark:bg-indigo-600 text-white rounded hover:opacity-90 disabled:opacity-60 cursor-pointer shrink-0"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  <span>Download .zip</span>
-                </a>
+                  <span>
+                    {downloadingPkg === 'browser-extension' ? 'Packaging...' : 'Download .zip'}
+                  </span>
+                </button>
               </div>
               <pre className="p-3 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-[11px] font-mono text-slate-700 dark:text-slate-300 overflow-x-auto">
-{`1. Unzip ontrack-browser-extension.zip
-2. Open chrome://extensions -> Enable Developer Mode
-3. Load unpacked -> Select extracted folder`}
+{`1. Unzip ontrack-browser-extension.zip (pre-paired config.defaults.json)
+2. Open chrome://extensions -> Enable Developer Mode -> Load unpacked
+3. Click the extension toolbar icon to verify Connected status`}
               </pre>
             </div>
           </div>

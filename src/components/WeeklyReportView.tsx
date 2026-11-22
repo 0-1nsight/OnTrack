@@ -27,7 +27,7 @@ import {
   CATEGORY_LABELS,
   PROJECT_COLORS,
   formatDuration,
-} from '../data/seedData';
+} from '../utils/workspaceConstants';
 
 interface WeeklyReportViewProps {
   weekDates: string[];

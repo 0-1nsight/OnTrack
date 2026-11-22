@@ -8,7 +8,7 @@ import {
   formatMinutesToHHMM,
   parseHHMMToMinutes,
   formatDuration,
-} from '../data/seedData';
+} from '../utils/workspaceConstants';
 
 interface QuickLogModalProps {
   isOpen: boolean;

@@ -14,7 +14,7 @@ import {
   APP_COLORS,
   PROJECTS,
   formatDuration,
-} from '../data/seedData';
+} from '../utils/workspaceConstants';
 
 interface AnalyticsViewProps {
   weekDates: string[];
@@ -40,17 +40,21 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   onSelectDateAndGoToTimeline,
 }) => {
   const isExecutiveScope = activeRole === 'executive';
+  const isOverviewRole =
+    activeRole === 'executive' ||
+    activeRole === 'line_manager' ||
+    activeRole === 'team_lead';
   const tenantId = currentUser?.tenantId || 'firm_demo';
   const [execOverview, setExecOverview] = useState<RoleOverviewData | null>(null);
 
   useEffect(() => {
-    if (!isExecutiveScope) return;
+    if (!isOverviewRole) return;
     let active = true;
     const run = async () => {
       try {
         const overview = await fetchRoleOverviewApi({
           tenantId,
-          viewerRole: 'executive',
+          viewerRole: activeRole,
         });
         if (active) setExecOverview(overview);
       } catch {
@@ -61,7 +65,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     return () => {
       active = false;
     };
-  }, [isExecutiveScope, tenantId]);
+  }, [isOverviewRole, activeRole, tenantId]);
   // Daily breakdown across the 7-day window
   const dailySeries = useMemo(() => {
     return weekDates.map((date) => {
@@ -323,16 +327,56 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     );
   }
 
+  const isEmptyWorkspace =
+    tasks.length === 0 &&
+    timeBlocks.length === 0 &&
+    appSegments.length === 0 &&
+    activitySegments.length === 0;
+
   return (
     <div className="space-y-6">
-      <div className="pb-2 border-b border-slate-200 dark:border-slate-800">
-        <h1 className="font-display text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
-          Productivity & Estimation Analytics
-        </h1>
-        <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5">
-          7-day focus rhythm, project estimation accuracy, and workstation presence telemetry
-        </p>
+      <div className="pb-2 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="font-display text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+            Productivity & Estimation Analytics
+          </h1>
+          <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5">
+            7-day focus rhythm, project estimation accuracy, and workstation presence telemetry
+          </p>
+        </div>
+        {execOverview && (
+          <div className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
+            {execOverview.freshnessSummary.reportingLiveCount}/
+            {execOverview.freshnessSummary.totalActiveShiftStaff} live · As of{' '}
+            {new Date(execOverview.freshnessSummary.dataAsOfUtc).toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            })}{' '}
+            UTC{execOverview.freshnessSummary.provisional ? ' · Provisional' : ''}
+          </div>
+        )}
       </div>
+
+      {isEmptyWorkspace && (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
+              No tracked productivity data yet
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Start an active stopwatch, log a block on the Day Timeline, or connect your Desktop Agent to populate live analytics.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => onSelectDateAndGoToTimeline(weekDates[weekDates.length - 1])}
+            className="px-3.5 py-2 text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg shrink-0 cursor-pointer"
+          >
+            Go to Today&apos;s Timeline
+          </button>
+        </div>
+      )}
 
       {/* Top 3 Summary KPI Panels */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

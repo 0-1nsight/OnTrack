@@ -37,7 +37,7 @@ import {
   CATEGORY_LABELS,
   formatDuration,
   formatMinutesToHHMM,
-} from '../data/seedData';
+} from '../utils/workspaceConstants';
 import {
   resolveBoardForTask,
   resolveSectionForTask,
@@ -1043,6 +1043,27 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
             <span>Add Task</span>
           </button>
         </form>
+
+        {/* Empty State Notice */}
+        {filteredTasks.length === 0 && (
+          <div className="bg-white dark:bg-slate-900 border border-dashed border-slate-300 dark:border-slate-700 rounded-xl px-4 py-3 text-xs text-slate-600 dark:text-slate-300 flex flex-wrap items-center justify-between gap-2">
+            <span>
+              No deliverables match the current board or filter yet. Use the quick-add bar above or add a card directly inside any section below.
+            </span>
+            {(searchQuery || categoryFilter !== 'all') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setCategoryFilter('all');
+                }}
+                className="font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+              >
+                Reset Filters
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Main View Modes */}
         {viewMode === 'board' ? (

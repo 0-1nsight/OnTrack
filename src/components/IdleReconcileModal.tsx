@@ -5,7 +5,7 @@ import {
   PROJECTS,
   formatMinutesToHHMM,
   formatDuration,
-} from '../data/seedData';
+} from '../utils/workspaceConstants';
 
 interface IdleReconcileModalProps {
   idleAlert: IdleAlertState;

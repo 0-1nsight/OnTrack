@@ -1527,14 +1527,39 @@ export class EngineSQLStore {
     await this.ready();
     const id = `tsk-eng-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
     const updatedAtUtc = new Date().toISOString();
+    let resolvedClientId = task.clientId;
+    let resolvedClientName = task.clientName;
+
     await this.db.withTenantTransaction({ tenantId: task.tenantId }, async (tx) => {
+      const existingClient = await tx.get<{ id: string; legal_name: string }>(
+        'SELECT id, legal_name FROM clients WHERE tenant_id = ? AND (id = ? OR LOWER(legal_name) = LOWER(?))',
+        task.tenantId,
+        task.clientId,
+        task.clientName
+      );
+      if (existingClient) {
+        resolvedClientId = existingClient.id;
+        resolvedClientName = existingClient.legal_name;
+      } else {
+        await tx.run(
+          `INSERT INTO clients
+           (id, tenant_id, legal_name, aliases_json, codes_json, folder_patterns_json, known_domains_json, restricted_user_ids_json, source, updated_at_utc)
+           VALUES (?, ?, ?, '[]', '[]', '[]', '[]', '[]', 'manual', ?)
+           ON CONFLICT (id) DO NOTHING`,
+          resolvedClientId,
+          task.tenantId,
+          resolvedClientName || 'Internal Firm',
+          updatedAtUtc
+        );
+      }
+
       await tx.run(
         `INSERT INTO engine_tasks (id, tenant_id, client_id, client_name, template_id, title, period, status, due_date_utc, assigned_user_id, estimated_minutes, version, updated_at_utc)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
         id,
         task.tenantId,
-        task.clientId,
-        task.clientName,
+        resolvedClientId,
+        resolvedClientName,
         task.templateId || null,
         task.title,
         task.period,
@@ -1545,7 +1570,123 @@ export class EngineSQLStore {
         updatedAtUtc
       );
     });
-    return { ...task, id, version: 1, updatedAtUtc };
+    return {
+      ...task,
+      clientId: resolvedClientId,
+      clientName: resolvedClientName,
+      id,
+      version: 1,
+      updatedAtUtc,
+    };
+  }
+
+  public async updateEngineTask(params: {
+    tenantId: string;
+    taskId: string;
+    updates: {
+      title?: string;
+      status?: EngineTask['status'];
+      estimatedMinutes?: number;
+      dueDateUtc?: string;
+      period?: string;
+      assignedUserId?: string;
+      clientId?: string;
+      clientName?: string;
+    };
+  }): Promise<EngineTask> {
+    await this.ready();
+    const nowIso = new Date().toISOString();
+    return this.db.withTenantTransaction({ tenantId: params.tenantId }, async (tx) => {
+      const existing = await tx.get<any>(
+        'SELECT * FROM engine_tasks WHERE tenant_id = ? AND id = ?',
+        params.tenantId,
+        params.taskId
+      );
+      if (!existing) {
+        throw new HttpError(404, 'TASK_NOT_FOUND', 'Task not found.');
+      }
+
+      const nextTitle = params.updates.title?.trim() || existing.title;
+      const nextStatus = params.updates.status || existing.status;
+      const nextEst =
+        params.updates.estimatedMinutes !== undefined
+          ? Math.max(5, Math.round(params.updates.estimatedMinutes))
+          : Number(existing.estimated_minutes);
+      const nextDue = params.updates.dueDateUtc || existing.due_date_utc;
+      const nextPeriod = params.updates.period || existing.period;
+      const nextAssigned = params.updates.assignedUserId || existing.assigned_user_id;
+      const nextClientId = params.updates.clientId || existing.client_id;
+      const nextClientName = params.updates.clientName || existing.client_name;
+      const nextVersion = Number(existing.version || 1) + 1;
+
+      await tx.run(
+        `UPDATE engine_tasks
+         SET title = ?, status = ?, estimated_minutes = ?, due_date_utc = ?, period = ?,
+             assigned_user_id = ?, client_id = ?, client_name = ?, version = ?, updated_at_utc = ?
+         WHERE tenant_id = ? AND id = ?`,
+        nextTitle,
+        nextStatus,
+        nextEst,
+        nextDue,
+        nextPeriod,
+        nextAssigned,
+        nextClientId,
+        nextClientName,
+        nextVersion,
+        nowIso,
+        params.tenantId,
+        params.taskId
+      );
+
+      return {
+        id: existing.id,
+        tenantId: existing.tenant_id,
+        clientId: nextClientId,
+        clientName: nextClientName,
+        templateId: existing.template_id || undefined,
+        title: nextTitle,
+        period: nextPeriod,
+        status: nextStatus,
+        dueDateUtc: nextDue,
+        assignedUserId: nextAssigned,
+        estimatedMinutes: nextEst,
+        version: nextVersion,
+        updatedAtUtc: nowIso,
+      };
+    });
+  }
+
+  public async deleteEngineTask(params: {
+    tenantId: string;
+    taskId: string;
+  }): Promise<{ id: string; title: string }> {
+    await this.ready();
+    return this.db.withTenantTransaction({ tenantId: params.tenantId }, async (tx) => {
+      const existing = await tx.get<{ id: string; title: string }>(
+        'SELECT id, title FROM engine_tasks WHERE tenant_id = ? AND id = ?',
+        params.tenantId,
+        params.taskId
+      );
+      if (!existing) {
+        throw new HttpError(404, 'TASK_NOT_FOUND', 'Task not found.');
+      }
+      await tx.run(
+        'DELETE FROM checklist_overrides WHERE tenant_id = ? AND task_id = ?',
+        params.tenantId,
+        params.taskId
+      );
+      await tx.run(
+        'DELETE FROM sync_conflicts WHERE tenant_id = ? AND task_id = ?',
+        params.tenantId,
+        params.taskId
+      );
+      await tx.run(
+        'DELETE FROM engine_tasks WHERE tenant_id = ? AND id = ?',
+        params.tenantId,
+        params.taskId
+      );
+      return existing;
+    });
   }
 
   public async getLearnedRules(tenantId: string): Promise<LearnedRule[]> {

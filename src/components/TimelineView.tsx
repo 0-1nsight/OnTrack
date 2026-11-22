@@ -27,7 +27,7 @@ import {
   CATEGORY_RIBBON_STYLES,
   formatMinutesToHHMM,
   formatDuration,
-} from '../data/seedData';
+} from '../utils/workspaceConstants';
 
 interface TimelineViewProps {
   selectedDate: string;
@@ -959,6 +959,25 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
             })}
           </div>
         </div>
+
+        {dayBlocks.length === 0 &&
+          daySegments.length === 0 &&
+          dayApps.length === 0 &&
+          dayDocs.length === 0 && (
+            <div className="mt-4 p-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/30 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <span className="text-slate-600 dark:text-slate-300">
+                No sessions or time blocks recorded for <span className="font-mono font-semibold">{selectedDate}</span> yet. Click Track 4 above or add a block to get started.
+              </span>
+              <button
+                type="button"
+                onClick={() => onOpenQuickLogWithRange(9 * 60, 10 * 60)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-md cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Log First Block</span>
+              </button>
+            </div>
+          )}
 
         {/* Track Legend */}
         <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4 text-xs text-slate-500 dark:text-slate-400">

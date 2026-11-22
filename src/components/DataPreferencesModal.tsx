@@ -12,6 +12,7 @@ import { WorkspacePreferences } from '../types';
 interface DataPreferencesModalProps {
   isOpen: boolean;
   preferences: WorkspacePreferences;
+  demoModeEnabled?: boolean;
   onUpdatePreferences: (updates: Partial<WorkspacePreferences>) => void;
   onExportJson: () => void;
   onImportJson: (jsonText: string) => boolean;
@@ -22,6 +23,7 @@ interface DataPreferencesModalProps {
 export const DataPreferencesModal: React.FC<DataPreferencesModalProps> = ({
   isOpen,
   preferences,
+  demoModeEnabled = false,
   onUpdatePreferences,
   onExportJson,
   onImportJson,
@@ -154,12 +156,18 @@ export const DataPreferencesModal: React.FC<DataPreferencesModalProps> = ({
               type="button"
               onClick={() => {
                 onResetToSeed();
-                setImportFeedback('Reset workspace to sample 7-day dataset.');
+                setImportFeedback(
+                  demoModeEnabled
+                    ? 'Loaded 7-day sample accounting dataset.'
+                    : 'Cleared local browser cache and synced with server.'
+                );
               }}
               className="flex items-center gap-1.5 px-3 py-2 font-medium text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg cursor-pointer"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>Reset Sample Data</span>
+              <span>
+                {demoModeEnabled ? 'Load 7-Day Demo Dataset' : 'Clear Cache & Re-Sync'}
+              </span>
             </button>
           </div>
 

@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OnTrack Auto-Track Collector</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        width: 340px;
+        background: #f8fafc;
+        color: #0f172a;
+        padding: 14px;
+        font-size: 12px;
+      }
+      .card {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        padding: 12px;
+      }
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .title {
+        font-size: 13px;
+        font-weight: 600;
+        margin: 0;
+      }
+      .badge {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
+        font-weight: 600;
+        padding: 2px 6px;
+        border-radius: 4px;
+        border: 1px solid #cbd5e1;
+        background: #f1f5f9;
+        color: #334155;
+      }
+      .badge.connected {
+        border-color: #10b981;
+        background: #ecfdf5;
+        color: #047857;
+      }
+      .badge.unauthorized {
+        border-color: #f43f5e;
+        background: #fff1f2;
+        color: #be123c;
+      }
+      .badge.offline {
+        border-color: #f59e0b;
+        background: #fffbeb;
+        color: #b45309;
+      }
+      .field {
+        margin-bottom: 10px;
+      }
+      .field label {
+        display: block;
+        font-weight: 600;
+        color: #334155;
+        margin-bottom: 4px;
+      }
+      .field input {
+        width: 100%;
+        padding: 6px 8px;
+        border: 1px solid #cbd5e1;
+        border-radius: 4px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        color: #0f172a;
+        background: #ffffff;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+      }
+      button {
+        flex: 1;
+        padding: 7px 10px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+        border: 1px solid transparent;
+      }
+      .btn-primary {
+        background: #4f46e5;
+        color: #ffffff;
+      }
+      .btn-primary:hover {
+        background: #4338ca;
+      }
+      .btn-secondary {
+        background: #ffffff;
+        color: #334155;
+        border-color: #cbd5e1;
+      }
+      .btn-secondary:hover {
+        background: #f1f5f9;
+      }
+      .meta {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid #e2e8f0;
+        font-size: 11px;
+        color: #475569;
+        display: grid;
+        gap: 4px;
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-variant-numeric: tabular-nums;
+      }
+      .feedback {
+        margin-top: 8px;
+        font-size: 11px;
+        color: #334155;
+        min-height: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="header">
+        <h1 class="title">OnTrack Browser Collector</h1>
+        <span id="statusBadge" class="badge">Unconfigured</span>
+      </div>
+
+      <form id="bridgeForm">
+        <div class="field">
+          <label for="bridgeUrl">Local Bridge URL</label>
+          <input
+            id="bridgeUrl"
+            type="url"
+            required
+            placeholder="http://127.0.0.1:47621/browser-event"
+          />
+        </div>
+        <div class="field">
+          <label for="bridgeSecret">Bridge Secret (X-OnTrack-Bridge-Secret)</label>
+          <input
+            id="bridgeSecret"
+            type="password"
+            autocomplete="off"
+            placeholder="Paste pairing secret from agent.config.json"
+          />
+        </div>
+        <div class="actions">
+          <button type="submit" class="btn-primary">Save &amp; Test Bridge</button>
+          <button type="button" id="toggleSecretBtn" class="btn-secondary">Show</button>
+        </div>
+      </form>
+
+      <div id="feedback" class="feedback" role="status"></div>
+
+      <div class="meta">
+        <div>Last Sync: <span id="lastSyncUtc" class="mono">Never</span></div>
+        <div>Exclusions Loaded: <span id="exclusionCount" class="mono">0</span></div>
+        <div>Last Event: <span id="lastEventSummary" class="mono">None</span></div>
+      </div>
+    </div>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>
