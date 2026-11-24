@@ -7,10 +7,14 @@ import {
   CalendarClock,
   CheckCircle2,
   Clock,
+  Copy,
+  Download,
   Eye,
   FileText,
+  KeyRound,
   Lock,
   MailPlus,
+  Package,
   Palette,
   RefreshCw,
   Save,
@@ -30,9 +34,15 @@ import {
   TaskTemplate,
   UserRole,
 } from '../engine/types';
-import { AuthUser } from '../services/authClient';
+import {
+  AuthUser,
+  StaffProvisionBundle,
+  provisionStaffUserWithKeysApi,
+  rotateStaffUserKeysApi,
+} from '../services/authClient';
 import {
   createEngineTaskApi,
+  downloadUnifiedInstaller,
   fetchEngineTasksApi,
   fetchTaskInvitesApi,
   inviteTaskCollaboratorApi,
@@ -43,7 +53,6 @@ import {
   updateStaffRoleApi,
 } from '../services/engineClient';
 import {
-  createInviteApi,
   fetchBrandingAndTemplatesApi,
   fetchRoleOverviewApi,
   InviteRecord,
@@ -93,13 +102,15 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
 
-  // Admin invite form state
+  // Admin staff provisioning with onboarding keys state
   const [inviteName, setInviteName] = useState('');
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<UserRole>('accountant');
   const [inviteShift, setInviteShift] = useState<ShiftPattern>('8-5');
+  const [workstationLabel, setWorkstationLabel] = useState('');
   const [inviteDrilldown, setInviteDrilldown] = useState(false);
-  const [createdInviteUrl, setCreatedInviteUrl] = useState<string | null>(null);
+  const [provisionBundle, setProvisionBundle] = useState<StaffProvisionBundle | null>(null);
+  const [downloadingKit, setDownloadingKit] = useState(false);
   const [busyAction, setBusyAction] = useState(false);
   const [focusFactorDraft, setFocusFactorDraft] = useState<number>(85);
   const [delayedThresholdDraft, setDelayedThresholdDraft] = useState<number>(120);
@@ -353,27 +364,92 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
     }
   };
 
-  const handleCreateInvite = async (e: React.FormEvent) => {
+  const handleProvisionStaffWithKeys = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inviteName.trim() || !inviteEmail.trim()) return;
     setBusyAction(true);
     try {
-      const res = await createInviteApi({
+      const origin =
+        typeof window !== 'undefined' ? window.location.origin : undefined;
+      const bundle = await provisionStaffUserWithKeysApi({
         name: inviteName.trim(),
         email: inviteEmail.trim(),
         role: inviteRole,
         shiftPattern: inviteShift,
         canDrilldownTimeline: inviteDrilldown,
+        workstationLabel: workstationLabel.trim() || undefined,
+        appUrl: origin,
       });
-      setCreatedInviteUrl(res.inviteUrl || res.token || 'Invitation created');
+      setProvisionBundle(bundle);
       setInviteName('');
       setInviteEmail('');
-      onNotify(`Invitation created for ${inviteEmail.trim()}.`);
+      setWorkstationLabel('');
+      onNotify(
+        `Registered ${bundle.user.email} and generated Account Access & Installation keys.`
+      );
       await loadData();
+      onTasksMutated?.();
     } catch (err: any) {
-      onNotify(err?.message || 'Invitation failed (sign in as live Admin/IT required).');
+      onNotify(
+        err?.message || 'Staff provisioning failed (sign in as live Admin/IT required).'
+      );
     } finally {
       setBusyAction(false);
+    }
+  };
+
+  const handleRotateStaffKeys = async (userId: string) => {
+    setBusyAction(true);
+    try {
+      const origin =
+        typeof window !== 'undefined' ? window.location.origin : undefined;
+      const bundle = await rotateStaffUserKeysApi(userId, { appUrl: origin });
+      setProvisionBundle(bundle);
+      onNotify(`Issued fresh onboarding keys for ${bundle.user.email}.`);
+      await loadData();
+    } catch (err: any) {
+      onNotify(err?.message || 'Unable to re-generate onboarding keys.');
+    } finally {
+      setBusyAction(false);
+    }
+  };
+
+  const handleDownloadCredentialsTxt = (bundle: StaffProvisionBundle) => {
+    const blob = new Blob([bundle.credentialsText], {
+      type: 'text/plain;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = bundle.credentialsFilename || 'OnTrack-Credentials.txt';
+    a.click();
+    URL.revokeObjectURL(url);
+    onNotify(`Downloaded ${bundle.credentialsFilename}`);
+  };
+
+  const handleDownloadBundleInstaller = async (
+    targetOs: 'windows' | 'unix',
+    includeCredentialsKit: boolean
+  ) => {
+    if (!provisionBundle) return;
+    setDownloadingKit(true);
+    try {
+      const out = await downloadUnifiedInstaller({
+        targetOs,
+        userId: provisionBundle.user.userId,
+        credentialsText: includeCredentialsKit
+          ? provisionBundle.credentialsText
+          : undefined,
+        credentialsFilename: includeCredentialsKit
+          ? provisionBundle.credentialsFilename
+          : undefined,
+        includeCredentialsKit,
+      });
+      onNotify(`Downloaded ${out.filename}`);
+    } catch (err: any) {
+      onNotify(err?.message || 'Installer download failed.');
+    } finally {
+      setDownloadingKit(false);
     }
   };
 
@@ -921,6 +997,7 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
                     <th className="py-2 pr-3 font-medium">Shift</th>
                     <th className="py-2 pr-3 font-medium">On Leave</th>
                     <th className="py-2 pr-3 font-medium">Timeline Drill-Down</th>
+                    <th className="py-2 pr-3 font-medium text-right">Onboarding Keys</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -1048,6 +1125,17 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
                           {u.canDrilldownTimeline ? 'Permitted (Audit Logged)' : 'Blocked'}
                         </button>
                       </td>
+                      <td className="py-2.5 pr-3 text-right">
+                        <button
+                          type="button"
+                          disabled={busyAction || !currentUser || currentUser.isDemoSandbox}
+                          onClick={() => void handleRotateStaffKeys(u.userId)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 dark:border-slate-700 text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
+                        >
+                          <KeyRound className="w-3 h-3" />
+                          <span>Re-generate Keys</span>
+                        </button>
+                      </td>
                     </tr>
                       );
                     });
@@ -1057,14 +1145,19 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
             </div>
           </section>
 
-          {/* User Invitation & Audit Trail */}
+          {/* User Provisioning & Audit Trail */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-3">
-              <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <MailPlus className="w-4 h-4 text-indigo-600" />
-                <span>Invite Staff or Client Portal User</span>
-              </h2>
-              <form onSubmit={handleCreateInvite} className="space-y-2.5 text-xs">
+              <div>
+                <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <MailPlus className="w-4 h-4 text-indigo-600" />
+                  <span>Register Staff User &amp; Generate Onboarding Keys</span>
+                </h2>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                  Create a staff account and generate their single-use Account Access Key, Installation Key, Credentials (.txt), and installer package in one step.
+                </p>
+              </div>
+              <form onSubmit={handleProvisionStaffWithKeys} className="space-y-2.5 text-xs">
                 <div className="grid grid-cols-2 gap-2">
                   <input
                     type="text"
@@ -1079,11 +1172,11 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
                     required
                     value={inviteEmail}
                     onChange={(e) => setInviteEmail(e.target.value)}
-                    placeholder="Email address"
+                    placeholder="Work email address"
                     className="px-2.5 py-2 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-3 gap-2">
                   <select
                     value={inviteRole}
                     onChange={(e) => setInviteRole(e.target.value as UserRole)}
@@ -1105,6 +1198,13 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
                     <option value="remote">Remote</option>
                     <option value="weekend">Weekend</option>
                   </select>
+                  <input
+                    type="text"
+                    value={workstationLabel}
+                    onChange={(e) => setWorkstationLabel(e.target.value)}
+                    placeholder="Workstation label (opt.)"
+                    className="px-2.5 py-2 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                  />
                 </div>
                 <label className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
                   <input
@@ -1117,16 +1217,100 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
                 <button
                   type="submit"
                   disabled={busyAction || !currentUser}
-                  className="px-3 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg disabled:opacity-50 cursor-pointer"
+                  className="px-3.5 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg disabled:opacity-50 cursor-pointer"
                 >
-                  {currentUser ? 'Generate Invitation Token' : 'Sign In as Live Admin to Invite'}
+                  {currentUser
+                    ? 'Register User & Generate Keys'
+                    : 'Sign In as Live Admin to Register Staff'}
                 </button>
               </form>
-              {createdInviteUrl && (
-                <div className="p-2.5 rounded border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 text-[11px] font-mono break-all text-emerald-800 dark:text-emerald-200">
-                  {createdInviteUrl}
+
+              {provisionBundle && (
+                <div className="p-3.5 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-950/30 space-y-2.5 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-semibold text-emerald-900 dark:text-emerald-200">
+                      Onboarding Kit Ready · {provisionBundle.user.email}
+                    </div>
+                    <span className="font-mono text-[10px] text-emerald-700 dark:text-emerald-300">
+                      {provisionBundle.deviceTokenRecord.deviceId}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5 font-mono text-[11px]">
+                    <div className="flex items-center justify-between gap-2 bg-white dark:bg-slate-900 px-2.5 py-1.5 rounded border border-emerald-200 dark:border-emerald-900">
+                      <span className="truncate">
+                        <strong className="font-sans text-slate-600 dark:text-slate-400">Installation Key: </strong>
+                        {provisionBundle.installationKey}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(provisionBundle.installationKey);
+                          onNotify('Copied Installation Key');
+                        }}
+                        className="text-indigo-600 dark:text-indigo-400 hover:underline shrink-0 cursor-pointer inline-flex items-center gap-1 font-sans font-semibold"
+                      >
+                        <Copy className="w-3 h-3" /> Copy
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 bg-white dark:bg-slate-900 px-2.5 py-1.5 rounded border border-emerald-200 dark:border-emerald-900">
+                      <span className="truncate">
+                        <strong className="font-sans text-slate-600 dark:text-slate-400">Account Access Key: </strong>
+                        {provisionBundle.accountAccessKey}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(provisionBundle.accountAccessKey);
+                          onNotify('Copied Account Access Key');
+                        }}
+                        className="text-indigo-600 dark:text-indigo-400 hover:underline shrink-0 cursor-pointer inline-flex items-center gap-1 font-sans font-semibold"
+                      >
+                        <Copy className="w-3 h-3" /> Copy
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadCredentialsTxt(provisionBundle)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md font-semibold bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                    >
+                      <FileText className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Download Credentials (.txt)</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={downloadingKit}
+                      onClick={() => void handleDownloadBundleInstaller('windows', true)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 cursor-pointer"
+                    >
+                      <Package className="w-3.5 h-3.5" />
+                      <span>Download Windows Kit (.zip)</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={downloadingKit}
+                      onClick={() => void handleDownloadBundleInstaller('windows', false)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Installer Only</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={downloadingKit}
+                      onClick={() => void handleDownloadBundleInstaller('unix', true)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>macOS/Linux Kit</span>
+                    </button>
+                  </div>
                 </div>
               )}
+
               {invites.length > 0 && (
                 <div className="text-[11px] text-slate-500 dark:text-slate-400 space-y-1 pt-2 border-t border-slate-100 dark:border-slate-800">
                   {invites.slice(0, 4).map((inv) => (

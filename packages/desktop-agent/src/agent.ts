@@ -612,8 +612,7 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   });
 }
 
-// Heartbeat + Flush Loop (12s)
-setInterval(() => {
+function emitHeartbeat() {
   const extensionConnected = Date.now() - lastBrowserPingMs < 45000;
   enqueueEvent('activity.heartbeat', 'activity', {
     app: 'ontrack-agent',
@@ -627,4 +626,12 @@ setInterval(() => {
         : 'linux',
   });
   void flushQueue();
-}, config.heartbeatSeconds * 1000);
+}
+
+// Initial immediate heartbeat so newly paired devices appear live on Timeline right away
+setTimeout(() => {
+  emitHeartbeat();
+}, 1500);
+
+// Heartbeat + Flush Loop (12s)
+setInterval(emitHeartbeat, config.heartbeatSeconds * 1000);

@@ -14,9 +14,35 @@ export interface AuthUser {
   totpEnabled: boolean;
   mfaVerified: boolean;
   mustEnrollMfa: boolean;
+  mustSetPassword?: boolean;
   principalType: 'staff' | 'client' | 'demo';
   isDemoSandbox: boolean;
   aiReportsEnabled: boolean;
+}
+
+export interface StaffProvisionBundle {
+  user: {
+    userId: string;
+    tenantId: string;
+    tenantName: string;
+    name: string;
+    email: string;
+    role: UserRole;
+    teamId?: string;
+    shiftPattern?: ShiftPattern;
+  };
+  accountAccessKey: string;
+  installationKey: string;
+  appUrl: string;
+  expiresAtUtc: string;
+  credentialsText: string;
+  credentialsFilename: string;
+  deviceTokenRecord: {
+    tokenId: string;
+    deviceId: string;
+    label: string;
+    prefix: string;
+  };
 }
 
 export interface BootstrapStatus {
@@ -109,6 +135,68 @@ export async function loginWithPassword(payload: {
       backupCode: payload.backupCode,
     }),
   });
+  return parseJsonOrThrow(res);
+}
+
+export async function loginWithAccessKeyApi(payload: {
+  email: string;
+  accessKey: string;
+  tenantSlugOrId?: string;
+}): Promise<{ user: AuthUser }> {
+  const res = await fetch('/api/auth/key-login', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow(res);
+}
+
+export async function completeOnboardingPasswordApi(
+  newPassword: string
+): Promise<{ ok: boolean; user: AuthUser | null }> {
+  const res = await fetch('/api/auth/onboarding/set-password', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ newPassword }),
+  });
+  return parseJsonOrThrow(res);
+}
+
+export async function provisionStaffUserWithKeysApi(payload: {
+  email: string;
+  name: string;
+  role: UserRole;
+  teamId?: string;
+  shiftPattern?: ShiftPattern;
+  clientId?: string | null;
+  canDrilldownTimeline?: boolean;
+  workstationLabel?: string;
+  appUrl?: string;
+}): Promise<StaffProvisionBundle> {
+  const res = await fetch('/api/auth/provision-user', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow(res);
+}
+
+export async function rotateStaffUserKeysApi(
+  userId: string,
+  payload?: { workstationLabel?: string; appUrl?: string }
+): Promise<StaffProvisionBundle> {
+  const res = await fetch(
+    `/api/auth/provision-user/${encodeURIComponent(userId)}/rotate-key`,
+    {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    }
+  );
   return parseJsonOrThrow(res);
 }
 

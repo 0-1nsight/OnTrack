@@ -63,6 +63,7 @@ export async function resolveHttpAuthContext(
       canDrilldownTimeline: false,
       mfaVerified: true,
       mustEnrollMfa: false,
+      mustSetPassword: false,
       deviceId: verified.deviceId,
       isDemoSandbox: verified.tenantId === 'firm_demo',
     };
@@ -75,7 +76,17 @@ export async function resolveHttpAuthContext(
     if (!verifiedSession) {
       throw new HttpError(401, 'SESSION_INVALID', 'Your session has expired or was revoked.');
     }
-    if (!options?.allowUnverifiedMfa && !verifiedSession.mfaVerified) {
+    if (
+      !options?.allowUnverifiedMfa &&
+      (verifiedSession.mustSetPassword || !verifiedSession.mfaVerified)
+    ) {
+      if (verifiedSession.mustSetPassword) {
+        throw new HttpError(
+          403,
+          'PASSWORD_SETUP_REQUIRED',
+          'Create your account password and finish MFA setup before accessing workspace data.'
+        );
+      }
       throw new HttpError(
         403,
         verifiedSession.mustEnrollMfa ? 'MFA_ENROLLMENT_REQUIRED' : 'MFA_VERIFICATION_REQUIRED',
@@ -165,6 +176,7 @@ export async function resolveHttpAuthContext(
       canDrilldownTimeline: previewRole === 'team_lead' || previewRole === 'line_manager',
       mfaVerified: true,
       mustEnrollMfa: false,
+      mustSetPassword: false,
       isDemoSandbox: true,
     };
   }

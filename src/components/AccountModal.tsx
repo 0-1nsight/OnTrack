@@ -18,6 +18,7 @@ import {
   DemoAccountSummary,
   SessionInfo,
   beginMfaEnrollment,
+  completeOnboardingPasswordApi,
   confirmMfaEnrollment,
   listActiveSessions,
   revokeActiveSession,
@@ -40,6 +41,10 @@ interface AccountModalProps {
     totpCode?: string;
     isClientPortal?: boolean;
   }) => Promise<void>;
+  onKeyLogin?: (payload: {
+    email: string;
+    accessKey: string;
+  }) => Promise<void>;
   onDemoLogin?: (userId: string) => Promise<void>;
   onBootstrapFirm: (payload: {
     firmName: string;
@@ -55,6 +60,7 @@ interface AccountModalProps {
     currency: string;
   }) => Promise<void>;
   onRefreshSession: () => Promise<void>;
+  onOnboardingComplete?: () => void;
   onExportJson: () => void;
   onOpenPreferences: () => void;
   onClose: () => void;
@@ -70,27 +76,45 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   demoAccounts = [],
   authError,
   onLogin,
+  onKeyLogin,
   onDemoLogin,
   onBootstrapFirm,
   onSignOut,
   onSaveProfile,
   onRefreshSession,
+  onOnboardingComplete,
   onExportJson,
   onOpenPreferences,
   onClose,
 }) => {
+  const initialQuery =
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search)
+      : new URLSearchParams();
+  const wantsKeyLogin = initialQuery.get('signin') === 'key';
+  const prefillEmail = initialQuery.get('email') || '';
+
   const [modeOverride, setModeOverride] = useState<'login' | 'setup' | null>(
-    null
+    wantsKeyLogin ? 'login' : null
   );
   const mode: 'login' | 'setup' =
     modeOverride ?? (needsInitialSetup ? 'setup' : 'login');
   const setMode = (next: 'login' | 'setup') => setModeOverride(next);
+  const [loginMethod, setLoginMethod] = useState<'password' | 'key'>(
+    wantsKeyLogin ? 'key' : 'password'
+  );
   const [firmName, setFirmName] = useState('');
   const [fullName, setFullName] = useState('');
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(prefillEmail);
   const [password, setPassword] = useState('');
+  const [accessKey, setAccessKey] = useState('');
   const [totpCode, setTotpCode] = useState('');
   const [isClientPortal, setIsClientPortal] = useState(false);
+
+  // Onboarding Step 1 (Create Password)
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [isSettingPassword, setIsSettingPassword] = useState(false);
 
   const [displayName, setDisplayName] = useState(
     () => userProfile?.displayName || user?.name || user?.email?.split('@')[0] || ''
@@ -133,6 +157,31 @@ export const AccountModal: React.FC<AccountModalProps> = ({
     };
   }, [isOpen, user]);
 
+  // Auto-begin TOTP enrollment when user reaches onboarding Step 2 (password set, MFA pending)
+  useEffect(() => {
+    if (
+      !isOpen ||
+      !user ||
+      user.mustSetPassword ||
+      user.mfaVerified ||
+      user.totpEnabled ||
+      mfaEnrollment
+    ) {
+      return;
+    }
+    let active = true;
+    beginMfaEnrollment()
+      .then((data) => {
+        if (active) setMfaEnrollment(data);
+      })
+      .catch((err: any) => {
+        if (active) setLocalError(err?.message || 'Unable to start MFA enrollment.');
+      });
+    return () => {
+      active = false;
+    };
+  }, [isOpen, user, mfaEnrollment]);
+
   if (!isOpen) return null;
 
   const handleAuthSubmit = async (e: React.FormEvent) => {
@@ -149,6 +198,12 @@ export const AccountModal: React.FC<AccountModalProps> = ({
           password,
         });
         setFeedback('Firm created and signed in.');
+      } else if (loginMethod === 'key' && onKeyLogin) {
+        await onKeyLogin({
+          email: email.trim(),
+          accessKey: accessKey.trim(),
+        });
+        setFeedback('Access key verified.');
       } else {
         await onLogin({
           email: email.trim(),
@@ -162,6 +217,32 @@ export const AccountModal: React.FC<AccountModalProps> = ({
       setLocalError(err?.message || 'Authentication failed.');
     } finally {
       setIsSigningIn(false);
+    }
+  };
+
+  const handleOnboardingPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLocalError(null);
+    setFeedback(null);
+    if (newPassword.length < 10) {
+      setLocalError('Password must be at least 10 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setLocalError('Passwords do not match.');
+      return;
+    }
+    setIsSettingPassword(true);
+    try {
+      await completeOnboardingPasswordApi(newPassword);
+      setNewPassword('');
+      setConfirmPassword('');
+      await onRefreshSession();
+      setFeedback('Password created. Now scan the authenticator QR code to complete MFA setup.');
+    } catch (err: any) {
+      setLocalError(err?.message || 'Unable to set password.');
+    } finally {
+      setIsSettingPassword(false);
     }
   };
 
@@ -195,12 +276,16 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   const handleConfirmMfa = async (e: React.FormEvent) => {
     e.preventDefault();
     setLocalError(null);
+    const wasOnboarding = Boolean(user && !user.mfaVerified);
     try {
       await confirmMfaEnrollment(mfaConfirmCode.trim());
       setMfaEnrollment(null);
       setMfaConfirmCode('');
       await onRefreshSession();
       setFeedback('Two-factor authentication verified and enabled.');
+      if (wasOnboarding && onOnboardingComplete) {
+        onOnboardingComplete();
+      }
     } catch (err: any) {
       setLocalError(err?.message || 'Invalid TOTP verification code.');
     }
@@ -238,7 +323,11 @@ export const AccountModal: React.FC<AccountModalProps> = ({
           <div className="flex items-center gap-2.5">
             <UserCircle2 className="w-5 h-5 text-indigo-600" />
             <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
-              {user ? 'Account & Security Settings' : 'Sign In to OnTrack'}
+              {!user
+                ? 'Sign In to OnTrack'
+                : user.mustSetPassword || !user.mfaVerified
+                  ? 'Complete Account Onboarding'
+                  : 'Account & Security Settings'}
             </h2>
           </div>
           <button
@@ -277,6 +366,33 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                 </button>
               )}
             </div>
+
+            {mode === 'login' && onKeyLogin && (
+              <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => setLoginMethod('password')}
+                  className={`py-1.5 rounded-md font-semibold transition-colors cursor-pointer ${
+                    loginMethod === 'password'
+                      ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  Password
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLoginMethod('key')}
+                  className={`py-1.5 rounded-md font-semibold transition-colors cursor-pointer ${
+                    loginMethod === 'key'
+                      ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  Access Key
+                </button>
+              </div>
+            )}
 
             <form onSubmit={handleAuthSubmit} className="space-y-3">
               {mode === 'setup' && (
@@ -326,22 +442,39 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                 />
               </div>
 
-              <div>
-                <label className="block font-medium text-slate-600 dark:text-slate-400 mb-1">
-                  Password
-                </label>
-                <input
-                  type="password"
-                  required
-                  minLength={mode === 'setup' ? 10 : 1}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder={mode === 'setup' ? 'Minimum 10 characters' : '••••••••••••'}
-                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
-                />
-              </div>
+              {mode === 'login' && loginMethod === 'key' ? (
+                <div>
+                  <label className="block font-medium text-slate-600 dark:text-slate-400 mb-1">
+                    Account Access Key
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    minLength={12}
+                    value={accessKey}
+                    onChange={(e) => setAccessKey(e.target.value)}
+                    placeholder="ontrack_key_..."
+                    className="w-full px-3 py-2 font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                  />
+                </div>
+              ) : (
+                <div>
+                  <label className="block font-medium text-slate-600 dark:text-slate-400 mb-1">
+                    Password
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    minLength={mode === 'setup' ? 10 : 1}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder={mode === 'setup' ? 'Minimum 10 characters' : '••••••••••••'}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                  />
+                </div>
+              )}
 
-              {mode === 'login' && (
+              {mode === 'login' && loginMethod === 'password' && (
                 <div className="grid grid-cols-2 gap-2 items-center">
                   <input
                     type="text"
@@ -372,7 +505,9 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                     ? 'Authenticating...'
                     : mode === 'setup'
                       ? 'Create Firm & Sign In'
-                      : 'Sign In'}
+                      : loginMethod === 'key'
+                        ? 'Verify Key & Continue Setup'
+                        : 'Sign In'}
                 </span>
               </button>
             </form>
@@ -514,15 +649,66 @@ export const AccountModal: React.FC<AccountModalProps> = ({
               </div>
             )}
 
-            {/* TOTP MFA Setup Prompt / Status */}
-            {(!user.totpEnabled || user.mustEnrollMfa) && (
+            {/* Guided Step 1: Create Personal Password (when user logged in via Access Key) */}
+            {user.mustSetPassword ? (
+              <div className="p-4 rounded-xl bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="font-display text-sm font-bold text-indigo-950 dark:text-indigo-100">
+                    Step 1 of 2 · Create Your Password
+                  </div>
+                  <span className="font-mono text-[11px] font-semibold text-indigo-700 dark:text-indigo-300 tabular-nums">
+                    1 / 2
+                  </span>
+                </div>
+                <p className="text-[11px] text-indigo-900/80 dark:text-indigo-200/80">
+                  Your email and access key were verified. Choose a personal password (at least 10 characters), then you will set up your 2FA Authenticator.
+                </p>
+                <form onSubmit={handleOnboardingPasswordSubmit} className="space-y-2.5">
+                  <div>
+                    <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
+                      New Password (min 10 characters)
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      minLength={10}
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      placeholder="Enter a strong personal password"
+                      className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
+                      Confirm Password
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      minLength={10}
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      placeholder="Re-enter your password"
+                      className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={isSettingPassword}
+                    className="w-full px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 rounded-lg cursor-pointer"
+                  >
+                    {isSettingPassword ? 'Saving Password...' : 'Save Password & Continue to 2FA Setup'}
+                  </button>
+                </form>
+              </div>
+            ) : (!user.totpEnabled || user.mustEnrollMfa) ? (
               <div className="p-3.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 space-y-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <div className="font-semibold text-amber-900 dark:text-amber-200 flex items-center gap-1.5">
                     <KeyRound className="w-3.5 h-3.5" />
                     <span>
-                      {user.mustEnrollMfa
-                        ? 'Two-Factor Authenticator Required for Your Role'
+                      {!user.mfaVerified
+                        ? 'Step 2 of 2 · Set Up Authenticator MFA'
                         : 'Enable Two-Factor Authentication (TOTP)'}
                     </span>
                   </div>
@@ -568,13 +754,13 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                         type="submit"
                         className="px-3 py-1.5 font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded cursor-pointer"
                       >
-                        Verify &amp; Enable
+                        Verify &amp; Activate Account
                       </button>
                     </div>
                   </form>
                 )}
               </div>
-            )}
+            ) : null}
 
             {/* Editable Account Profile & Billing Settings */}
             <form onSubmit={handleProfileSubmit} className="space-y-3">

@@ -28,6 +28,10 @@ interface LandingPageProps {
     totpCode?: string;
     isClientPortal?: boolean;
   }) => Promise<void>;
+  onKeyLogin?: (payload: {
+    email: string;
+    accessKey: string;
+  }) => Promise<void>;
   onDemoLogin?: (userId: string) => Promise<void>;
   onBootstrapFirm: (payload: {
     firmName: string;
@@ -47,20 +51,32 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   darkMode,
   onToggleTheme,
   onLogin,
+  onKeyLogin,
   onDemoLogin,
   onBootstrapFirm,
   onContinueLocal,
 }) => {
+  const initialQuery =
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search)
+      : new URLSearchParams();
+  const wantsKeyLogin = initialQuery.get('signin') === 'key';
+  const prefillEmail = initialQuery.get('email') || '';
+
   const [modeOverride, setModeOverride] = useState<'login' | 'setup' | null>(
-    null
+    wantsKeyLogin ? 'login' : null
   );
   const mode: 'login' | 'setup' =
     modeOverride ?? (needsInitialSetup && !demoModeEnabled ? 'setup' : 'login');
   const setMode = (next: 'login' | 'setup') => setModeOverride(next);
+  const [loginMethod, setLoginMethod] = useState<'password' | 'key'>(
+    wantsKeyLogin ? 'key' : 'password'
+  );
   const [firmName, setFirmName] = useState('');
   const [fullName, setFullName] = useState('');
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(prefillEmail);
   const [password, setPassword] = useState('');
+  const [accessKey, setAccessKey] = useState('');
   const [totpCode, setTotpCode] = useState('');
   const [isClientPortal, setIsClientPortal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -76,6 +92,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           name: fullName.trim(),
           email: email.trim(),
           password,
+        });
+      } else if (loginMethod === 'key' && onKeyLogin) {
+        await onKeyLogin({
+          email: email.trim(),
+          accessKey: accessKey.trim(),
         });
       } else {
         await onLogin({
@@ -301,6 +322,33 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       </div>
                     )}
 
+                    {mode === 'login' && onKeyLogin && (
+                      <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setLoginMethod('password')}
+                          className={`py-1.5 rounded-md font-semibold transition-colors cursor-pointer ${
+                            loginMethod === 'password'
+                              ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                          }`}
+                        >
+                          Password
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setLoginMethod('key')}
+                          className={`py-1.5 rounded-md font-semibold transition-colors cursor-pointer ${
+                            loginMethod === 'key'
+                              ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                          }`}
+                        >
+                          Access Key
+                        </button>
+                      </div>
+                    )}
+
                     <form onSubmit={handleSubmit} className="space-y-3 text-xs">
                       {mode === 'setup' && (
                         <>
@@ -349,22 +397,42 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                         />
                       </div>
 
-                      <div>
-                        <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                          Password
-                        </label>
-                        <input
-                          type="password"
-                          required
-                          minLength={mode === 'setup' ? 10 : 1}
-                          value={password}
-                          onChange={(e) => setPassword(e.target.value)}
-                          placeholder={mode === 'setup' ? 'Minimum 10 characters' : '••••••••••••'}
-                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
-                        />
-                      </div>
+                      {mode === 'login' && loginMethod === 'key' ? (
+                        <div>
+                          <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
+                            Account Access Key
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            minLength={12}
+                            value={accessKey}
+                            onChange={(e) => setAccessKey(e.target.value)}
+                            placeholder="ontrack_key_..."
+                            className="w-full px-3 py-2 font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                          />
+                          <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                            Use the Account Access Key from your admin-issued Credentials (.txt) file.
+                          </p>
+                        </div>
+                      ) : (
+                        <div>
+                          <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
+                            Password
+                          </label>
+                          <input
+                            type="password"
+                            required
+                            minLength={mode === 'setup' ? 10 : 1}
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            placeholder={mode === 'setup' ? 'Minimum 10 characters' : '••••••••••••'}
+                            className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                          />
+                        </div>
+                      )}
 
-                      {mode === 'login' && (
+                      {mode === 'login' && loginMethod === 'password' && (
                         <div className="grid grid-cols-2 gap-2 items-center">
                           <input
                             type="text"
@@ -401,7 +469,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                               ? 'Checking Session...'
                               : mode === 'setup'
                                 ? 'Create Firm & Sign In'
-                                : 'Sign In'}
+                                : loginMethod === 'key'
+                                  ? 'Verify Key & Continue Setup'
+                                  : 'Sign In'}
                         </span>
                       </button>
                     </form>

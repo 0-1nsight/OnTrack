@@ -959,10 +959,19 @@ export async function downloadUnifiedInstaller(params: {
   targetOs: 'windows' | 'unix';
   userId?: string;
   bridgeSecret?: string;
+  credentialsText?: string;
+  credentialsFilename?: string;
+  includeCredentialsKit?: boolean;
 }): Promise<{ filename: string; format: string }> {
   const origin =
     typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
-  const kind = params.targetOs === 'windows' ? 'windows-installer' : 'unix-installer';
+  const kind = params.includeCredentialsKit
+    ? params.targetOs === 'windows'
+      ? 'windows-kit'
+      : 'unix-kit'
+    : params.targetOs === 'windows'
+      ? 'windows-installer'
+      : 'unix-installer';
   const res = await fetch(`/api/engine/package/${kind}`, {
     method: 'POST',
     credentials: 'include',
@@ -971,6 +980,8 @@ export async function downloadUnifiedInstaller(params: {
       serverUrl: origin,
       userId: params.userId,
       bridgeSecret: params.bridgeSecret,
+      credentialsText: params.credentialsText,
+      credentialsFilename: params.credentialsFilename,
     }),
   });
   if (!res.ok) {

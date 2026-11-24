@@ -12,7 +12,10 @@ import {
   Search,
   TagIcon,
   CalendarRange,
+  Monitor,
+  Radio,
 } from 'lucide-react';
+import { DeviceFreshnessRecord } from '../engine/types';
 import {
   ActivitySegment,
   ApplicationUsageSegment,
@@ -38,6 +41,8 @@ interface TimelineViewProps {
   appSegments: ApplicationUsageSegment[];
   documentSegments: DocumentUsageSegment[];
   tasks: Task[];
+  workstationDevices?: DeviceFreshnessRecord[];
+  syncStatus?: 'idle' | 'syncing' | 'error';
   onSelectDate: (date: string) => void;
   onOpenQuickLogWithRange: (startTime: number, endTime: number) => void;
   onConvertAppDocToBlock: (doc: {
@@ -61,6 +66,8 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   appSegments,
   documentSegments,
   tasks,
+  workstationDevices = [],
+  syncStatus = 'idle',
   onSelectDate,
   onOpenQuickLogWithRange,
   onConvertAppDocToBlock,
@@ -324,6 +331,62 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Live Workstation Capture Status Strip */}
+      {(() => {
+        const primaryDevice =
+          workstationDevices.find((d) => d.status === 'live') ||
+          workstationDevices[0] ||
+          null;
+        const isLive = primaryDevice?.status === 'live';
+        const isDelayed = primaryDevice?.status === 'delayed';
+        return (
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-3 min-w-0">
+              <div
+                className={`flex items-center gap-1.5 font-semibold shrink-0 ${
+                  isLive
+                    ? 'text-emerald-700 dark:text-emerald-400'
+                    : isDelayed
+                      ? 'text-amber-700 dark:text-amber-400'
+                      : 'text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                <Radio className="w-3.5 h-3.5" />
+                <span>
+                  {isLive
+                    ? 'Workstation Capture Active · LIVE'
+                    : isDelayed
+                      ? 'Workstation Agent Delayed'
+                      : 'Waiting for Desktop Agent Heartbeat'}
+                </span>
+              </div>
+              {primaryDevice ? (
+                <span className="font-mono text-[11px] text-slate-600 dark:text-slate-300 truncate tabular-nums">
+                  {primaryDevice.deviceId} · {primaryDevice.osPlatform} ·{' '}
+                  {primaryDevice.extensionConnected ? 'Browser Extension Connected' : 'Desktop Collector Active'}
+                </span>
+              ) : (
+                <span className="text-slate-500 dark:text-slate-400 truncate">
+                  Run OnTrack Setup with your Installation Key to begin streaming active windows &amp; browser tabs.
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-4 font-mono text-[11px] text-slate-500 dark:text-slate-400 tabular-nums shrink-0">
+              {primaryDevice && (
+                <span>
+                  Last heartbeat:{' '}
+                  {new Date(primaryDevice.lastHeartbeatUtc).toLocaleTimeString()}
+                </span>
+              )}
+              <span className="inline-flex items-center gap-1 text-slate-700 dark:text-slate-300">
+                <Monitor className="w-3.5 h-3.5" />
+                <span>{syncStatus === 'syncing' ? 'Syncing...' : `${workstationDevices.length} paired`}</span>
+              </span>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Top Header & KPI Strip */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-2 border-b border-slate-200 dark:border-slate-800">
         <div>

@@ -54,9 +54,59 @@ export interface PublicUserSummary {
   totpEnabled: boolean;
   mfaVerified: boolean;
   mustEnrollMfa: boolean;
+  mustSetPassword: boolean;
   principalType: 'staff' | 'client' | 'demo';
   isDemoSandbox: boolean;
   aiReportsEnabled: boolean;
+}
+
+export function buildOnboardingCredentialsText(params: {
+  firmName: string;
+  tenantId: string;
+  appUrl: string;
+  userId: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  accountAccessKey: string;
+  installationKey: string;
+  deviceId: string;
+  expiresAtUtc: string;
+}): string {
+  const cleanUrl = params.appUrl.replace(/\/+$/, '');
+  const signInUrl = `${cleanUrl}/?signin=key&email=${encodeURIComponent(params.email)}`;
+  return [
+    '============================================================',
+    'ONTRACK WORKSTATION & ACCOUNT ONBOARDING CREDENTIALS',
+    '============================================================',
+    `Firm Workspace      : ${params.firmName} (${params.tenantId})`,
+    `Staff Member        : ${params.name}`,
+    `Account Email       : ${params.email}`,
+    `Assigned Role       : ${params.role}`,
+    `User ID             : ${params.userId}`,
+    `Device ID           : ${params.deviceId}`,
+    `App Sign-In URL     : ${signInUrl}`,
+    `Key Expires At      : ${params.expiresAtUtc}`,
+    '',
+    '1. INSTALLATION KEY (Enter once when running OnTrack Setup):',
+    `Installation Key: ${params.installationKey}`,
+    '',
+    '2. ACCOUNT ACCESS KEY (Enter with your email in the browser):',
+    `Account Access Key: ${params.accountAccessKey}`,
+    '',
+    '============================================================',
+    'QUICK START STEPS',
+    '============================================================',
+    'Step 1: Run OnTrack Setup (OnTrack-Setup.exe / OnTrack-Setup.bat / install.sh)',
+    '        and paste the Installation Key above when prompted.',
+    'Step 2: Once installation finishes, your browser opens OnTrack automatically.',
+    `        (Or visit: ${signInUrl})`,
+    'Step 3: Sign in with your Account Email and Account Access Key above.',
+    'Step 4: Create your personal password, complete 2FA Authenticator setup,',
+    '        and you will land directly on your Timeline with capture running.',
+    '============================================================',
+    '',
+  ].join('\r\n');
 }
 
 export class AuthStore {
@@ -325,8 +375,15 @@ export class AuthStore {
     }
 
     const userRow = matchedCandidates[0];
-    if (!userRow || !userRow.password_hash) {
+    if (!userRow || !userRow.password_hash || Boolean(userRow.must_set_password)) {
       await verifyPassword(await getDummyPasswordHash(), params.password);
+      if (userRow && (!userRow.password_hash || Boolean(userRow.must_set_password))) {
+        throw new HttpError(
+          401,
+          'PASSWORD_NOT_SET',
+          'Password setup is pending. Sign in with your Account Email and Access Key first.'
+        );
+      }
       throw new HttpError(401, 'INVALID_CREDENTIALS', 'Invalid email or password.');
     }
 
@@ -342,7 +399,7 @@ export class AuthStore {
 
     const role = userRow.role as UserRole;
     const totpEnabled = Boolean(userRow.totp_enabled);
-    const mustEnrollMfa = roleRequiresMfa(role) && !totpEnabled;
+    const mustEnrollMfa = (roleRequiresMfa(role) || Boolean(userRow.must_enroll_mfa)) && !totpEnabled;
     let mfaVerified = !totpEnabled && !mustEnrollMfa;
 
     if (totpEnabled) {
@@ -393,6 +450,7 @@ export class AuthStore {
         totpEnabled,
         mfaVerified,
         mustEnrollMfa,
+        mustSetPassword: false,
         principalType: params.principalType,
         isDemoSandbox: userRow.tenant_id === 'firm_demo',
         aiReportsEnabled: Boolean(userRow.ai_reports_enabled),
@@ -441,7 +499,7 @@ export class AuthStore {
         const row = await tx.get<any>(
           `SELECT s.*, u.name as user_name, u.email as user_email, u.role as user_role,
                   u.team_id, u.client_id, u.shift_pattern, u.can_drilldown_timeline,
-                  u.totp_enabled, u.must_enroll_mfa, u.status as user_status,
+                  u.totp_enabled, u.must_enroll_mfa, u.must_set_password, u.status as user_status,
                   t.name as tenant_name, t.ai_reports_enabled
            FROM sessions s
            JOIN shift_users u ON u.user_id = s.user_id AND u.tenant_id = s.tenant_id
@@ -463,8 +521,12 @@ export class AuthStore {
         const isDemoSandbox = appConfig.demoModeEnabled && row.tenant_id === 'firm_demo';
         const role = row.user_role as UserRole;
         const totpEnabled = Boolean(row.totp_enabled);
-        const mustEnrollMfa = !isDemoSandbox && roleRequiresMfa(role) && !totpEnabled;
-        const mfaVerified = Boolean(row.mfa_verified) && !mustEnrollMfa;
+        const mustSetPassword = !isDemoSandbox && Boolean(row.must_set_password);
+        const mustEnrollMfa =
+          !isDemoSandbox &&
+          (roleRequiresMfa(role) || Boolean(row.must_enroll_mfa)) &&
+          !totpEnabled;
+        const mfaVerified = Boolean(row.mfa_verified) && !mustEnrollMfa && !mustSetPassword;
         const principalType = row.principal_type === 'client' ? 'client' : 'staff';
 
         const summary: PublicUserSummary = {
@@ -481,6 +543,7 @@ export class AuthStore {
           totpEnabled,
           mfaVerified,
           mustEnrollMfa,
+          mustSetPassword,
           principalType,
           isDemoSandbox,
           aiReportsEnabled: Boolean(row.ai_reports_enabled),
@@ -500,6 +563,7 @@ export class AuthStore {
           canDrilldownTimeline: Boolean(row.can_drilldown_timeline),
           mfaVerified,
           mustEnrollMfa,
+          mustSetPassword,
           isDemoSandbox,
           summary,
         };
@@ -892,11 +956,340 @@ export class AuthStore {
         totpEnabled: false,
         mfaVerified: !created.mustEnrollMfa,
         mustEnrollMfa: created.mustEnrollMfa,
+        mustSetPassword: false,
         principalType,
         isDemoSandbox: created.tenantId === 'firm_demo',
         aiReportsEnabled: created.aiReportsEnabled,
       } satisfies PublicUserSummary,
     };
+  }
+
+  public async provisionUserWithKey(params: {
+    tenantId: string;
+    actorUserId: string;
+    email: string;
+    name: string;
+    role: UserRole;
+    teamId: string;
+    shiftPattern: ShiftPattern;
+    clientId?: string | null;
+    canDrilldownTimeline?: boolean;
+  }): Promise<{
+    userId: string;
+    tenantId: string;
+    tenantName: string;
+    name: string;
+    email: string;
+    role: UserRole;
+    teamId: string;
+    shiftPattern: ShiftPattern;
+    accountAccessKey: string;
+    expiresAtUtc: string;
+  }> {
+    const cleanEmail = params.email.trim().toLowerCase();
+    const cleanName = params.name.trim();
+    const { rawToken: accountAccessKey, tokenHash: onboardingKeyHash } =
+      generateOpaqueToken('ontrack_key');
+    const userId = `u_${crypto.randomBytes(6).toString('hex')}`;
+    const nowIso = new Date().toISOString();
+    const expiresAtUtc = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+    const startHour =
+      params.shiftPattern === '5-9' ? 22 : params.shiftPattern === 'remote' ? 14 : 13;
+    const endHour =
+      params.shiftPattern === '5-9' ? 2 : params.shiftPattern === 'remote' ? 23 : 22;
+    const mustEnrollMfa = params.role === 'client' ? 0 : 1;
+
+    const tenantName = await this.db.withTenantTransaction(
+      { tenantId: params.tenantId, userId: params.actorUserId },
+      async (tx) => {
+        const existingUser = await tx.get<{ user_id: string }>(
+          'SELECT user_id FROM shift_users WHERE tenant_id = ? AND lower(email) = ?',
+          params.tenantId,
+          cleanEmail
+        );
+        if (existingUser) {
+          throw new HttpError(
+            409,
+            'USER_EXISTS',
+            'A user with this email already exists in this firm.'
+          );
+        }
+
+        const tRow = await tx.get<{ name: string }>(
+          'SELECT name FROM tenants WHERE id = ?',
+          params.tenantId
+        );
+
+        await tx.run(
+          `INSERT INTO shift_users
+           (user_id, tenant_id, name, email, role, team_id, shift_pattern, shift_start_hour_utc, shift_end_hour_utc, on_leave, password_hash, totp_enabled, must_enroll_mfa, can_drilldown_timeline, client_id, status, created_at_utc, onboarding_key_hash, onboarding_key_expires_utc, must_set_password)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, ?, ?, ?, 'active', ?, ?, ?, 1)`,
+          userId,
+          params.tenantId,
+          cleanName,
+          cleanEmail,
+          params.role,
+          params.teamId,
+          params.shiftPattern,
+          startHour,
+          endHour,
+          mustEnrollMfa,
+          params.canDrilldownTimeline ? 1 : 0,
+          params.clientId || null,
+          nowIso,
+          onboardingKeyHash,
+          expiresAtUtc
+        );
+
+        await tx.run(
+          `INSERT INTO audit_logs (id, tenant_id, actor_user_id, actor_role, target_user_id, action, details, created_at_utc)
+           VALUES (?, ?, ?, 'admin_it', ?, 'user.provisioned', ?, ?)`,
+          `aud-${crypto.randomBytes(6).toString('hex')}`,
+          params.tenantId,
+          params.actorUserId,
+          userId,
+          `Provisioned ${cleanEmail} (${params.role}) with onboarding access key`,
+          nowIso
+        );
+
+        return tRow?.name || params.tenantId;
+      }
+    );
+
+    return {
+      userId,
+      tenantId: params.tenantId,
+      tenantName,
+      name: cleanName,
+      email: cleanEmail,
+      role: params.role,
+      teamId: params.teamId,
+      shiftPattern: params.shiftPattern,
+      accountAccessKey,
+      expiresAtUtc,
+    };
+  }
+
+  public async rotateUserOnboardingKey(params: {
+    tenantId: string;
+    actorUserId: string;
+    targetUserId: string;
+  }): Promise<{
+    userId: string;
+    tenantId: string;
+    tenantName: string;
+    name: string;
+    email: string;
+    role: UserRole;
+    accountAccessKey: string;
+    expiresAtUtc: string;
+  }> {
+    const { rawToken: accountAccessKey, tokenHash: onboardingKeyHash } =
+      generateOpaqueToken('ontrack_key');
+    const nowIso = new Date().toISOString();
+    const expiresAtUtc = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+
+    return this.db.withTenantTransaction(
+      { tenantId: params.tenantId, userId: params.actorUserId },
+      async (tx) => {
+        const userRow = await tx.get<any>(
+          `SELECT u.user_id, u.name, u.email, u.role, u.status, t.name as tenant_name
+           FROM shift_users u
+           JOIN tenants t ON t.id = u.tenant_id
+           WHERE u.tenant_id = ? AND u.user_id = ?`,
+          params.tenantId,
+          params.targetUserId
+        );
+        if (!userRow) {
+          throw new HttpError(404, 'USER_NOT_FOUND', 'User not found in this firm.');
+        }
+        if (userRow.status === 'disabled') {
+          throw new HttpError(400, 'ACCOUNT_DISABLED', 'Cannot rotate onboarding key for a disabled user.');
+        }
+
+        await tx.run(
+          `UPDATE shift_users
+           SET onboarding_key_hash = ?, onboarding_key_expires_utc = ?, must_set_password = 1
+           WHERE tenant_id = ? AND user_id = ?`,
+          onboardingKeyHash,
+          expiresAtUtc,
+          params.tenantId,
+          params.targetUserId
+        );
+
+        await tx.run(
+          `INSERT INTO audit_logs (id, tenant_id, actor_user_id, actor_role, target_user_id, action, details, created_at_utc)
+           VALUES (?, ?, ?, 'admin_it', ?, 'user.onboarding_key_rotated', ?, ?)`,
+          `aud-${crypto.randomBytes(6).toString('hex')}`,
+          params.tenantId,
+          params.actorUserId,
+          params.targetUserId,
+          `Rotated onboarding access key for ${userRow.email}`,
+          nowIso
+        );
+
+        return {
+          userId: userRow.user_id,
+          tenantId: params.tenantId,
+          tenantName: userRow.tenant_name || params.tenantId,
+          name: userRow.name,
+          email: userRow.email,
+          role: userRow.role as UserRole,
+          accountAccessKey,
+          expiresAtUtc,
+        };
+      }
+    );
+  }
+
+  public async authenticateWithAccessKey(params: {
+    email: string;
+    accessKey: string;
+    tenantSlugOrId?: string;
+    ipAddress?: string | null;
+    userAgent?: string | null;
+  }): Promise<{
+    rawToken: string;
+    sessionId: string;
+    user: PublicUserSummary;
+  }> {
+    const cleanEmail = params.email.trim().toLowerCase();
+    const presentedHash = hashOpaqueToken(params.accessKey.trim());
+    const nowIso = new Date().toISOString();
+
+    const candidates = await this.db.withTenantTransaction(
+      { tenantId: '__system__', bypassRls: true },
+      async (tx) => {
+        if (params.tenantSlugOrId && params.tenantSlugOrId.trim()) {
+          const ref = params.tenantSlugOrId.trim();
+          return tx.all<any>(
+            `SELECT u.*, t.name as tenant_name, t.ai_reports_enabled
+             FROM shift_users u
+             JOIN tenants t ON t.id = u.tenant_id
+             WHERE lower(u.email) = ? AND (t.id = ? OR lower(t.slug) = lower(?))`,
+            cleanEmail,
+            ref,
+            ref
+          );
+        }
+        return tx.all<any>(
+          `SELECT u.*, t.name as tenant_name, t.ai_reports_enabled
+           FROM shift_users u
+           JOIN tenants t ON t.id = u.tenant_id
+           WHERE lower(u.email) = ?`,
+          cleanEmail
+        );
+      }
+    );
+
+    if (candidates.length > 1) {
+      throw new HttpError(
+        409,
+        'TENANT_DISAMBIGUATION_REQUIRED',
+        'Multiple firms match this email address. Please specify your Firm ID or workspace slug.'
+      );
+    }
+
+    const userRow = candidates[0];
+    if (!userRow || !userRow.onboarding_key_hash) {
+      throw new HttpError(401, 'INVALID_ACCESS_KEY', 'Invalid account email or access key.');
+    }
+
+    if (userRow.status === 'disabled') {
+      throw new HttpError(403, 'ACCOUNT_DISABLED', 'Account is disabled. Contact your Firm Administrator.');
+    }
+
+    if (userRow.onboarding_key_expires_utc && userRow.onboarding_key_expires_utc <= nowIso) {
+      throw new HttpError(401, 'ACCESS_KEY_EXPIRED', 'This access key has expired. Ask your Firm Admin to generate a new key.');
+    }
+
+    const storedBuf = Buffer.from(String(userRow.onboarding_key_hash), 'hex');
+    const presentedBuf = Buffer.from(presentedHash, 'hex');
+    if (
+      storedBuf.length === 0 ||
+      storedBuf.length !== presentedBuf.length ||
+      !crypto.timingSafeEqual(storedBuf, presentedBuf)
+    ) {
+      throw new HttpError(401, 'INVALID_ACCESS_KEY', 'Invalid account email or access key.');
+    }
+
+    const role = userRow.role as UserRole;
+    const principalType: 'staff' | 'client' = role === 'client' ? 'client' : 'staff';
+    const totpEnabled = Boolean(userRow.totp_enabled);
+    const mustSetPassword = Boolean(userRow.must_set_password);
+    const mustEnrollMfa =
+      (roleRequiresMfa(role) || Boolean(userRow.must_enroll_mfa)) && !totpEnabled;
+    const mfaVerified = !totpEnabled && !mustEnrollMfa && !mustSetPassword;
+
+    const session = await this.createSessionForUser({
+      tenantId: userRow.tenant_id,
+      userId: userRow.user_id,
+      principalType,
+      mfaVerified,
+      ipAddress: params.ipAddress,
+      userAgent: params.userAgent,
+    });
+
+    return {
+      rawToken: session.rawToken,
+      sessionId: session.sessionId,
+      user: {
+        userId: userRow.user_id,
+        tenantId: userRow.tenant_id,
+        tenantName: userRow.tenant_name,
+        name: userRow.name,
+        email: userRow.email,
+        role,
+        teamId: userRow.team_id,
+        clientId: userRow.client_id || null,
+        shiftPattern: userRow.shift_pattern as ShiftPattern,
+        canDrilldownTimeline: Boolean(userRow.can_drilldown_timeline),
+        totpEnabled,
+        mfaVerified,
+        mustEnrollMfa,
+        mustSetPassword,
+        principalType,
+        isDemoSandbox: userRow.tenant_id === 'firm_demo',
+        aiReportsEnabled: Boolean(userRow.ai_reports_enabled),
+      },
+    };
+  }
+
+  public async completeOnboardingPasswordSetup(params: {
+    tenantId: string;
+    userId: string;
+    newPassword: string;
+  }): Promise<void> {
+    const newHash = await hashPassword(params.newPassword);
+    const nowIso = new Date().toISOString();
+
+    await this.db.withTenantTransaction(
+      { tenantId: params.tenantId, userId: params.userId },
+      async (tx) => {
+        const res = await tx.run(
+          `UPDATE shift_users
+           SET password_hash = ?, must_set_password = 0, onboarding_key_hash = NULL, onboarding_key_expires_utc = NULL
+           WHERE tenant_id = ? AND user_id = ?`,
+          newHash,
+          params.tenantId,
+          params.userId
+        );
+        if (res.changes === 0) {
+          throw new HttpError(404, 'USER_NOT_FOUND', 'User not found.');
+        }
+
+        await tx.run(
+          `INSERT INTO audit_logs (id, tenant_id, actor_user_id, actor_role, target_user_id, action, details, created_at_utc)
+           VALUES (?, ?, ?, 'accountant', ?, 'user.onboarding_password_set', ?, ?)`,
+          `aud-${crypto.randomBytes(6).toString('hex')}`,
+          params.tenantId,
+          params.userId,
+          params.userId,
+          'Completed onboarding password setup and consumed single-use access key',
+          nowIso
+        );
+      }
+    );
   }
 
   public async requestPasswordReset(params: { email: string; tenantId?: string }) {
@@ -1090,13 +1483,15 @@ export class AuthStore {
     const role = userRow.role as UserRole;
     const principalType = role === 'client' ? 'client' : 'staff';
     const totpEnabled = Boolean(userRow.totp_enabled);
-    const mustEnrollMfa = roleRequiresMfa(role) && !totpEnabled;
+    const mustSetPassword = Boolean(userRow.must_set_password);
+    const mustEnrollMfa =
+      (roleRequiresMfa(role) || Boolean(userRow.must_enroll_mfa)) && !totpEnabled;
 
     const session = await this.createSessionForUser({
       tenantId: userRow.tenant_id,
       userId: userRow.user_id,
       principalType,
-      mfaVerified: !totpEnabled && !mustEnrollMfa,
+      mfaVerified: !totpEnabled && !mustEnrollMfa && !mustSetPassword,
       ipAddress: params.ipAddress,
       userAgent: params.userAgent,
     });
@@ -1116,8 +1511,9 @@ export class AuthStore {
         shiftPattern: userRow.shift_pattern as ShiftPattern,
         canDrilldownTimeline: Boolean(userRow.can_drilldown_timeline),
         totpEnabled,
-        mfaVerified: !totpEnabled && !mustEnrollMfa,
+        mfaVerified: !totpEnabled && !mustEnrollMfa && !mustSetPassword,
         mustEnrollMfa,
+        mustSetPassword,
         principalType,
         isDemoSandbox: userRow.tenant_id === 'firm_demo',
         aiReportsEnabled: Boolean(userRow.ai_reports_enabled),
@@ -1210,6 +1606,7 @@ export class AuthStore {
         totpEnabled: Boolean(userRow.totp_enabled),
         mfaVerified: true,
         mustEnrollMfa: false,
+        mustSetPassword: false,
         principalType,
         isDemoSandbox: true,
         aiReportsEnabled: Boolean(userRow.ai_reports_enabled),

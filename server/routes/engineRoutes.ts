@@ -95,6 +95,8 @@ const PackageBuildBodySchema = z.object({
   serverUrl: z.string().trim().url().optional(),
   userId: z.string().trim().min(1).max(120).optional(),
   bridgeSecret: z.string().trim().min(16).max(128).optional(),
+  credentialsText: z.string().max(12000).optional(),
+  credentialsFilename: z.string().trim().max(120).optional(),
 });
 
 export function createEngineRouter(deps: {
@@ -1428,6 +1430,8 @@ export function createEngineRouter(deps: {
     requestedUserId?: string;
     serverUrl?: string;
     bridgeSecret?: string;
+    credentialsText?: string;
+    credentialsFilename?: string;
   }): Promise<{
     buffer: Buffer;
     filename: string;
@@ -1443,21 +1447,27 @@ export function createEngineRouter(deps: {
     const bridgeSecret =
       params.bridgeSecret?.trim() || crypto.randomBytes(24).toString('base64url');
 
-    if (kind === 'windows-installer') {
+    if (kind === 'windows-installer' || kind === 'windows-kit') {
       return buildWindowsInstallerArtifact({
         tenantId: params.tenantId,
         userId: targetUserId,
         serverUrl,
         bridgeSecret,
+        credentialsText: params.credentialsText,
+        credentialsFilename: params.credentialsFilename,
+        bundleAsKit: kind === 'windows-kit',
       });
     }
 
-    if (kind === 'unix-installer') {
+    if (kind === 'unix-installer' || kind === 'unix-kit') {
       return buildUnixInstallerArtifact({
         tenantId: params.tenantId,
         userId: targetUserId,
         serverUrl,
         bridgeSecret,
+        credentialsText: params.credentialsText,
+        credentialsFilename: params.credentialsFilename,
+        bundleAsKit: kind === 'unix-kit',
       });
     }
 
@@ -1517,6 +1527,8 @@ export function createEngineRouter(deps: {
         requestedUserId: parsed.userId,
         serverUrl: parsed.serverUrl,
         bridgeSecret: parsed.bridgeSecret,
+        credentialsText: parsed.credentialsText,
+        credentialsFilename: parsed.credentialsFilename,
       });
       res.setHeader('Content-Type', out.contentType);
       res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`);

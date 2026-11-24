@@ -98,7 +98,7 @@ namespace OnTrackInstaller
 
             var tokenLabel = new Label
             {
-                Text = "Device Pairing Token (asked once):",
+                Text = "Installation Key (asked once):",
                 Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(30, 41, 59),
                 Location = new Point(24, 86),
@@ -117,7 +117,7 @@ namespace OnTrackInstaller
 
             var hintLabel = new Label
             {
-                Text = "Paste your ontrack_dev_... key from OnTrack -> Auto-Track -> Workstation Pairing.",
+                Text = "Paste your ontrack_dev_... Installation Key from your OnTrack Credentials (.txt) file.",
                 Font = new Font("Segoe UI", 8.25f, FontStyle.Regular),
                 ForeColor = Color.FromArgb(100, 116, 139),
                 Location = new Point(24, 140),
@@ -127,7 +127,7 @@ namespace OnTrackInstaller
 
             _openBrowserCheck = new CheckBox
             {
-                Text = "Open browser extensions page after install if Chrome/Edge load step is needed",
+                Text = "Open OnTrack sign-in in browser after installation completes",
                 Checked = true,
                 Location = new Point(24, 168),
                 Size = new Size(472, 22),
@@ -222,6 +222,13 @@ namespace OnTrackInstaller
             base.OnShown(e);
             if (string.IsNullOrWhiteSpace(_tokenBox.Text))
             {
+                string fileKey = InstallerEngine.TryFindSiblingCredentialsKey();
+                if (!string.IsNullOrEmpty(fileKey))
+                {
+                    _tokenBox.Text = fileKey;
+                    _subStatusLabel.Text = "Detected Installation Key from Credentials (.txt). Click Install Silently to continue.";
+                    return;
+                }
                 try
                 {
                     if (Clipboard.ContainsText())
@@ -230,7 +237,7 @@ namespace OnTrackInstaller
                         if (clip.StartsWith("ontrack_dev_", StringComparison.Ordinal))
                         {
                             _tokenBox.Text = clip;
-                            _subStatusLabel.Text = "Detected pairing key from clipboard. Click Install Silently to continue.";
+                            _subStatusLabel.Text = "Detected Installation Key from clipboard. Click Install Silently to continue.";
                         }
                     }
                 }
@@ -263,8 +270,8 @@ namespace OnTrackInstaller
             if (!InstallerEngine.IsValidDeviceToken(token))
             {
                 MessageBox.Show(
-                    "Please paste a valid OnTrack Device Pairing Token (ontrack_dev_...).",
-                    "Pairing Token Required",
+                    "Please paste a valid OnTrack Installation Key (ontrack_dev_...) from your credentials file.",
+                    "Installation Key Required",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning
                 );
@@ -556,11 +563,14 @@ namespace OnTrackInstaller
             progress(92, "Verifying local Desktop Agent bridge...", "Checking http://127.0.0.1:" + meta.BridgePort + "/health");
             bool healthy = WaitForBridgeHealth(meta.BridgePort, 10000);
 
-            RegisterExtensionNotesAndOptionalLaunch(extDir, openBrowserExtensions);
+            if (openBrowserExtensions)
+            {
+                LaunchAppSignInBrowser(meta.ServerUrl);
+            }
 
             string summary = healthy
-                ? "Desktop Agent LIVE on :" + meta.BridgePort + ". Extension staged at " + extDir + " (path copied)."
-                : "Installed to " + installRoot + ". Agent starting up; extension staged at " + extDir + ".";
+                ? "Desktop Agent LIVE on :" + meta.BridgePort + ". Browser opening OnTrack Sign-In."
+                : "Installed to " + installRoot + ". Agent starting up; browser opening OnTrack Sign-In.";
             progress(100, "OnTrack installation complete.", summary);
         }
 
@@ -795,21 +805,68 @@ namespace OnTrackInstaller
             return false;
         }
 
-        private static void RegisterExtensionNotesAndOptionalLaunch(string extDir, bool openBrowser)
+        public static string TryFindSiblingCredentialsKey()
         {
-            if (!openBrowser) return;
+            var dirs = new List<string>();
+            try
+            {
+                string exeDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+                if (!string.IsNullOrEmpty(exeDir)) dirs.Add(exeDir);
+            }
+            catch { }
+            try
+            {
+                if (!string.IsNullOrEmpty(Environment.CurrentDirectory)) dirs.Add(Environment.CurrentDirectory);
+            }
+            catch { }
+
+            foreach (string dir in dirs)
+            {
+                try
+                {
+                    if (!Directory.Exists(dir)) continue;
+                    string[] files = Directory.GetFiles(dir, "OnTrack-Credentials*.txt");
+                    foreach (string f in files)
+                    {
+                        string content = File.ReadAllText(f, Encoding.UTF8);
+                        Match m = Regex.Match(content, "Installation Key:\\s*(ontrack_dev_[A-Za-z0-9_.\\-]+)", RegexOptions.IgnoreCase);
+                        if (m.Success) return m.Groups[1].Value.Trim();
+                    }
+                }
+                catch { }
+            }
+            return "";
+        }
+
+        private static string BuildAppSignInUrl(string serverUrl)
+        {
+            string baseUrl = string.IsNullOrWhiteSpace(serverUrl) ? "http://localhost:3000" : serverUrl.Trim().TrimEnd('/');
+            if (baseUrl.IndexOf("signin=", StringComparison.OrdinalIgnoreCase) >= 0) return baseUrl;
+            return baseUrl + (baseUrl.IndexOf('?') >= 0 ? "&signin=key" : "/?signin=key");
+        }
+
+        private static void LaunchAppSignInBrowser(string serverUrl)
+        {
+            string targetUrl = BuildAppSignInUrl(serverUrl);
+            try
+            {
+                Process.Start(new ProcessStartInfo(targetUrl) { UseShellExecute = true });
+                return;
+            }
+            catch { }
+
             try
             {
                 string chromePath = FindInstalledBrowserExe("chrome.exe");
                 if (chromePath != null)
                 {
-                    Process.Start(new ProcessStartInfo(chromePath, "chrome://extensions") { UseShellExecute = true });
+                    Process.Start(new ProcessStartInfo(chromePath, targetUrl) { UseShellExecute = true });
                     return;
                 }
                 string edgePath = FindInstalledBrowserExe("msedge.exe");
                 if (edgePath != null)
                 {
-                    Process.Start(new ProcessStartInfo(edgePath, "edge://extensions") { UseShellExecute = true });
+                    Process.Start(new ProcessStartInfo(edgePath, targetUrl) { UseShellExecute = true });
                 }
             }
             catch { }
@@ -876,6 +933,14 @@ namespace OnTrackInstaller
                 else if (a.StartsWith("--token=", StringComparison.OrdinalIgnoreCase))
                 {
                     cliToken = a.Substring(8).Trim();
+                }
+                else if (a.StartsWith("/Key=", StringComparison.OrdinalIgnoreCase))
+                {
+                    cliToken = a.Substring(5).Trim();
+                }
+                else if (a.StartsWith("--key=", StringComparison.OrdinalIgnoreCase))
+                {
+                    cliToken = a.Substring(6).Trim();
                 }
             }
 

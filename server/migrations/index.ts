@@ -4,6 +4,7 @@ import { migration002PostgresRls } from './002_postgres_rls.ts';
 import { migration003ClientPortal } from './003_client_portal.ts';
 import { migration004PortalEnhancements } from './004_portal_enhancements.ts';
 import { migration005TaskCollaboration } from './005_task_collaboration.ts';
+import { migration006OnboardingAccessKeys } from './006_onboarding_access_keys.ts';
 
 export const MIGRATIONS: Migration[] = [
   migration001InitialSchema,
@@ -11,6 +12,7 @@ export const MIGRATIONS: Migration[] = [
   migration003ClientPortal,
   migration004PortalEnhancements,
   migration005TaskCollaboration,
+  migration006OnboardingAccessKeys,
 ];
 
 async function ensureMigrationsTable(db: PortableSqlAdapter) {

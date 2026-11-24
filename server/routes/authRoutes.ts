@@ -5,7 +5,7 @@ import {
   roleRequiresMfa,
   setSessionCookie,
 } from '../auth.ts';
-import { AuthStore } from '../authStore.ts';
+import { AuthStore, buildOnboardingCredentialsText } from '../authStore.ts';
 import { appConfig } from '../config.ts';
 import { EngineSQLStore } from '../engineStore.ts';
 import { asyncHandler, HttpError } from '../errors.ts';
@@ -87,6 +87,70 @@ const OidcConfigSchema = z.object({
   allowedDomains: z.array(z.string().trim().min(1)).optional(),
 });
 
+const ProvisionUserSchema = z.object({
+  email: z.string().trim().email(),
+  name: z.string().trim().min(2).max(120),
+  role: z
+    .enum([
+      'accountant',
+      'team_lead',
+      'line_manager',
+      'executive',
+      'client',
+      'admin_it',
+    ])
+    .default('accountant'),
+  teamId: z.string().trim().min(1).default('team_audit'),
+  shiftPattern: z.enum(['8-5', '5-9', 'remote', 'weekend']).default('8-5'),
+  clientId: z.string().trim().nullable().optional(),
+  canDrilldownTimeline: z.boolean().optional(),
+  workstationLabel: z.string().trim().max(120).optional(),
+  appUrl: z.string().trim().url().optional(),
+});
+
+const RotateKeyBodySchema = z.object({
+  workstationLabel: z.string().trim().max(120).optional(),
+  appUrl: z.string().trim().url().optional(),
+});
+
+const KeyLoginSchema = z.object({
+  email: z.string().trim().email(),
+  accessKey: z.string().trim().min(12).max(200),
+  tenantSlugOrId: z.string().trim().optional(),
+});
+
+const OnboardingPasswordSchema = z.object({
+  newPassword: z.string().min(10).max(200),
+});
+
+function resolveRequestAppUrl(req: any, explicitUrl?: string): string {
+  if (explicitUrl && explicitUrl.trim()) {
+    return explicitUrl.trim().replace(/\/+$/, '');
+  }
+  const xfProto = typeof req.headers['x-forwarded-proto'] === 'string'
+    ? req.headers['x-forwarded-proto'].split(',')[0].trim()
+    : req.protocol || 'http';
+  const xfHost = typeof req.headers['x-forwarded-host'] === 'string'
+    ? req.headers['x-forwarded-host'].split(',')[0].trim()
+    : typeof req.headers.host === 'string'
+    ? req.headers.host.trim()
+    : '';
+  if (xfHost) {
+    return `${xfProto}://${xfHost}`.replace(/\/+$/, '');
+  }
+  return (appConfig.appUrl || `http://localhost:${appConfig.port}`).replace(/\/+$/, '');
+}
+
+function makeCredentialsFilename(email: string): string {
+  const safeHandle = email
+    .trim()
+    .toLowerCase()
+    .replace(/@.*/, '')
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-|-$/g, '') || 'staff';
+  return `OnTrack-Credentials-${safeHandle}.txt`;
+}
+
 export function createAuthRouter(deps: {
   authStore: AuthStore;
   engineStore: EngineSQLStore;
@@ -157,6 +221,50 @@ export function createAuthRouter(deps: {
       });
       setSessionCookie(req, res, out.rawToken);
       res.json({ user: out.user });
+    })
+  );
+
+  router.post(
+    '/key-login',
+    ...limitMiddleware,
+    asyncHandler(async (req, res) => {
+      const input = KeyLoginSchema.parse(req.body);
+      const out = await deps.authStore.authenticateWithAccessKey({
+        ...input,
+        ipAddress: getClientIp(req),
+        userAgent: req.headers['user-agent'] || null,
+      });
+      setSessionCookie(req, res, out.rawToken);
+      res.json({ user: out.user });
+    })
+  );
+
+  router.post(
+    '/onboarding/set-password',
+    ...limitMiddleware,
+    asyncHandler(async (req, res) => {
+      const authCtx = await resolveHttpAuthContext(req, deps, {
+        allowUnverifiedMfa: true,
+      });
+      if (authCtx.mode !== 'session') {
+        throw new HttpError(
+          401,
+          'SESSION_REQUIRED',
+          'Password setup requires an authenticated onboarding session.'
+        );
+      }
+      const { newPassword } = OnboardingPasswordSchema.parse(req.body);
+      await deps.authStore.completeOnboardingPasswordSetup({
+        tenantId: authCtx.tenantId,
+        userId: authCtx.userId,
+        newPassword,
+      });
+      const rawSid = extractSessionCookie(req);
+      const verified = rawSid ? await deps.authStore.verifySessionToken(rawSid) : null;
+      res.json({
+        ok: true,
+        user: verified?.summary || null,
+      });
     })
   );
 
@@ -239,6 +347,13 @@ export function createAuthRouter(deps: {
       if (authCtx.mode !== 'session') {
         throw new HttpError(400, 'SESSION_REQUIRED', 'TOTP enrollment requires a signed-in user session.');
       }
+      if (authCtx.mustSetPassword) {
+        throw new HttpError(
+          403,
+          'PASSWORD_SETUP_REQUIRED',
+          'Create your account password first before setting up Two-Factor Authentication.'
+        );
+      }
       const enrollment = await deps.authStore.beginMfaEnrollment(
         authCtx.tenantId,
         authCtx.userId
@@ -255,6 +370,13 @@ export function createAuthRouter(deps: {
       });
       if (authCtx.mode !== 'session') {
         throw new HttpError(400, 'SESSION_REQUIRED', 'TOTP confirmation requires a signed-in user session.');
+      }
+      if (authCtx.mustSetPassword) {
+        throw new HttpError(
+          403,
+          'PASSWORD_SETUP_REQUIRED',
+          'Create your account password first before confirming Two-Factor Authentication.'
+        );
       }
       const { code } = MfaCodeSchema.parse(req.body);
       await deps.authStore.confirmMfaEnrollment(
@@ -364,6 +486,157 @@ export function createAuthRouter(deps: {
         ...input,
       });
       res.status(201).json(invite);
+    })
+  );
+
+  router.post(
+    '/provision-user',
+    asyncHandler(async (req, res) => {
+      const authCtx = await resolveHttpAuthContext(req, deps);
+      if (authCtx.role !== 'admin_it') {
+        throw new HttpError(
+          403,
+          'FORBIDDEN',
+          'Only Firm Admin/IT can register staff accounts and issue onboarding keys.'
+        );
+      }
+      const input = ProvisionUserSchema.parse(req.body);
+      const provisioned = await deps.authStore.provisionUserWithKey({
+        tenantId: authCtx.tenantId,
+        actorUserId: authCtx.userId,
+        email: input.email,
+        name: input.name,
+        role: input.role,
+        teamId: input.teamId,
+        shiftPattern: input.shiftPattern,
+        clientId: input.clientId,
+        canDrilldownTimeline: input.canDrilldownTimeline,
+      });
+
+      const deviceId = `dev-${provisioned.userId}-ws`;
+      const paired = await deps.engineStore.createDeviceToken({
+        tenantId: authCtx.tenantId,
+        userId: provisioned.userId,
+        deviceId,
+        label: input.workstationLabel?.trim() || `${provisioned.name} Workstation`,
+      });
+
+      await deps.engineStore.recordAuditLog({
+        tenantId: authCtx.tenantId,
+        actorUserId: authCtx.userId,
+        actorRole: authCtx.role,
+        targetUserId: provisioned.userId,
+        action: 'device.token_created',
+        details: `Issued installation key ${paired.record.prefix}... for ${provisioned.email} (${deviceId})`,
+      });
+
+      const appUrl = resolveRequestAppUrl(req, input.appUrl);
+      const credentialsText = buildOnboardingCredentialsText({
+        firmName: provisioned.tenantName,
+        tenantId: provisioned.tenantId,
+        appUrl,
+        userId: provisioned.userId,
+        name: provisioned.name,
+        email: provisioned.email,
+        role: provisioned.role,
+        accountAccessKey: provisioned.accountAccessKey,
+        installationKey: paired.rawToken,
+        deviceId,
+        expiresAtUtc: provisioned.expiresAtUtc,
+      });
+
+      await deps.wsGateway.publish({
+        tenantId: authCtx.tenantId,
+        affectedUserId: provisioned.userId,
+        eventType: 'state:updated',
+      });
+
+      res.status(201).json({
+        user: {
+          userId: provisioned.userId,
+          tenantId: provisioned.tenantId,
+          tenantName: provisioned.tenantName,
+          name: provisioned.name,
+          email: provisioned.email,
+          role: provisioned.role,
+          teamId: provisioned.teamId,
+          shiftPattern: provisioned.shiftPattern,
+        },
+        accountAccessKey: provisioned.accountAccessKey,
+        installationKey: paired.rawToken,
+        deviceTokenRecord: paired.record,
+        appUrl,
+        expiresAtUtc: provisioned.expiresAtUtc,
+        credentialsText,
+        credentialsFilename: makeCredentialsFilename(provisioned.email),
+      });
+    })
+  );
+
+  router.post(
+    '/provision-user/:userId/rotate-key',
+    asyncHandler(async (req, res) => {
+      const authCtx = await resolveHttpAuthContext(req, deps);
+      if (authCtx.role !== 'admin_it') {
+        throw new HttpError(
+          403,
+          'FORBIDDEN',
+          'Only Firm Admin/IT can re-generate staff onboarding keys.'
+        );
+      }
+      const input = RotateKeyBodySchema.parse(req.body || {});
+      const rotated = await deps.authStore.rotateUserOnboardingKey({
+        tenantId: authCtx.tenantId,
+        actorUserId: authCtx.userId,
+        targetUserId: req.params.userId,
+      });
+
+      const deviceId = `dev-${rotated.userId}-ws`;
+      const paired = await deps.engineStore.createDeviceToken({
+        tenantId: authCtx.tenantId,
+        userId: rotated.userId,
+        deviceId,
+        label: input.workstationLabel?.trim() || `${rotated.name} Workstation`,
+      });
+
+      const appUrl = resolveRequestAppUrl(req, input.appUrl);
+      const credentialsText = buildOnboardingCredentialsText({
+        firmName: rotated.tenantName,
+        tenantId: rotated.tenantId,
+        appUrl,
+        userId: rotated.userId,
+        name: rotated.name,
+        email: rotated.email,
+        role: rotated.role,
+        accountAccessKey: rotated.accountAccessKey,
+        installationKey: paired.rawToken,
+        deviceId,
+        expiresAtUtc: rotated.expiresAtUtc,
+      });
+
+      await deps.wsGateway.publish({
+        tenantId: authCtx.tenantId,
+        affectedUserId: rotated.userId,
+        eventType: 'state:updated',
+      });
+
+      res.json({
+        user: {
+          userId: rotated.userId,
+          tenantId: rotated.tenantId,
+          tenantName: rotated.tenantName,
+          name: rotated.name,
+          email: rotated.email,
+          role: rotated.role,
+        },
+        accountAccessKey: rotated.accountAccessKey,
+        installationKey: paired.rawToken,
+        deviceTokenRecord: paired.record,
+        appUrl,
+        expiresAtUtc: rotated.expiresAtUtc,
+        credentialsText,
+        credentialsFilename: makeCredentialsFilename(rotated.email),
+      });
     })
   );
 

@@ -167,11 +167,20 @@ export function buildSelfContainedWindowsBat(
   return Buffer.from(content, 'ascii');
 }
 
+function sanitizeCredentialsFilename(raw?: string): string {
+  const base = path.basename((raw || 'OnTrack-Credentials.txt').trim());
+  const cleaned = base.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+/, '');
+  return cleaned.toLowerCase().endsWith('.txt') ? cleaned : `${cleaned || 'OnTrack-Credentials'}.txt`;
+}
+
 export async function buildWindowsInstallerArtifact(params: {
   tenantId: string;
   userId: string;
   serverUrl: string;
   bridgeSecret: string;
+  credentialsText?: string;
+  credentialsFilename?: string;
+  bundleAsKit?: boolean;
 }): Promise<{
   buffer: Buffer;
   filename: string;
@@ -180,10 +189,30 @@ export async function buildWindowsInstallerArtifact(params: {
 }> {
   const bundleZip = await buildUnifiedBundleZip(params);
   const templatePath = await ensureWindowsTemplateExe().catch(() => null);
+  const hasCreds = Boolean(params.credentialsText && params.credentialsText.trim());
+  const credsName = sanitizeCredentialsFilename(params.credentialsFilename);
 
   if (templatePath && fs.existsSync(templatePath)) {
     const templateBytes = fs.readFileSync(templatePath);
     const exeBuffer = appendBundleOverlayToExe(templateBytes, bundleZip);
+    if (params.bundleAsKit || hasCreds) {
+      const kitZip = new JSZip();
+      kitZip.file('OnTrack-Setup.exe', exeBuffer);
+      if (hasCreds && params.credentialsText) {
+        kitZip.file(credsName, params.credentialsText);
+      }
+      const kitBuffer = await kitZip.generateAsync({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+        platform: 'DOS',
+      });
+      return {
+        buffer: kitBuffer,
+        filename: 'OnTrack-Onboarding-Kit-Windows.zip',
+        contentType: 'application/zip',
+        format: 'zip',
+      };
+    }
     return {
       buffer: exeBuffer,
       filename: 'OnTrack-Setup.exe',
@@ -210,6 +239,9 @@ export async function buildWindowsInstallerArtifact(params: {
   outerZip.file('OnTrack-Setup.bat', selfContainedBat);
   outerZip.file('OnTrackSetup.cs', csSourceBuffer);
   outerZip.file('ontrack-bundle.zip', bundleZip);
+  if (hasCreds && params.credentialsText) {
+    outerZip.file(credsName, params.credentialsText);
+  }
 
   const buffer = await outerZip.generateAsync({
     type: 'nodebuffer',
@@ -219,7 +251,7 @@ export async function buildWindowsInstallerArtifact(params: {
 
   return {
     buffer,
-    filename: 'OnTrack-Setup-Windows.zip',
+    filename: params.bundleAsKit ? 'OnTrack-Onboarding-Kit-Windows.zip' : 'OnTrack-Setup-Windows.zip',
     contentType: 'application/zip',
     format: 'zip',
   };
@@ -230,6 +262,9 @@ export async function buildUnixInstallerArtifact(params: {
   userId: string;
   serverUrl: string;
   bridgeSecret: string;
+  credentialsText?: string;
+  credentialsFilename?: string;
+  bundleAsKit?: boolean;
 }): Promise<{
   buffer: Buffer;
   filename: string;
@@ -267,6 +302,10 @@ export async function buildUnixInstallerArtifact(params: {
     )
   );
 
+  if (params.credentialsText && params.credentialsText.trim()) {
+    zip.file(sanitizeCredentialsFilename(params.credentialsFilename), params.credentialsText);
+  }
+
   const buffer = await zip.generateAsync({
     type: 'nodebuffer',
     compression: 'DEFLATE',
@@ -275,7 +314,7 @@ export async function buildUnixInstallerArtifact(params: {
 
   return {
     buffer,
-    filename: 'ontrack-collector-unix.zip',
+    filename: params.bundleAsKit ? 'OnTrack-Onboarding-Kit-Unix.zip' : 'ontrack-collector-unix.zip',
     contentType: 'application/zip',
     format: 'zip',
   };

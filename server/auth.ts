@@ -22,6 +22,7 @@ export interface RequestAuthContext {
   canDrilldownTimeline: boolean;
   mfaVerified: boolean;
   mustEnrollMfa: boolean;
+  mustSetPassword: boolean;
   deviceId?: string;
   isDemoSandbox: boolean;
 }

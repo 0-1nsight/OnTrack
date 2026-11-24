@@ -189,14 +189,15 @@ export class EngineWsGateway {
             canDrilldownTimeline: false,
             mfaVerified: true,
             mustEnrollMfa: false,
+            mustSetPassword: false,
             deviceId: verified.deviceId,
             isDemoSandbox: verified.tenantId === 'firm_demo',
           };
         } else if (cookies[SESSION_COOKIE_NAME]) {
           const ses = await this.authStore.verifySessionToken(cookies[SESSION_COOKIE_NAME]);
           if (ses) {
-            if (!ses.mfaVerified) {
-              ws.close(4403, 'MFA verification required');
+            if (!ses.mfaVerified || ses.mustSetPassword) {
+              ws.close(4403, 'Onboarding and MFA verification required');
               return;
             }
             authCtx = ses;
@@ -253,6 +254,7 @@ export class EngineWsGateway {
             canDrilldownTimeline: demoRole === 'team_lead',
             mfaVerified: true,
             mustEnrollMfa: false,
+            mustSetPassword: false,
             isDemoSandbox: true,
           };
         }

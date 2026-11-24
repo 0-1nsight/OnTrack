@@ -11,6 +11,7 @@ import {
   fetchAuthSession,
   fetchBootstrapStatus,
   fetchDemoAccounts,
+  loginWithAccessKeyApi,
   loginWithDemoAccount,
   loginWithPassword,
   logoutSession,
@@ -32,6 +33,7 @@ import {
 } from './types';
 import {
   AttributionRecord,
+  DeviceFreshnessRecord,
   EngineTask,
   PrivacyRule,
   ShiftUser,
@@ -306,6 +308,7 @@ export default function App() {
   const [syncConflicts, setSyncConflicts] = useState<SyncConflict[]>([]);
   const [staffUsers, setStaffUsers] = useState<ShiftUser[]>([]);
   const [taskInvites, setTaskInvites] = useState<TaskCollaborationInvite[]>([]);
+  const [engineDevices, setEngineDevices] = useState<DeviceFreshnessRecord[]>([]);
   const [engineTaskVersions, setEngineTaskVersions] = useState<Record<string, number>>({});
   const [engineSyncStatus, setEngineSyncStatus] = useState<'idle' | 'syncing' | 'error'>('idle');
   const demoSeedAppliedRef = useRef(false);
@@ -343,6 +346,7 @@ export default function App() {
     setSyncConflicts([]);
     setStaffUsers([]);
     setTaskInvites([]);
+    setEngineDevices([]);
     setEngineTaskVersions({});
     setEngineSyncStatus('idle');
     demoSeedAppliedRef.current = false;
@@ -496,7 +500,12 @@ export default function App() {
     async (targetUser?: AuthUser | null, roleOverride?: UserRole) => {
       const currentUser = targetUser ?? user;
       const role = roleOverride ?? activeRole;
-      if (!currentUser || !currentUser.mfaVerified || role === 'client') {
+      if (
+        !currentUser ||
+        currentUser.mustSetPassword ||
+        !currentUser.mfaVerified ||
+        role === 'client'
+      ) {
         setEngineSyncStatus('idle');
         return;
       }
@@ -516,6 +525,7 @@ export default function App() {
         setSyncConflicts(snapshot.conflicts || []);
         setStaffUsers(snapshot.staffUsers || []);
         setTaskInvites(snapshot.taskInvites || []);
+        setEngineDevices(snapshot.devices || []);
         const versionMap: Record<string, number> = {};
         for (const t of snapshot.tasks) {
           versionMap[t.id] = t.version;
@@ -689,7 +699,7 @@ export default function App() {
       await Promise.resolve();
       if (cancelled) return;
 
-      if (user && !user.mfaVerified) {
+      if (user && (user.mustSetPassword || !user.mfaVerified)) {
         setEngineSyncStatus('idle');
         return;
       }
@@ -738,7 +748,15 @@ export default function App() {
 
   // Global /ws/engine live updates + online queue flush (SYNC-5)
   useEffect(() => {
-    if (!authReady || !user || !user.mfaVerified || activeRole === 'client') return;
+    if (
+      !authReady ||
+      !user ||
+      user.mustSetPassword ||
+      !user.mfaVerified ||
+      activeRole === 'client'
+    ) {
+      return;
+    }
 
     const deviceId = getOrCreateLocalDeviceId();
     const handleOnline = () => {
@@ -814,14 +832,50 @@ export default function App() {
         preferences,
       });
       setShowLanding(false);
-      if (!res.user.mfaVerified) {
+      if (res.user.mustSetPassword || !res.user.mfaVerified) {
         setAccountModalOpen(true);
-        showToast('Two-factor authentication setup is required before accessing workspace data.');
+        showToast('Complete account onboarding (password & 2FA setup) to continue.');
       } else {
         showToast(`Signed in as ${res.user.email}.`);
       }
     } catch (err: any) {
       const msg = err?.message || 'Authentication failed.';
+      setAuthError(msg);
+      throw err;
+    }
+  };
+
+  const handleKeyLogin = async (payload: {
+    email: string;
+    accessKey: string;
+  }) => {
+    setAuthError(null);
+    try {
+      const res = await loginWithAccessKeyApi(payload);
+      if (res.user.userId !== user?.userId || res.user.tenantId !== user?.tenantId) {
+        resetWorkspaceState();
+      }
+      setUser(res.user);
+      setPreviewRoleOverride(null);
+      setActiveTab('timeline');
+      setUserProfile({
+        ownerId: res.user.userId,
+        email: res.user.email,
+        displayName: res.user.name,
+        jobTitle: res.user.role,
+        hourlyRate: 150,
+        currency: 'USD',
+        preferences,
+      });
+      setShowLanding(false);
+      if (res.user.mustSetPassword || !res.user.mfaVerified) {
+        setAccountModalOpen(true);
+        showToast('Access key verified. Create your password and set up 2FA to open your Timeline.');
+      } else {
+        showToast(`Signed in as ${res.user.email}.`);
+      }
+    } catch (err: any) {
+      const msg = err?.message || 'Access key verification failed.';
       setAuthError(msg);
       throw err;
     }
@@ -1882,6 +1936,7 @@ export default function App() {
           setPreferences((prev) => ({ ...prev, darkMode: !prev.darkMode }))
         }
         onLogin={handleLogin}
+        onKeyLogin={handleKeyLogin}
         onDemoLogin={handleDemoLogin}
         onBootstrapFirm={handleBootstrapFirm}
         onContinueLocal={() => {
@@ -2012,14 +2067,19 @@ export default function App() {
 
         {/* Main 1440px Workspace Viewport */}
         <main className="flex-1 w-full max-w-[1440px] mx-auto px-6 py-6">
-          {user && !user.mfaVerified ? (
+          {user && (user.mustSetPassword || !user.mfaVerified) ? (
             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-8 max-w-xl mx-auto space-y-4">
               <div className="space-y-1.5">
                 <h1 className="font-display text-lg font-bold text-slate-900 dark:text-white">
-                  Two-Factor Authenticator Setup Required
+                  {user.mustSetPassword
+                    ? 'Complete Password & 2FA Onboarding'
+                    : 'Two-Factor Authenticator Setup Required'}
                 </h1>
                 <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-                  Signed in as <span className="font-mono font-semibold">{user.email}</span> ({rolePolicy.label}). Complete TOTP authenticator setup before accessing firm workspace data.
+                  Signed in as <span className="font-mono font-semibold">{user.email}</span> ({rolePolicy.label}).{' '}
+                  {user.mustSetPassword
+                    ? 'Create your personal password and finish 2FA setup to land on your live Timeline.'
+                    : 'Complete TOTP authenticator setup before accessing firm workspace data.'}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-3">
@@ -2028,7 +2088,7 @@ export default function App() {
                   onClick={() => setAccountModalOpen(true)}
                   className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg cursor-pointer"
                 >
-                  Set Up 2FA Authenticator
+                  {user.mustSetPassword ? 'Create Password & Set Up 2FA' : 'Set Up 2FA Authenticator'}
                 </button>
                 <button
                   type="button"
@@ -2095,6 +2155,12 @@ export default function App() {
               appSegments={appSegments}
               documentSegments={documentSegments}
               tasks={tasks}
+              workstationDevices={
+                user
+                  ? engineDevices.filter((d) => d.userId === user.userId)
+                  : engineDevices
+              }
+              syncStatus={engineSyncStatus}
               onSelectDate={setSelectedDate}
               onOpenQuickLogWithRange={(startTime, endTime) => {
                 setEditingBlock(null);
@@ -2401,11 +2467,20 @@ export default function App() {
             demoAccounts={demoAccounts}
             authError={authError}
             onLogin={handleLogin}
+            onKeyLogin={handleKeyLogin}
             onDemoLogin={handleDemoLogin}
             onBootstrapFirm={handleBootstrapFirm}
             onSignOut={handleSignOut}
             onSaveProfile={handleSaveProfile}
             onRefreshSession={refreshAuthSession}
+            onOnboardingComplete={() => {
+              setAccountModalOpen(false);
+              setActiveTab('timeline');
+              if (user) {
+                void hydrateFromEngine(user, activeRole);
+              }
+              showToast('Account activated! Workstation capture status is running on your Timeline.');
+            }}
             onExportJson={handleExportJson}
             onOpenPreferences={() => setPrefsModalOpen(true)}
             onClose={() => setAccountModalOpen(false)}
