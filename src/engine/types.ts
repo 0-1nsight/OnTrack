@@ -46,6 +46,13 @@ export interface TrackingEventPayload {
   meeting_active?: boolean;
   os_platform?: OSPlatform;
   extension_connected?: boolean;
+  // Capture detail added by the document adapters, activity state machine and collectors.
+  document_kind?: string | null;
+  document_name?: string | null;
+  document_section?: string | null;
+  activity_state?: 'active' | 'idle' | 'away' | 'meeting' | 'locked' | 'sleeping';
+  virtual_desktop_id?: string | null;
+  capture_source?: 'native_events' | 'polling' | 'fallback';
   active_task_id?: string | null;
   entry_source?: 'manual' | 'timer' | 'reconciled';
   entry_project?: string;

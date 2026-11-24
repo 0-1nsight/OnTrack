@@ -1,0 +1,43 @@
+{
+ "description": "User locks the screen for 10 minutes.",
+ "samples": [
+  {
+   "t": 0,
+   "app": "Microsoft Word",
+   "title": "Engagement Letter - Word",
+   "idle": 0
+  },
+  {
+   "t": 20,
+   "app": "Microsoft Word",
+   "title": "Engagement Letter - Word",
+   "idle": 2
+  },
+  {
+   "t": 30,
+   "app": "LockApp",
+   "title": "Windows Default Lock Screen",
+   "idle": 0,
+   "locked": true
+  },
+  {
+   "t": 630,
+   "app": "LockApp",
+   "title": "Windows Default Lock Screen",
+   "idle": 0,
+   "locked": true
+  },
+  {
+   "t": 640,
+   "app": "Microsoft Word",
+   "title": "Engagement Letter - Word",
+   "idle": 0
+  },
+  {
+   "t": 660,
+   "app": "Microsoft Word",
+   "title": "Engagement Letter - Word",
+   "idle": 0
+  }
+ ]
+}

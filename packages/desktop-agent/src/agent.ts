@@ -3,8 +3,11 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { captureForegroundMetadata, WindowSample } from './adapters/osCollector.ts';
+import { captureForegroundMetadata, type WindowSample } from './adapters/osCollector.ts';
+import { WinFocusWatcher, type WatcherSample } from './adapters/winFocusWatcher.ts';
 import { createBridgeRequestHandler } from './bridge.ts';
+import { CaptureRuntime } from './captureRuntime.ts';
+import type { CapturedEvent, CaptureSample } from './capture/captureSampler.ts';
 
 interface AgentConfig {
   serverUrl: string;
@@ -33,7 +36,7 @@ const DEFAULT_CONFIG: AgentConfig = {
   bridgePort: Number(process.env.ONTRACK_BRIDGE_PORT || 47621),
   bridgeSecret: process.env.ONTRACK_BRIDGE_SECRET || '',
   heartbeatSeconds: 12,
-  pollSampleMs: 5000,
+  pollSampleMs: 2000,
   idleThresholdSeconds: 180,
   exclusions: {
     apps: ['1Password', 'Bitwarden', 'KeePass'],
@@ -90,6 +93,31 @@ function loadConfig(): AgentConfig {
 }
 
 const config = loadConfig();
+const CONTROLS_FILE = path.resolve(process.cwd(), '.ontrack-controls.json');
+const AGENT_PLATFORM: 'windows' | 'macos' | 'linux' | 'vdi' =
+  os.platform() === 'win32' ? 'windows' : os.platform() === 'darwin' ? 'macos' : 'linux';
+
+const runtime = new CaptureRuntime({
+  platform: AGENT_PLATFORM,
+  store: {
+    load: () => {
+      try {
+        return JSON.parse(fs.readFileSync(CONTROLS_FILE, 'utf8'));
+      } catch {
+        return null;
+      }
+    },
+    save: (state) => fs.writeFileSync(CONTROLS_FILE, JSON.stringify(state), 'utf8'),
+  },
+  onEvents: (events) => enqueueCaptured(events),
+  pipeline: {
+    activity: {
+      idleThresholdSeconds: config.idleThresholdSeconds,
+      awayThresholdSeconds: Math.max(config.idleThresholdSeconds * 5, 900),
+      meetingIdleGraceSeconds: 3600,
+    },
+  },
+});
 const QUEUE_FILE = path.resolve(process.cwd(), '.ontrack-offline-queue.jsonl');
 const SEQ_FILE = path.resolve(process.cwd(), '.ontrack-seq.json');
 
@@ -368,12 +396,14 @@ async function flushQueue() {
 function enqueueEvent(
   type: string,
   priority: 'state' | 'activity',
-  payload: Record<string, any>
+  payload: Record<string, any>,
+  eventTimeMs?: number
 ): boolean {
   if (isExcluded(payload)) {
     return false;
   }
-  const calibratedTime = new Date(Date.now() + clockSkewMs).toISOString();
+  const timeMs = eventTimeMs ?? Date.now();
+  const calibratedTime = new Date(timeMs + clockSkewMs).toISOString();
   const event = {
     event_id: crypto.randomUUID(),
     schema_version: 1,
@@ -388,10 +418,19 @@ function enqueueEvent(
     payload,
   };
   appendOfflineQueue(event);
+  if (type !== 'activity.heartbeat') {
+    runtime.recordQueued(type, timeMs, payload);
+  }
   if (priority === 'state') {
     void flushQueue();
   }
   return true;
+}
+
+function enqueueCaptured(events: CapturedEvent[]) {
+  for (const ev of events) {
+    enqueueEvent(ev.type, ev.priority, ev.payload as Record<string, any>, ev.eventTimeMs);
+  }
 }
 
 // Local Native Messaging / HTTP Bridge (127.0.0.1:47621)
@@ -410,8 +449,15 @@ const bridgeServer = http.createServer(
       wsConnected,
       clockSkewMs,
       extensionConnected: Date.now() - lastBrowserPingMs < 45000,
-      latestSample,
+      // The health endpoint needs no secret, so it never includes window titles or file names.
+      latestSample: latestSample
+        ? { app: latestSample.app, idleSeconds: latestSample.idleSeconds, osPlatform: latestSample.osPlatform }
+        : null,
     }),
+    getControls: () => runtime.getControls(),
+    applyControl: (msg) => runtime.applyControl(msg),
+    getCaptureHealth: () => ({ ...runtime.getHealth(Date.now() - lastBrowserPingMs < 45000) }),
+    getRecentEvents: (limit) => runtime.getRecentEvents(limit) as unknown as Record<string, unknown>[],
     onBrowserEvent: (msg) => {
       lastBrowserPingMs = Date.now();
       return enqueueEvent('activity.browser', 'activity', {
@@ -451,33 +497,120 @@ setInterval(() => {
   void syncBootstrapFromServer();
 }, 60_000);
 
-// OS Collector Loop
-let lastSignature = '';
-setInterval(async () => {
-  const sample = await captureForegroundMetadata();
-  latestSample = sample;
-  const isIdle = sample.idleSeconds >= config.idleThresholdSeconds;
-  const extensionConnected = Date.now() - lastBrowserPingMs < 45000;
-  const signature = `${sample.app}|${sample.windowTitle}|${isIdle}`;
+// OS Collector
+function toCaptureSample(
+  sample: WindowSample,
+  source: CaptureSample['source']
+): CaptureSample {
+  return {
+    atMs: Date.now(),
+    app: sample.app,
+    windowTitle: sample.windowTitle,
+    filePath: sample.filePath,
+    idleSeconds: sample.idleSeconds,
+    sessionLocked: sample.sessionLocked,
+    systemSleeping: false,
+    meetingActive: sample.meetingActive,
+    mediaInUse: sample.mediaInUse,
+    osPlatform: sample.osPlatform,
+    virtualDesktopId: sample.virtualDesktopId,
+    source,
+  };
+}
 
-  if (signature !== lastSignature) {
-    lastSignature = signature;
-    enqueueEvent(
-      isIdle ? 'activity.idle' : sample.meetingActive ? 'activity.meeting' : 'activity.window',
-      'activity',
-      {
-        app: sample.app,
-        window_title: sample.windowTitle,
-        file_path: sample.filePath,
-        duration_ms: config.pollSampleMs,
-        idle: isIdle,
-        meeting_active: sample.meetingActive,
-        os_platform: sample.osPlatform,
-        extension_connected: extensionConnected,
+const extensionIsConnected = () => Date.now() - lastBrowserPingMs < 45000;
+
+function startPolling(mode: 'polling' | 'fallback') {
+  runtime.setCollectorMode(mode);
+  setInterval(async () => {
+    try {
+      const sample = await captureForegroundMetadata();
+      latestSample = sample;
+      runtime.setPlatformFacts({
+        accessibilityGranted: sample.accessibilityGranted,
+        linuxSession: sample.linuxSession,
+      });
+      if (sample.collectorFailed) {
+        // Do not record a placeholder window as real activity.
+        runtime.recordCollectorError();
+        return;
       }
-    );
+      enqueueCaptured(runtime.handleSample(toCaptureSample(sample, mode), extensionIsConnected()));
+    } catch {
+      runtime.recordCollectorError();
+    }
+  }, config.pollSampleMs);
+}
+
+function startCollector() {
+  if (os.platform() !== 'win32') {
+    startPolling('polling');
+    return;
   }
-}, config.pollSampleMs);
+  const watcher = new WinFocusWatcher({
+    onSample: (w: WatcherSample) => {
+      latestSample = {
+        app: w.app,
+        windowTitle: w.windowTitle,
+        filePath: null,
+        idleSeconds: w.idleSeconds,
+        meetingActive: w.meetingActive,
+        osPlatform: AGENT_PLATFORM,
+        isVirtualDesktop: false,
+        sessionLocked: w.sessionLocked,
+        mediaInUse: w.mediaInUse,
+        virtualDesktopId: w.virtualDesktopId,
+        collectorFailed: false,
+      };
+      enqueueCaptured(
+        runtime.handleSample(
+          {
+            atMs: w.atMs,
+            app: w.app,
+            windowTitle: w.windowTitle,
+            filePath: null,
+            idleSeconds: w.idleSeconds,
+            sessionLocked: w.sessionLocked,
+            systemSleeping: w.systemSleeping,
+            meetingActive: w.meetingActive,
+            mediaInUse: w.mediaInUse,
+            osPlatform: AGENT_PLATFORM,
+            virtualDesktopId: w.virtualDesktopId,
+            source: 'native_events',
+          },
+          extensionIsConnected()
+        )
+      );
+    },
+    onError: (message) => {
+      console.warn(`[OnTrack Agent] focus watcher: ${message}`);
+      runtime.recordCollectorError();
+    },
+    onGiveUp: (reason) => {
+      console.warn(`[OnTrack Agent] ${reason}; using the fallback collector.`);
+      startPolling('fallback');
+    },
+  });
+  void watcher.start().then((started) => {
+    if (started) {
+      runtime.setCollectorMode('native_events');
+    } else {
+      console.warn('[OnTrack Agent] Could not start the native focus watcher; using the fallback collector.');
+      startPolling('fallback');
+    }
+  });
+  process.on('exit', () => watcher.stop());
+}
+
+startCollector();
+
+// Flush the open segment on shutdown so the last stretch of work is not lost.
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => {
+    enqueueCaptured(runtime.shutdown());
+    process.exit(0);
+  });
+}
 
 // Heartbeat + Flush Loop (12s)
 setInterval(() => {

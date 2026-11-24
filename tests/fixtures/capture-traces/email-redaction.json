@@ -1,0 +1,29 @@
+{
+ "description": "Outlook subject lines must never be recorded, only client codes.",
+ "samples": [
+  {
+   "t": 0,
+   "app": "Outlook",
+   "title": "Re: Divorce settlement documents ACME-1042 - Message (HTML)",
+   "idle": 0
+  },
+  {
+   "t": 20,
+   "app": "Outlook",
+   "title": "Re: Divorce settlement documents ACME-1042 - Message (HTML)",
+   "idle": 0
+  },
+  {
+   "t": 40,
+   "app": "Outlook",
+   "title": "Inbox - maya@firm.example - Outlook",
+   "idle": 0
+  },
+  {
+   "t": 60,
+   "app": "Outlook",
+   "title": "Inbox - maya@firm.example - Outlook",
+   "idle": 0
+  }
+ ]
+}

@@ -24,6 +24,39 @@ export interface BridgeHandlerDeps {
   };
   getHealthInfo: () => Record<string, unknown>;
   onBrowserEvent: (msg: Record<string, unknown>) => boolean;
+  /** Current pause / off-the-record / schedule state and whether recording is allowed now. */
+  getControls?: () => Record<string, unknown>;
+  /** Applies a control action and returns the new state, or an error message. */
+  applyControl?: (msg: Record<string, unknown>) => { ok: boolean; error?: string; controls?: Record<string, unknown> };
+  getCaptureHealth?: () => Record<string, unknown>;
+  /** The most recent events this device recorded, as they were queued (already redacted). */
+  getRecentEvents?: (limit: number) => Record<string, unknown>[];
+}
+
+function readJsonBody(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  handle: (msg: Record<string, unknown>) => void
+): void {
+  let body = '';
+  let oversized = false;
+  req.on('data', (chunk) => {
+    body += chunk;
+    if (body.length > 64 * 1024) oversized = true;
+  });
+  req.on('end', () => {
+    if (oversized) {
+      res.writeHead(413, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Payload too large' }));
+      return;
+    }
+    try {
+      handle(JSON.parse(body || '{}') as Record<string, unknown>);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid payload' }));
+    }
+  });
 }
 
 export function createBridgeRequestHandler(
@@ -109,6 +142,35 @@ export function createBridgeRequestHandler(
           res.end(JSON.stringify({ error: 'Invalid payload' }));
         }
       });
+      return;
+    }
+
+    if (req.method === 'GET' && rawUrl === '/controls' && deps.getControls) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(deps.getControls()));
+      return;
+    }
+
+    if (req.method === 'POST' && rawUrl === '/controls' && deps.applyControl) {
+      readJsonBody(req, res, (msg) => {
+        const result = deps.applyControl!(msg);
+        res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      });
+      return;
+    }
+
+    if (req.method === 'GET' && rawUrl === '/capture-health' && deps.getCaptureHealth) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(deps.getCaptureHealth()));
+      return;
+    }
+
+    if (req.method === 'GET' && rawUrl === '/recent-events' && deps.getRecentEvents) {
+      const limitRaw = Number(new URL(req.url || '/', 'http://127.0.0.1').searchParams.get('limit'));
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 100;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ events: deps.getRecentEvents(limit) }));
       return;
     }
 

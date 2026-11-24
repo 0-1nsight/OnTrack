@@ -1091,7 +1091,7 @@ export function createEngineRouter(deps: {
             bridgePort: 47621,
             bridgeSecret,
             heartbeatSeconds: 12,
-            pollSampleMs: 5000,
+            pollSampleMs: 2000,
             idleThresholdSeconds: 180,
           },
           null,
