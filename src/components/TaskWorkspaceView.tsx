@@ -12,6 +12,7 @@ import {
   GanttChartSquare,
   GripVertical,
   LayoutList,
+  MailPlus,
   PanelLeft,
   Pause,
   Pencil,
@@ -20,6 +21,9 @@ import {
   Search,
   Square,
   Trash2,
+  UserCheck,
+  UserPlus,
+  Users,
   X,
 } from 'lucide-react';
 import {
@@ -34,10 +38,19 @@ import {
   WorkspaceHierarchy,
 } from '../types';
 import {
+  ShiftUser,
+  TaskCollaborationInvite,
+  UserRole,
+} from '../engine/types';
+import {
   CATEGORY_LABELS,
   formatDuration,
   formatMinutesToHHMM,
 } from '../utils/workspaceConstants';
+import {
+  formatStaffRoleShort,
+  getAssignableStaffFilter,
+} from '../utils/roleConfig';
 import {
   resolveBoardForTask,
   resolveSectionForTask,
@@ -59,6 +72,10 @@ interface TaskWorkspaceViewProps {
   selectedDate: string;
   activeTimerTaskId: string | null;
   isTimerRunning: boolean;
+  staffUsers?: ShiftUser[];
+  taskInvites?: TaskCollaborationInvite[];
+  currentUserId?: string | null;
+  activeRole?: UserRole;
   onStartTimerForTask: (taskId: string) => void;
   onPauseTimer: () => void;
   onCreateTask: (newTask: Omit<Task, 'id' | 'createdAt'>) => void;
@@ -72,6 +89,19 @@ interface TaskWorkspaceViewProps {
   onOpenQuickLogForTask: (task: Task) => void;
   onOpenQuickLogForDate: (date: string) => void;
   onJumpToTimelineDate: (date: string) => void;
+  onInviteCollaborator?: (
+    taskId: string,
+    inviteeUserId: string,
+    note?: string
+  ) => Promise<void> | void;
+  onRespondTaskInvite?: (
+    inviteId: string,
+    action: 'accept' | 'decline'
+  ) => Promise<void> | void;
+  onRemoveCollaborator?: (
+    taskId: string,
+    targetUserId: string
+  ) => Promise<void> | void;
   onNotify?: (msg: string) => void;
 }
 
@@ -110,6 +140,10 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
   selectedDate,
   activeTimerTaskId,
   isTimerRunning,
+  staffUsers = [],
+  taskInvites = [],
+  currentUserId = null,
+  activeRole = 'accountant',
   onStartTimerForTask,
   onPauseTimer,
   onCreateTask,
@@ -119,9 +153,13 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
   onOpenQuickLogForTask,
   onOpenQuickLogForDate,
   onJumpToTimelineDate,
+  onInviteCollaborator,
+  onRespondTaskInvite,
+  onRemoveCollaborator,
   onNotify,
 }) => {
   const [viewMode, setViewMode] = useState<'board' | 'list' | 'gantt' | 'calendar'>('board');
+  const [taskScope, setTaskScope] = useState<'all' | 'mine' | 'shared' | 'invites'>('all');
   const [selection, setSelection] = useState<SidebarSelection>(() =>
     hierarchy.boards[0]
       ? { kind: 'board', boardId: hierarchy.boards[0].id }
@@ -134,6 +172,11 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
+  // Collaboration invitation draft state inside drawer
+  const [inviteeUserId, setInviteeUserId] = useState('');
+  const [inviteNote, setInviteNote] = useState('');
+  const [collabBusy, setCollabBusy] = useState(false);
+
   // Quick inline task creation form state
   const quickTitleInputRef = useRef<HTMLInputElement | null>(null);
   const [quickTitleError, setQuickTitleError] = useState(false);
@@ -144,6 +187,7 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
   const [newEstimate, setNewEstimate] = useState<number>(120);
   const [newDueDate, setNewDueDate] = useState<string>('');
   const [newTags, setNewTags] = useState<string>('deliverable');
+  const [newAssigneeId, setNewAssigneeId] = useState<string>('');
 
   // Board Section inline creation & editing state
   const [addingSectionOpen, setAddingSectionOpen] = useState(false);
@@ -240,9 +284,50 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
     [scopedBoards]
   );
 
-  // Filter tasks by sidebar scope + search + category
+  const internalStaff = useMemo(
+    () => staffUsers.filter((u) => u.role !== 'client'),
+    [staffUsers]
+  );
+
+  const pendingIncomingInvites = useMemo(
+    () =>
+      taskInvites.filter(
+        (inv) =>
+          inv.status === 'pending' &&
+          (!currentUserId || inv.inviteeUserId === currentUserId)
+      ),
+    [taskInvites, currentUserId]
+  );
+
+  const pendingOutgoingInvites = useMemo(
+    () =>
+      taskInvites.filter(
+        (inv) =>
+          inv.status === 'pending' &&
+          Boolean(currentUserId) &&
+          inv.inviterUserId === currentUserId &&
+          inv.inviteeUserId !== currentUserId
+      ),
+    [taskInvites, currentUserId]
+  );
+
+  // Filter tasks by sidebar scope + ownership/collaboration scope + search + category
   const filteredTasks = useMemo(() => {
     return tasks.filter((t) => {
+      if (taskScope === 'mine' && currentUserId) {
+        if (t.assignedUserId && t.assignedUserId !== currentUserId) {
+          return false;
+        }
+      }
+      if (taskScope === 'shared' && currentUserId) {
+        const isCollab = (t.collaboratorUserIds || []).includes(currentUserId);
+        const hasOtherCollabs =
+          t.assignedUserId === currentUserId &&
+          (t.collaboratorUserIds || []).length > 0;
+        if (!isCollab && !hasOtherCollabs) {
+          return false;
+        }
+      }
       const resolvedBoard = resolveBoardForTask(t, hierarchy.boards);
       if (
         selection.kind !== 'all' &&
@@ -257,9 +342,10 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
         const q = searchQuery.toLowerCase();
         const matchTitle = t.title.toLowerCase().includes(q);
         const matchProj = t.project.toLowerCase().includes(q);
+        const matchOwner = (t.assignedUserName || '').toLowerCase().includes(q);
         const matchBoard = resolvedBoard?.name.toLowerCase().includes(q);
         const matchTag = t.tags.some((tag) => tag.toLowerCase().includes(q));
-        if (!matchTitle && !matchProj && !matchBoard && !matchTag) {
+        if (!matchTitle && !matchProj && !matchOwner && !matchBoard && !matchTag) {
           return false;
         }
       }
@@ -267,6 +353,8 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
     });
   }, [
     tasks,
+    taskScope,
+    currentUserId,
     hierarchy.boards,
     selection.kind,
     scopedBoardIds,
@@ -542,6 +630,10 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
       setSelection({ kind: 'board', boardId: primaryBoard.id });
     }
 
+    const resolvedAssigneeId = newAssigneeId || currentUserId || undefined;
+    const resolvedAssignee = internalStaff.find(
+      (u) => u.userId === resolvedAssigneeId
+    );
     onCreateTask({
       title: cleanTitle,
       description: 'Created from OnTrack task workspace.',
@@ -557,6 +649,9 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
       startDate: selectedDate || new Date().toISOString().slice(0, 10),
       dueDate:
         newDueDate || selectedDate || new Date().toISOString().slice(0, 10),
+      assignedUserId: resolvedAssigneeId,
+      assignedUserName: resolvedAssignee?.name,
+      assignedUserRole: resolvedAssignee?.role,
     });
     setNewTitle('');
     setNewDueDate('');
@@ -991,26 +1086,106 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
           </div>
         </div>
 
-        {/* Multi-board switcher strip when viewing All / Space / Folder */}
-        {selection.kind !== 'board' && scopedBoards.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="text-slate-500 dark:text-slate-400 font-medium">
-              Boards in scope:
-            </span>
-            {scopedBoards.map((b) => (
-              <button
-                key={b.id}
-                type="button"
-                onClick={() => setSelection({ kind: 'board', boardId: b.id })}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-indigo-400 rounded-lg text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
-              >
-                <Columns3 className="w-3 h-3 text-indigo-500" />
-                <span>{b.name}</span>
-                <span className="font-mono tabular-nums text-[11px] text-slate-400">
-                  {b.sections.length}s
+        {/* Ownership / Sharing Scope Strip & Multi-board Switcher */}
+        <div className="flex flex-wrap items-center justify-between gap-2.5 text-xs">
+          <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-x-auto max-w-full">
+            <button
+              type="button"
+              onClick={() => setTaskScope('all')}
+              className={`px-2.5 py-1 rounded-md font-medium whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                taskScope === 'all'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              All Firm Tasks
+            </button>
+            <button
+              type="button"
+              onClick={() => setTaskScope('mine')}
+              className={`px-2.5 py-1 rounded-md font-medium whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                taskScope === 'mine'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              Assigned to Me
+            </button>
+            <button
+              type="button"
+              onClick={() => setTaskScope('shared')}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md font-medium whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                taskScope === 'shared'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>Shared with Me</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setTaskScope('invites')}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md font-medium whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                taskScope === 'invites'
+                  ? 'bg-white dark:bg-slate-900 text-indigo-700 dark:text-indigo-300 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <MailPlus className="w-3.5 h-3.5" />
+              <span>Invites</span>
+              {pendingIncomingInvites.length > 0 && (
+                <span className="font-mono tabular-nums text-[11px] font-bold text-indigo-600 dark:text-indigo-400">
+                  ({pendingIncomingInvites.length})
                 </span>
-              </button>
-            ))}
+              )}
+            </button>
+          </div>
+
+          {selection.kind !== 'board' && scopedBoards.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-slate-500 dark:text-slate-400 font-medium">
+                Boards in scope:
+              </span>
+              {scopedBoards.map((b) => (
+                <button
+                  key={b.id}
+                  type="button"
+                  onClick={() => setSelection({ kind: 'board', boardId: b.id })}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-indigo-400 rounded-lg text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
+                >
+                  <Columns3 className="w-3 h-3 text-indigo-500" />
+                  <span>{b.name}</span>
+                  <span className="font-mono tabular-nums text-[11px] text-slate-400">
+                    {b.sections.length}s
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Actionable Banner when incoming collaboration invites are pending */}
+        {pendingIncomingInvites.length > 0 && taskScope !== 'invites' && (
+          <div className="bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/60 rounded-xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2 text-indigo-950 dark:text-indigo-200">
+              <MailPlus className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+              <span>
+                You have{' '}
+                <strong className="font-mono tabular-nums">
+                  {pendingIncomingInvites.length}
+                </strong>{' '}
+                pending internal task collaboration invite
+                {pendingIncomingInvites.length === 1 ? '' : 's'} ready for review.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setTaskScope('invites')}
+              className="px-3 py-1 font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              Review Invites
+            </button>
           </div>
         )}
 
@@ -1104,6 +1279,31 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
             placeholder="tags (comma-sep)"
             className="w-24 px-2 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-300"
           />
+          {internalStaff.length > 0 && (
+            <select
+              aria-label="Assign new task to staff member"
+              value={newAssigneeId || currentUserId || ''}
+              onChange={(e) => setNewAssigneeId(e.target.value)}
+              className="px-2.5 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-300 max-w-[190px]"
+            >
+              {internalStaff.map((member) => {
+                const check = getAssignableStaffFilter({
+                  actorRole: activeRole,
+                  actorUserId: currentUserId,
+                  targetUser: member,
+                });
+                return (
+                  <option
+                    key={member.userId}
+                    value={member.userId}
+                    disabled={!check.allowed}
+                  >
+                    Assign: {member.name} ({formatStaffRoleShort(member.role)})
+                  </option>
+                );
+              })}
+            </select>
+          )}
           <button
             type="submit"
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
@@ -1112,6 +1312,142 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
             <span>Add Task</span>
           </button>
         </form>
+
+        {taskScope === 'invites' && (
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
+              <div>
+                <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white">
+                  Internal Task Collaboration Invitations
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Accepting a collaboration invite allows you to edit the shared task and auto-track desktop/browser work directly against it.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTaskScope('all')}
+                className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg cursor-pointer"
+              >
+                Back to Board
+              </button>
+            </div>
+
+            {pendingIncomingInvites.length === 0 ? (
+              <p className="text-xs text-slate-500 dark:text-slate-400 py-2">
+                You have no pending collaboration invitations right now. Open any task to invite firm colleagues to collaborate.
+              </p>
+            ) : (
+              <div className="divide-y divide-slate-200 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
+                {pendingIncomingInvites.map((inv) => (
+                  <div
+                    key={inv.id}
+                    className="p-3.5 flex flex-wrap items-center justify-between gap-3 bg-slate-50/60 dark:bg-slate-800/30 text-xs"
+                  >
+                    <div className="space-y-0.5 min-w-0">
+                      <div className="font-semibold text-slate-900 dark:text-white">
+                        {inv.taskTitle}
+                      </div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-1.5">
+                        <span>{inv.clientName}</span>
+                        <span>·</span>
+                        <span>
+                          Invited by{' '}
+                          <strong className="font-medium text-slate-700 dark:text-slate-300">
+                            {inv.inviterName}
+                          </strong>
+                        </span>
+                        {inv.note && (
+                          <>
+                            <span>·</span>
+                            <span className="italic text-slate-600 dark:text-slate-300">
+                              &ldquo;{inv.note}&rdquo;
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        disabled={collabBusy}
+                        onClick={async () => {
+                          if (!onRespondTaskInvite) return;
+                          setCollabBusy(true);
+                          try {
+                            await onRespondTaskInvite(inv.id, 'decline');
+                          } finally {
+                            setCollabBusy(false);
+                          }
+                        }}
+                        className="px-3 py-1.5 font-medium text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer disabled:opacity-50"
+                      >
+                        Decline
+                      </button>
+                      <button
+                        type="button"
+                        disabled={collabBusy}
+                        onClick={async () => {
+                          if (!onRespondTaskInvite) return;
+                          setCollabBusy(true);
+                          try {
+                            await onRespondTaskInvite(inv.id, 'accept');
+                          } finally {
+                            setCollabBusy(false);
+                          }
+                        }}
+                        className="px-3 py-1.5 font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg cursor-pointer disabled:opacity-50"
+                      >
+                        Accept &amp; Join Task
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {pendingOutgoingInvites.length > 0 && (
+              <div className="pt-2 space-y-2">
+                <h3 className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  Sent Collaboration Invites ({pendingOutgoingInvites.length})
+                </h3>
+                <div className="divide-y divide-slate-200 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden text-xs">
+                  {pendingOutgoingInvites.map((inv) => (
+                    <div
+                      key={inv.id}
+                      className="px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 bg-white dark:bg-slate-900"
+                    >
+                      <div className="min-w-0">
+                        <span className="font-semibold text-slate-900 dark:text-white">
+                          {inv.inviteeName}
+                        </span>{' '}
+                        <span className="text-slate-500">
+                          ({formatStaffRoleShort(inv.inviteeRole)}) · {inv.taskTitle}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={collabBusy}
+                        onClick={async () => {
+                          if (!onRemoveCollaborator) return;
+                          setCollabBusy(true);
+                          try {
+                            await onRemoveCollaborator(inv.taskId, inv.inviteeUserId);
+                          } finally {
+                            setCollabBusy(false);
+                          }
+                        }}
+                        className="px-2.5 py-1 text-[11px] font-medium text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded cursor-pointer"
+                      >
+                        Revoke
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Empty State Notice */}
         {filteredTasks.length === 0 && (
@@ -1421,21 +1757,55 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
                               {task.title}
                             </div>
 
-                            {(task.subtasks.length > 0 || task.dueDate) && (
+                            {(task.subtasks.length > 0 ||
+                              task.dueDate ||
+                              task.assignedUserName ||
+                              (task.collaboratorUserIds &&
+                                task.collaboratorUserIds.length > 0)) && (
                               <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-                                {task.dueDate && (
-                                  <span className="font-mono tabular-nums">
-                                    Due {task.dueDate}
+                                {task.assignedUserName && (
+                                  <span className="inline-flex items-center gap-1 font-medium text-slate-700 dark:text-slate-300">
+                                    <UserCheck className="w-3 h-3 text-indigo-500 shrink-0" />
+                                    {task.assignedUserId === currentUserId
+                                      ? 'You'
+                                      : task.assignedUserName}
                                   </span>
                                 )}
-                                {task.subtasks.length > 0 && task.dueDate && (
-                                  <span>·</span>
+                                {task.collaboratorUserIds &&
+                                  task.collaboratorUserIds.length > 0 && (
+                                    <>
+                                      {task.assignedUserName && <span>·</span>}
+                                      <span className="font-mono tabular-nums text-indigo-600 dark:text-indigo-400">
+                                        {currentUserId &&
+                                        task.assignedUserId !== currentUserId &&
+                                        task.collaboratorUserIds.includes(
+                                          currentUserId
+                                        )
+                                          ? 'Shared with you'
+                                          : `+${task.collaboratorUserIds.length} shared`}
+                                      </span>
+                                    </>
+                                  )}
+                                {task.dueDate && (
+                                  <>
+                                    {(task.assignedUserName ||
+                                      (task.collaboratorUserIds &&
+                                        task.collaboratorUserIds.length > 0)) && (
+                                      <span>·</span>
+                                    )}
+                                    <span className="font-mono tabular-nums">
+                                      Due {task.dueDate}
+                                    </span>
+                                  </>
                                 )}
                                 {task.subtasks.length > 0 && (
-                                  <span className="font-mono tabular-nums">
-                                    {completedSubtasks}/{task.subtasks.length}{' '}
-                                    steps
-                                  </span>
+                                  <>
+                                    <span>·</span>
+                                    <span className="font-mono tabular-nums">
+                                      {completedSubtasks}/{task.subtasks.length}{' '}
+                                      steps
+                                    </span>
+                                  </>
                                 )}
                               </div>
                             )}
@@ -1851,6 +2221,32 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
                                     <span className="font-medium text-slate-700 dark:text-slate-300">
                                       {task.project}
                                     </span>
+                                    {task.assignedUserName && (
+                                      <>
+                                        <span>·</span>
+                                        <span>
+                                          Owner:{' '}
+                                          {task.assignedUserId === currentUserId
+                                            ? 'You'
+                                            : task.assignedUserName}
+                                        </span>
+                                      </>
+                                    )}
+                                    {task.collaboratorUserIds &&
+                                      task.collaboratorUserIds.length > 0 && (
+                                        <>
+                                          <span>·</span>
+                                          <span className="text-indigo-600 dark:text-indigo-400 font-mono tabular-nums">
+                                            {currentUserId &&
+                                            task.assignedUserId !== currentUserId &&
+                                            task.collaboratorUserIds.includes(
+                                              currentUserId
+                                            )
+                                              ? 'Shared with you'
+                                              : `+${task.collaboratorUserIds.length} collab`}
+                                          </span>
+                                        </>
+                                      )}
                                     <span>·</span>
                                     <span>{CATEGORY_LABELS[task.category]}</span>
                                     {task.subtasks.length > 0 && (
@@ -2030,6 +2426,9 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
           intent={objectModal}
           hierarchy={hierarchy}
           selectedDate={selectedDate}
+          staffUsers={staffUsers}
+          currentUserId={currentUserId}
+          activeRole={activeRole}
           onClose={() => setObjectModal(null)}
           onSaveSpace={handleSaveSpace}
           onSaveFolder={handleSaveFolder}
@@ -2232,6 +2631,306 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
                     }
                     className="w-full px-3 py-2 font-mono tabular-nums bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
                   />
+                </div>
+              </div>
+
+              {/* Assignment & Internal Firm Collaboration Panel */}
+              <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 space-y-4 text-xs">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <label
+                      htmlFor="drawer-task-owner-select"
+                      className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5"
+                    >
+                      <UserCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                      <span>Primary Owner</span>
+                    </label>
+                    {selectedTask.assignedUserRole && (
+                      <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                        {formatStaffRoleShort(selectedTask.assignedUserRole)}
+                      </span>
+                    )}
+                  </div>
+                  {internalStaff.length > 0 ? (
+                    <select
+                      id="drawer-task-owner-select"
+                      value={selectedTask.assignedUserId || ''}
+                      onChange={(e) => {
+                        const targetMember = internalStaff.find(
+                          (u) => u.userId === e.target.value
+                        );
+                        if (!targetMember) return;
+                        onUpdateTask(selectedTask.id, {
+                          assignedUserId: targetMember.userId,
+                          assignedUserName: targetMember.name,
+                          assignedUserRole: targetMember.role,
+                        });
+                      }}
+                      className="w-full px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                    >
+                      {!selectedTask.assignedUserId && (
+                        <option value="">Unassigned</option>
+                      )}
+                      {internalStaff.map((member) => {
+                        const check = getAssignableStaffFilter({
+                          actorRole: activeRole,
+                          actorUserId: currentUserId,
+                          targetUser: member,
+                          taskOwnerUserId: selectedTask.assignedUserId,
+                          collaboratorUserIds: selectedTask.collaboratorUserIds,
+                        });
+                        return (
+                          <option
+                            key={member.userId}
+                            value={member.userId}
+                            disabled={!check.allowed}
+                          >
+                            {member.name} ({formatStaffRoleShort(member.role)})
+                            {member.userId === currentUserId ? ' · You' : ''}
+                            {!check.allowed ? ' · Restricted' : ''}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  ) : (
+                    <div className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-300">
+                      {selectedTask.assignedUserName || 'Current Workspace Member'}
+                    </div>
+                  )}
+                  {activeRole === 'accountant' && (
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Accountants can self-assign or delegate owned tasks to peer accountants.
+                    </p>
+                  )}
+                </div>
+
+                {/* Internal Collaborators & Share Invitations */}
+                <div className="pt-3 border-t border-slate-200 dark:border-slate-700/70 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                      <Users className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                      <span>
+                        Collaborators (
+                        {(selectedTask.collaborators || []).length})
+                      </span>
+                    </span>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Internal firm members only
+                    </span>
+                  </div>
+
+                  {(selectedTask.collaborators || []).length > 0 ? (
+                    <div className="space-y-1.5">
+                      {(selectedTask.collaborators || []).map((collab) => {
+                        const canRemove =
+                          activeRole === 'team_lead' ||
+                          activeRole === 'line_manager' ||
+                          activeRole === 'executive' ||
+                          activeRole === 'admin_it' ||
+                          selectedTask.assignedUserId === currentUserId ||
+                          collab.userId === currentUserId;
+                        return (
+                          <div
+                            key={collab.userId}
+                            className="flex items-center justify-between gap-2 px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg"
+                          >
+                            <div className="min-w-0 truncate">
+                              <span className="font-medium text-slate-900 dark:text-white">
+                                {collab.name}
+                              </span>{' '}
+                              <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                                ({formatStaffRoleShort(collab.role)})
+                              </span>
+                            </div>
+                            {canRemove && onRemoveCollaborator && (
+                              <button
+                                type="button"
+                                disabled={collabBusy}
+                                onClick={async () => {
+                                  setCollabBusy(true);
+                                  try {
+                                    await onRemoveCollaborator(
+                                      selectedTask.id,
+                                      collab.userId
+                                    );
+                                  } finally {
+                                    setCollabBusy(false);
+                                  }
+                                }}
+                                className="text-[11px] font-medium text-rose-600 hover:underline shrink-0 cursor-pointer disabled:opacity-50"
+                              >
+                                {collab.userId === currentUserId
+                                  ? 'Leave'
+                                  : 'Remove'}
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      No collaborators yet. Shared members can edit and auto-track time against this task.
+                    </p>
+                  )}
+
+                  {/* Pending Invites for this task */}
+                  {taskInvites
+                    .filter(
+                      (inv) =>
+                        inv.taskId === selectedTask.id &&
+                        inv.status === 'pending'
+                    )
+                    .map((inv) => {
+                      const canRevoke =
+                        activeRole === 'team_lead' ||
+                        activeRole === 'line_manager' ||
+                        activeRole === 'executive' ||
+                        activeRole === 'admin_it' ||
+                        selectedTask.assignedUserId === currentUserId ||
+                        inv.inviterUserId === currentUserId;
+                      return (
+                        <div
+                          key={inv.id}
+                          className="flex items-center justify-between gap-2 px-2.5 py-1.5 bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/50 rounded-lg text-[11px]"
+                        >
+                          <div className="min-w-0 truncate text-amber-900 dark:text-amber-200">
+                            Pending invite: <strong>{inv.inviteeName}</strong> (
+                            {formatStaffRoleShort(inv.inviteeRole)})
+                          </div>
+                          {inv.inviteeUserId === currentUserId &&
+                          onRespondTaskInvite ? (
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                disabled={collabBusy}
+                                onClick={async () => {
+                                  setCollabBusy(true);
+                                  try {
+                                    await onRespondTaskInvite(inv.id, 'accept');
+                                  } finally {
+                                    setCollabBusy(false);
+                                  }
+                                }}
+                                className="px-2 py-0.5 font-semibold text-white bg-emerald-600 rounded cursor-pointer"
+                              >
+                                Accept
+                              </button>
+                              <button
+                                type="button"
+                                disabled={collabBusy}
+                                onClick={async () => {
+                                  setCollabBusy(true);
+                                  try {
+                                    await onRespondTaskInvite(inv.id, 'decline');
+                                  } finally {
+                                    setCollabBusy(false);
+                                  }
+                                }}
+                                className="px-2 py-0.5 text-slate-600 dark:text-slate-300 hover:underline cursor-pointer"
+                              >
+                                Decline
+                              </button>
+                            </div>
+                          ) : (
+                            canRevoke &&
+                            onRemoveCollaborator && (
+                              <button
+                                type="button"
+                                disabled={collabBusy}
+                                onClick={async () => {
+                                  setCollabBusy(true);
+                                  try {
+                                    await onRemoveCollaborator(
+                                      selectedTask.id,
+                                      inv.inviteeUserId
+                                    );
+                                  } finally {
+                                    setCollabBusy(false);
+                                  }
+                                }}
+                                className="text-rose-600 hover:underline shrink-0 cursor-pointer"
+                              >
+                                Revoke
+                              </button>
+                            )
+                          )}
+                        </div>
+                      );
+                    })}
+
+                  {/* Invite Firm Colleague Controls */}
+                  {onInviteCollaborator && internalStaff.length > 0 && (
+                    <div className="pt-1 space-y-2">
+                      {(() => {
+                        const eligibleInvitees = internalStaff.filter(
+                          (member) =>
+                            member.userId !== selectedTask.assignedUserId &&
+                            !(selectedTask.collaboratorUserIds || []).includes(
+                              member.userId
+                            ) &&
+                            !(selectedTask.pendingInviteUserIds || []).includes(
+                              member.userId
+                            )
+                        );
+                        return (
+                          <>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <select
+                                aria-label="Select firm colleague to invite"
+                                value={inviteeUserId}
+                                onChange={(e) => setInviteeUserId(e.target.value)}
+                                className="flex-1 min-w-[170px] px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                              >
+                                <option value="">
+                                  {eligibleInvitees.length === 0
+                                    ? 'All firm staff already added'
+                                    : 'Invite firm colleague to collaborate...'}
+                                </option>
+                                {eligibleInvitees.map((member) => (
+                                  <option key={member.userId} value={member.userId}>
+                                    {member.name} ({formatStaffRoleShort(member.role)})
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                disabled={!inviteeUserId || collabBusy}
+                                onClick={async () => {
+                                  if (!inviteeUserId) return;
+                                  setCollabBusy(true);
+                                  try {
+                                    await onInviteCollaborator(
+                                      selectedTask.id,
+                                      inviteeUserId,
+                                      inviteNote.trim() || undefined
+                                    );
+                                    setInviteeUserId('');
+                                    setInviteNote('');
+                                  } finally {
+                                    setCollabBusy(false);
+                                  }
+                                }}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                              >
+                                <UserPlus className="w-3.5 h-3.5" />
+                                <span>Send Invite</span>
+                              </button>
+                            </div>
+                            {inviteeUserId && (
+                              <input
+                                type="text"
+                                value={inviteNote}
+                                onChange={(e) => setInviteNote(e.target.value)}
+                                placeholder="Optional handoff or collaboration note..."
+                                className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                              />
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  )}
                 </div>
               </div>
 

@@ -33,6 +33,9 @@ import {
   ShiftUser,
   StoredFileRecord,
   SyncConflict,
+  TaskCollaborationInvite,
+  TaskCollaborationInviteStatus,
+  TaskCollaboratorSummary,
   TaskTemplate,
   TaskTemplateStep,
   TenantConfig,
@@ -80,6 +83,54 @@ export function isWithinScheduledShiftUtc(
     if (day !== 0 && day !== 6) return false;
   }
   return isHourWithinShiftUtc(d.getUTCHours(), startHourUtc, endHourUtc);
+}
+
+export function canActorAssignTask(params: {
+  actorUserId: string;
+  actorRole: UserRole;
+  targetAssigneeUserId: string;
+  targetAssigneeRole: UserRole;
+  existingTask?: Pick<EngineTask, 'assignedUserId' | 'collaboratorUserIds'>;
+}): { allowed: boolean; reason?: string } {
+  const { actorUserId, actorRole, targetAssigneeUserId, targetAssigneeRole, existingTask } = params;
+
+  if (actorRole === 'client') {
+    return { allowed: false, reason: 'Client Portal users cannot assign internal tasks.' };
+  }
+  if (targetAssigneeRole === 'client') {
+    return { allowed: false, reason: 'Tasks cannot be assigned to external Client Portal accounts.' };
+  }
+
+  if (
+    actorRole === 'team_lead' ||
+    actorRole === 'line_manager' ||
+    actorRole === 'executive' ||
+    actorRole === 'admin_it'
+  ) {
+    return { allowed: true };
+  }
+
+  // Accountant: can self-assign or delegate/reassign to peer Accountants on owned/shared tasks
+  if (existingTask) {
+    const isOwnerOrCollab =
+      existingTask.assignedUserId === actorUserId ||
+      Boolean(existingTask.collaboratorUserIds?.includes(actorUserId));
+    if (!isOwnerOrCollab) {
+      return {
+        allowed: false,
+        reason: 'Accountants can only delegate or reassign tasks assigned to or shared with them.',
+      };
+    }
+  }
+
+  if (targetAssigneeUserId !== actorUserId && targetAssigneeRole !== 'accountant') {
+    return {
+      allowed: false,
+      reason: 'Accountants can only self-assign or delegate tasks to peer Accountants. Higher-level assignments require Team Lead, Manager, Executive, or Admin/IT.',
+    };
+  }
+
+  return { allowed: true };
 }
 
 export class EngineSQLStore {
@@ -1536,25 +1587,87 @@ export class EngineSQLStore {
   public async getTasks(tenantId: string): Promise<EngineTask[]> {
     await this.ready();
     return this.db.withTenantTransaction({ tenantId }, async (tx) => {
-      const rows = await tx.all<any>(
-        'SELECT * FROM engine_tasks WHERE tenant_id = ? ORDER BY due_date_utc ASC',
-        tenantId
-      );
-      return rows.map((r) => ({
-        id: r.id,
-        tenantId: r.tenant_id,
-        clientId: r.client_id,
-        clientName: r.client_name,
-        templateId: r.template_id || undefined,
-        title: r.title,
-        period: r.period,
-        status: r.status,
-        dueDateUtc: r.due_date_utc,
-        assignedUserId: r.assigned_user_id,
-        estimatedMinutes: r.estimated_minutes,
-        version: r.version,
-        updatedAtUtc: r.updated_at_utc,
-      }));
+      const [rows, userRows, collabRows, pendingInviteRows] = await Promise.all([
+        tx.all<any>(
+          'SELECT * FROM engine_tasks WHERE tenant_id = ? ORDER BY due_date_utc ASC',
+          tenantId
+        ),
+        tx.all<any>(
+          'SELECT user_id, name, email, role, team_id FROM shift_users WHERE tenant_id = ?',
+          tenantId
+        ),
+        tx.all<any>(
+          'SELECT * FROM task_collaborators WHERE tenant_id = ? ORDER BY created_at_utc ASC',
+          tenantId
+        ),
+        tx.all<any>(
+          "SELECT task_id, invitee_user_id FROM task_collaboration_invites WHERE tenant_id = ? AND status = 'pending'",
+          tenantId
+        ),
+      ]);
+
+      const userMap = new Map<
+        string,
+        { name: string; email: string; role: UserRole; teamId: string }
+      >();
+      for (const u of userRows) {
+        userMap.set(u.user_id, {
+          name: u.name,
+          email: u.email,
+          role: u.role as UserRole,
+          teamId: u.team_id,
+        });
+      }
+
+      const collabByTask = new Map<string, TaskCollaboratorSummary[]>();
+      for (const c of collabRows) {
+        const u = userMap.get(c.user_id);
+        const list = collabByTask.get(c.task_id) || [];
+        list.push({
+          userId: c.user_id,
+          name: u?.name || c.user_id,
+          email: u?.email || '',
+          role: u?.role || 'accountant',
+          teamId: u?.teamId || 'team_audit',
+          canEdit: Boolean(c.can_edit),
+          canAutoTrack: Boolean(c.can_auto_track),
+          addedAtUtc: c.created_at_utc,
+        });
+        collabByTask.set(c.task_id, list);
+      }
+
+      const pendingByTask = new Map<string, string[]>();
+      for (const p of pendingInviteRows) {
+        const list = pendingByTask.get(p.task_id) || [];
+        list.push(p.invitee_user_id);
+        pendingByTask.set(p.task_id, list);
+      }
+
+      return rows.map((r) => {
+        const owner = userMap.get(r.assigned_user_id);
+        const collabs = collabByTask.get(r.id) || [];
+        const pendingInviteUserIds = pendingByTask.get(r.id) || [];
+        return {
+          id: r.id,
+          tenantId: r.tenant_id,
+          clientId: r.client_id,
+          clientName: r.client_name,
+          templateId: r.template_id || undefined,
+          title: r.title,
+          period: r.period,
+          status: r.status,
+          dueDateUtc: r.due_date_utc,
+          assignedUserId: r.assigned_user_id,
+          assignedUserName: owner?.name || r.assigned_user_id,
+          assignedUserRole: owner?.role || 'accountant',
+          collaboratorUserIds: collabs.map((c) => c.userId),
+          collaborators: collabs,
+          pendingInviteUserIds,
+          estimatedMinutes: r.estimated_minutes,
+          version: r.version,
+          updatedAtUtc: r.updated_at_utc,
+        };
+      });
     });
   }
 
@@ -1564,53 +1677,73 @@ export class EngineSQLStore {
     await this.ready();
     const id = `tsk-eng-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
     const updatedAtUtc = new Date().toISOString();
-    let resolvedClientId = task.clientId;
-    let resolvedClientName = task.clientName;
+    const txResult = await this.db.withTenantTransaction(
+      { tenantId: task.tenantId },
+      async (tx) => {
+        let resolvedClientId = task.clientId;
+        let resolvedClientName = task.clientName;
+        let ownerInfo: { name: string; role: UserRole } | null = null;
 
-    await this.db.withTenantTransaction({ tenantId: task.tenantId }, async (tx) => {
-      const existingClient = await tx.get<{ id: string; legal_name: string }>(
-        'SELECT id, legal_name FROM clients WHERE tenant_id = ? AND (id = ? OR LOWER(legal_name) = LOWER(?))',
-        task.tenantId,
-        task.clientId,
-        task.clientName
-      );
-      if (existingClient) {
-        resolvedClientId = existingClient.id;
-        resolvedClientName = existingClient.legal_name;
-      } else {
-        await tx.run(
-          `INSERT INTO clients
-           (id, tenant_id, legal_name, aliases_json, codes_json, folder_patterns_json, known_domains_json, restricted_user_ids_json, source, updated_at_utc)
-           VALUES (?, ?, ?, '[]', '[]', '[]', '[]', '[]', 'manual', ?)
-           ON CONFLICT (id) DO NOTHING`,
-          resolvedClientId,
+        const existingClient = await tx.get<{ id: string; legal_name: string }>(
+          'SELECT id, legal_name FROM clients WHERE tenant_id = ? AND (id = ? OR LOWER(legal_name) = LOWER(?))',
           task.tenantId,
-          resolvedClientName || 'Internal Firm',
+          task.clientId,
+          task.clientName
+        );
+        if (existingClient) {
+          resolvedClientId = existingClient.id;
+          resolvedClientName = existingClient.legal_name;
+        } else {
+          await tx.run(
+            `INSERT INTO clients
+             (id, tenant_id, legal_name, aliases_json, codes_json, folder_patterns_json, known_domains_json, restricted_user_ids_json, source, updated_at_utc)
+             VALUES (?, ?, ?, '[]', '[]', '[]', '[]', '[]', 'manual', ?)
+             ON CONFLICT (id) DO NOTHING`,
+            resolvedClientId,
+            task.tenantId,
+            resolvedClientName || 'Internal Firm',
+            updatedAtUtc
+          );
+        }
+
+        const ownerRow = await tx.get<{ name: string; role: string }>(
+          'SELECT name, role FROM shift_users WHERE tenant_id = ? AND user_id = ?',
+          task.tenantId,
+          task.assignedUserId
+        );
+        if (ownerRow) {
+          ownerInfo = { name: ownerRow.name, role: ownerRow.role as UserRole };
+        }
+
+        await tx.run(
+          `INSERT INTO engine_tasks (id, tenant_id, client_id, client_name, template_id, title, period, status, due_date_utc, assigned_user_id, estimated_minutes, version, updated_at_utc)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+          id,
+          task.tenantId,
+          resolvedClientId,
+          resolvedClientName,
+          task.templateId || null,
+          task.title,
+          task.period,
+          task.status,
+          task.dueDateUtc,
+          task.assignedUserId,
+          task.estimatedMinutes,
           updatedAtUtc
         );
-      }
 
-      await tx.run(
-        `INSERT INTO engine_tasks (id, tenant_id, client_id, client_name, template_id, title, period, status, due_date_utc, assigned_user_id, estimated_minutes, version, updated_at_utc)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-        id,
-        task.tenantId,
-        resolvedClientId,
-        resolvedClientName,
-        task.templateId || null,
-        task.title,
-        task.period,
-        task.status,
-        task.dueDateUtc,
-        task.assignedUserId,
-        task.estimatedMinutes,
-        updatedAtUtc
-      );
-    });
+        return { resolvedClientId, resolvedClientName, ownerInfo };
+      }
+    );
     return {
       ...task,
-      clientId: resolvedClientId,
-      clientName: resolvedClientName,
+      clientId: txResult.resolvedClientId,
+      clientName: txResult.resolvedClientName,
+      assignedUserName: txResult.ownerInfo?.name || task.assignedUserId,
+      assignedUserRole: txResult.ownerInfo?.role || 'accountant',
+      collaboratorUserIds: [],
+      collaborators: [],
+      pendingInviteUserIds: [],
       id,
       version: 1,
       updatedAtUtc,
@@ -1633,7 +1766,7 @@ export class EngineSQLStore {
   }): Promise<EngineTask> {
     await this.ready();
     const nowIso = new Date().toISOString();
-    return this.db.withTenantTransaction({ tenantId: params.tenantId }, async (tx) => {
+    await this.db.withTenantTransaction({ tenantId: params.tenantId }, async (tx) => {
       const existing = await tx.get<any>(
         'SELECT * FROM engine_tasks WHERE tenant_id = ? AND id = ?',
         params.tenantId,
@@ -1675,22 +1808,31 @@ export class EngineSQLStore {
         params.taskId
       );
 
-      return {
-        id: existing.id,
-        tenantId: existing.tenant_id,
-        clientId: nextClientId,
-        clientName: nextClientName,
-        templateId: existing.template_id || undefined,
-        title: nextTitle,
-        period: nextPeriod,
-        status: nextStatus,
-        dueDateUtc: nextDue,
-        assignedUserId: nextAssigned,
-        estimatedMinutes: nextEst,
-        version: nextVersion,
-        updatedAtUtc: nowIso,
-      };
+      // If newly assigned user was a collaborator or pending invitee, promote cleanly to Primary Owner
+      if (nextAssigned && nextAssigned !== existing.assigned_user_id) {
+        await tx.run(
+          'DELETE FROM task_collaborators WHERE tenant_id = ? AND task_id = ? AND user_id = ?',
+          params.tenantId,
+          params.taskId,
+          nextAssigned
+        );
+        await tx.run(
+          "UPDATE task_collaboration_invites SET status = 'accepted', responded_at_utc = ? WHERE tenant_id = ? AND task_id = ? AND invitee_user_id = ? AND status = 'pending'",
+          nowIso,
+          params.tenantId,
+          params.taskId,
+          nextAssigned
+        );
+      }
     });
+
+    const refreshed = (await this.getTasks(params.tenantId)).find(
+      (t) => t.id === params.taskId
+    );
+    if (!refreshed) {
+      throw new HttpError(404, 'TASK_NOT_FOUND', 'Task not found.');
+    }
+    return refreshed;
   }
 
   public async deleteEngineTask(params: {
@@ -1708,6 +1850,16 @@ export class EngineSQLStore {
         throw new HttpError(404, 'TASK_NOT_FOUND', 'Task not found.');
       }
       await tx.run(
+        'DELETE FROM task_collaborators WHERE tenant_id = ? AND task_id = ?',
+        params.tenantId,
+        params.taskId
+      );
+      await tx.run(
+        'DELETE FROM task_collaboration_invites WHERE tenant_id = ? AND task_id = ?',
+        params.tenantId,
+        params.taskId
+      );
+      await tx.run(
         'DELETE FROM checklist_overrides WHERE tenant_id = ? AND task_id = ?',
         params.tenantId,
         params.taskId
@@ -1724,6 +1876,356 @@ export class EngineSQLStore {
       );
       return existing;
     });
+  }
+
+  public async listTaskCollaborationInvites(params: {
+    tenantId: string;
+    viewerUserId?: string;
+    viewerRole?: UserRole;
+  }): Promise<TaskCollaborationInvite[]> {
+    await this.ready();
+    const { tenantId, viewerUserId, viewerRole } = params;
+    return this.db.withTenantTransaction({ tenantId }, async (tx) => {
+      const rows = await tx.all<any>(
+        `SELECT i.*,
+                t.title AS task_title, t.client_name AS client_name, t.period AS period,
+                inviter.name AS inviter_name, inviter.role AS inviter_role,
+                invitee.name AS invitee_name, invitee.email AS invitee_email, invitee.role AS invitee_role
+         FROM task_collaboration_invites i
+         JOIN engine_tasks t ON t.tenant_id = i.tenant_id AND t.id = i.task_id
+         LEFT JOIN shift_users inviter ON inviter.tenant_id = i.tenant_id AND inviter.user_id = i.inviter_user_id
+         LEFT JOIN shift_users invitee ON invitee.tenant_id = i.tenant_id AND invitee.user_id = i.invitee_user_id
+         WHERE i.tenant_id = ?
+         ORDER BY i.created_at_utc DESC`,
+        tenantId
+      );
+      return rows
+        .filter((r) => {
+          if (!viewerUserId) return true;
+          if (
+            viewerRole === 'team_lead' ||
+            viewerRole === 'line_manager' ||
+            viewerRole === 'executive' ||
+            viewerRole === 'admin_it'
+          ) {
+            return true;
+          }
+          return (
+            r.invitee_user_id === viewerUserId ||
+            r.inviter_user_id === viewerUserId
+          );
+        })
+        .map((r) => ({
+          id: r.id,
+          tenantId: r.tenant_id,
+          taskId: r.task_id,
+          taskTitle: r.task_title || 'Task',
+          clientName: r.client_name || '',
+          period: r.period || '',
+          inviterUserId: r.inviter_user_id,
+          inviterName: r.inviter_name || r.inviter_user_id,
+          inviterRole: (r.inviter_role || 'accountant') as UserRole,
+          inviteeUserId: r.invitee_user_id,
+          inviteeName: r.invitee_name || r.invitee_user_id,
+          inviteeEmail: r.invitee_email || '',
+          inviteeRole: (r.invitee_role || 'accountant') as UserRole,
+          status: r.status as TaskCollaborationInviteStatus,
+          note: r.note || '',
+          respondedAtUtc: r.responded_at_utc || null,
+          createdAtUtc: r.created_at_utc,
+        }));
+    });
+  }
+
+  public async inviteTaskCollaborator(params: {
+    tenantId: string;
+    taskId: string;
+    inviterUserId: string;
+    inviterRole: UserRole;
+    inviteeUserId: string;
+    note?: string;
+  }): Promise<{ invite: TaskCollaborationInvite; task: EngineTask }> {
+    await this.ready();
+    if (params.inviterRole === 'client') {
+      throw new HttpError(403, 'FORBIDDEN', 'Client Portal users cannot invite task collaborators.');
+    }
+    const cleanNote = (params.note || '').trim().slice(0, 400);
+    const nowIso = new Date().toISOString();
+    const inviteId = `tinv-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+
+    await this.db.withTenantTransaction(
+      { tenantId: params.tenantId, userId: params.inviterUserId },
+      async (tx) => {
+        const taskRow = await tx.get<any>(
+          'SELECT * FROM engine_tasks WHERE tenant_id = ? AND id = ?',
+          params.tenantId,
+          params.taskId
+        );
+        if (!taskRow) {
+          throw new HttpError(404, 'TASK_NOT_FOUND', 'Task not found.');
+        }
+
+        const invitee = await tx.get<any>(
+          'SELECT user_id, name, email, role, status FROM shift_users WHERE tenant_id = ? AND user_id = ?',
+          params.tenantId,
+          params.inviteeUserId
+        );
+        if (!invitee || invitee.status !== 'active') {
+          throw new HttpError(
+            404,
+            'INVITEE_NOT_FOUND',
+            'Collaboration invites can only target active registered members of the same firm.'
+          );
+        }
+        if (invitee.role === 'client') {
+          throw new HttpError(
+            400,
+            'EXTERNAL_CLIENT_FORBIDDEN',
+            'External Client Portal accounts cannot be invited to internal firm tasks.'
+          );
+        }
+
+        const isManagerOrAdmin =
+          params.inviterRole === 'team_lead' ||
+          params.inviterRole === 'line_manager' ||
+          params.inviterRole === 'executive' ||
+          params.inviterRole === 'admin_it';
+
+        const existingCollab = await tx.get<{ id: string }>(
+          'SELECT id FROM task_collaborators WHERE tenant_id = ? AND task_id = ? AND user_id = ?',
+          params.tenantId,
+          params.taskId,
+          params.inviterUserId
+        );
+
+        if (
+          !isManagerOrAdmin &&
+          taskRow.assigned_user_id !== params.inviterUserId &&
+          !existingCollab
+        ) {
+          throw new HttpError(
+            403,
+            'FORBIDDEN',
+            'Only the task owner, active collaborators, or firm managers can invite collaborators to this task.'
+          );
+        }
+
+        const clientRow = await tx.get<{ restricted_user_ids_json: string }>(
+          'SELECT restricted_user_ids_json FROM clients WHERE tenant_id = ? AND id = ?',
+          params.tenantId,
+          taskRow.client_id
+        );
+        if (clientRow?.restricted_user_ids_json) {
+          const restricted: string[] = JSON.parse(clientRow.restricted_user_ids_json || '[]');
+          if (restricted.length > 0 && !restricted.includes(params.inviteeUserId)) {
+            throw new HttpError(
+              403,
+              'CLIENT_RESTRICTED',
+              'Invited colleague is not on the approved access list for this restricted client.'
+            );
+          }
+        }
+
+        if (taskRow.assigned_user_id === params.inviteeUserId) {
+          throw new HttpError(
+            400,
+            'ALREADY_PRIMARY_OWNER',
+            'This colleague is already the Primary Owner of this task.'
+          );
+        }
+
+        const alreadyCollab = await tx.get<{ id: string }>(
+          'SELECT id FROM task_collaborators WHERE tenant_id = ? AND task_id = ? AND user_id = ?',
+          params.tenantId,
+          params.taskId,
+          params.inviteeUserId
+        );
+        if (alreadyCollab) {
+          throw new HttpError(
+            409,
+            'ALREADY_COLLABORATOR',
+            'This colleague is already a collaborator on this task.'
+          );
+        }
+
+        const pendingInvite = await tx.get<{ id: string }>(
+          "SELECT id FROM task_collaboration_invites WHERE tenant_id = ? AND task_id = ? AND invitee_user_id = ? AND status = 'pending'",
+          params.tenantId,
+          params.taskId,
+          params.inviteeUserId
+        );
+        if (pendingInvite) {
+          throw new HttpError(
+            409,
+            'INVITE_ALREADY_PENDING',
+            'A collaboration invitation is already pending for this colleague on this task.'
+          );
+        }
+
+        await tx.run(
+          `INSERT INTO task_collaboration_invites
+           (id, tenant_id, task_id, inviter_user_id, invitee_user_id, status, note, responded_at_utc, created_at_utc)
+           VALUES (?, ?, ?, ?, ?, 'pending', ?, NULL, ?)`,
+          inviteId,
+          params.tenantId,
+          params.taskId,
+          params.inviterUserId,
+          params.inviteeUserId,
+          cleanNote,
+          nowIso
+        );
+      }
+    );
+
+    const [invites, tasks] = await Promise.all([
+      this.listTaskCollaborationInvites({ tenantId: params.tenantId }),
+      this.getTasks(params.tenantId),
+    ]);
+    const invite = invites.find((i) => i.id === inviteId);
+    const task = tasks.find((t) => t.id === params.taskId);
+    if (!invite || !task) {
+      throw new HttpError(500, 'INVITE_PERSIST_ERROR', 'Unable to load created task invite.');
+    }
+    return { invite, task };
+  }
+
+  public async respondToTaskCollaborationInvite(params: {
+    tenantId: string;
+    inviteId: string;
+    actorUserId: string;
+    action: 'accept' | 'decline';
+  }): Promise<{ invite: TaskCollaborationInvite; task: EngineTask }> {
+    await this.ready();
+    const nowIso = new Date().toISOString();
+    let taskId = '';
+
+    await this.db.withTenantTransaction(
+      { tenantId: params.tenantId, userId: params.actorUserId },
+      async (tx) => {
+        const inv = await tx.get<any>(
+          'SELECT * FROM task_collaboration_invites WHERE tenant_id = ? AND id = ?',
+          params.tenantId,
+          params.inviteId
+        );
+        if (!inv) {
+          throw new HttpError(404, 'INVITE_NOT_FOUND', 'Task collaboration invite not found.');
+        }
+        if (inv.invitee_user_id !== params.actorUserId) {
+          throw new HttpError(
+            403,
+            'FORBIDDEN',
+            'Only the invited colleague can accept or decline this collaboration invite.'
+          );
+        }
+        if (inv.status !== 'pending') {
+          throw new HttpError(
+            409,
+            'INVITE_ALREADY_RESOLVED',
+            `Invitation was already ${inv.status}.`
+          );
+        }
+
+        taskId = inv.task_id;
+        const nextStatus = params.action === 'accept' ? 'accepted' : 'declined';
+        await tx.run(
+          'UPDATE task_collaboration_invites SET status = ?, responded_at_utc = ? WHERE tenant_id = ? AND id = ?',
+          nextStatus,
+          nowIso,
+          params.tenantId,
+          params.inviteId
+        );
+
+        if (params.action === 'accept') {
+          const collabId = `tcol-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+          await tx.run(
+            `INSERT INTO task_collaborators
+             (id, tenant_id, task_id, user_id, added_by_user_id, can_edit, can_auto_track, created_at_utc)
+             VALUES (?, ?, ?, ?, ?, 1, 1, ?)
+             ON CONFLICT (tenant_id, task_id, user_id) DO UPDATE SET can_edit = 1, can_auto_track = 1`,
+            collabId,
+            params.tenantId,
+            inv.task_id,
+            inv.invitee_user_id,
+            inv.inviter_user_id,
+            nowIso
+          );
+        }
+      }
+    );
+
+    const [invites, tasks] = await Promise.all([
+      this.listTaskCollaborationInvites({ tenantId: params.tenantId }),
+      this.getTasks(params.tenantId),
+    ]);
+    const invite = invites.find((i) => i.id === params.inviteId);
+    const task = tasks.find((t) => t.id === taskId);
+    if (!invite || !task) {
+      throw new HttpError(404, 'TASK_NOT_FOUND', 'Task or invite no longer exists.');
+    }
+    return { invite, task };
+  }
+
+  public async removeTaskCollaboratorOrPendingInvite(params: {
+    tenantId: string;
+    taskId: string;
+    targetUserId: string;
+    actorUserId: string;
+    actorRole: UserRole;
+  }): Promise<{ task: EngineTask }> {
+    await this.ready();
+    const nowIso = new Date().toISOString();
+
+    await this.db.withTenantTransaction(
+      { tenantId: params.tenantId, userId: params.actorUserId },
+      async (tx) => {
+        const taskRow = await tx.get<any>(
+          'SELECT * FROM engine_tasks WHERE tenant_id = ? AND id = ?',
+          params.tenantId,
+          params.taskId
+        );
+        if (!taskRow) {
+          throw new HttpError(404, 'TASK_NOT_FOUND', 'Task not found.');
+        }
+
+        const isManagerOrAdmin =
+          params.actorRole === 'team_lead' ||
+          params.actorRole === 'line_manager' ||
+          params.actorRole === 'executive' ||
+          params.actorRole === 'admin_it';
+
+        const isSelfLeaving = params.targetUserId === params.actorUserId;
+        const isOwner = taskRow.assigned_user_id === params.actorUserId;
+        if (!isManagerOrAdmin && !isOwner && !isSelfLeaving) {
+          throw new HttpError(
+            403,
+            'FORBIDDEN',
+            'Only the task owner, managers, or the collaborator themselves can remove access.'
+          );
+        }
+
+        await tx.run(
+          'DELETE FROM task_collaborators WHERE tenant_id = ? AND task_id = ? AND user_id = ?',
+          params.tenantId,
+          params.taskId,
+          params.targetUserId
+        );
+        await tx.run(
+          "UPDATE task_collaboration_invites SET status = 'revoked', responded_at_utc = ? WHERE tenant_id = ? AND task_id = ? AND invitee_user_id = ? AND status = 'pending'",
+          nowIso,
+          params.tenantId,
+          params.taskId,
+          params.targetUserId
+        );
+      }
+    );
+
+    const refreshed = (await this.getTasks(params.tenantId)).find(
+      (t) => t.id === params.taskId
+    );
+    if (!refreshed) {
+      throw new HttpError(404, 'TASK_NOT_FOUND', 'Task not found.');
+    }
+    return { task: refreshed };
   }
 
   public async getLearnedRules(tenantId: string): Promise<LearnedRule[]> {
@@ -2559,6 +3061,7 @@ export class EngineSQLStore {
         privacyRules: [],
         templates: [],
         tasks: [],
+        taskInvites: [],
         learnedRules: [],
         sessions: [],
         attributions: [],
@@ -2781,12 +3284,15 @@ export class EngineSQLStore {
         ? []
         : buildShiftHandoffSummaries(visibleTasks, sessions, attributions, checklistItems);
 
-    const visibleStaff =
-      viewerRole === 'admin_it' || viewerRole === 'executive'
-        ? staffUsers
-        : viewerRole === 'team_lead' || viewerRole === 'line_manager'
-        ? staffUsers.filter((u) => u.role !== 'client')
-        : [];
+    const visibleStaff = staffUsers.filter((u) => u.role !== 'client');
+    const taskInvites =
+      viewerRole === 'admin_it'
+        ? []
+        : await this.listTaskCollaborationInvites({
+            tenantId,
+            viewerUserId,
+            viewerRole,
+          });
 
     return {
       authMode,
@@ -2807,6 +3313,7 @@ export class EngineSQLStore {
       privacyRules,
       templates,
       tasks: visibleTasks,
+      taskInvites,
       learnedRules,
       sessions,
       attributions,

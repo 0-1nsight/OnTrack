@@ -33,6 +33,7 @@ export interface EngineSubscriber {
 export interface EngineBroadcastMessage {
   tenantId: string;
   affectedUserId: string;
+  affectedUserIds?: string[];
   affectedTeamId?: string | null;
   affectedClientId?: string | null;
   eventType: WsEngineEventType;
@@ -51,7 +52,9 @@ export function isSubscriberPermittedForEvent(
   msg: EngineBroadcastMessage
 ): boolean {
   if (sub.tenantId !== msg.tenantId) return false;
-  const isSelf = sub.userId === msg.affectedUserId;
+  const isSelf =
+    sub.userId === msg.affectedUserId ||
+    Boolean(msg.affectedUserIds?.includes(sub.userId));
 
   if (sub.role === 'accountant') {
     return isSelf;
@@ -91,6 +94,9 @@ export function isSubscriberPermittedForEvent(
   if (sub.role === 'team_lead') {
     if (msg.eventType === 'activity:updated') {
       return isSelf;
+    }
+    if (isSelf) {
+      return true;
     }
     if (msg.affectedTeamId && sub.teamId && msg.affectedTeamId !== sub.teamId) {
       return false;

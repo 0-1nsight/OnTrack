@@ -68,6 +68,8 @@ export interface DeadlineRiskItem {
   availableHoursBeforeDue: number;
   focusFactor: number;
   riskLevel: 'high' | 'medium' | 'low';
+  collaboratorCount?: number;
+  collaboratorNames?: string[];
 }
 
 export interface ClientProfitabilityRow {

@@ -30,7 +30,16 @@ import {
   WorkspaceHierarchy,
   WorkspacePreferences,
 } from './types';
-import { AttributionRecord, EngineTask, PrivacyRule, SyncConflict, UserRole, WorkSession } from './engine/types';
+import {
+  AttributionRecord,
+  EngineTask,
+  PrivacyRule,
+  ShiftUser,
+  SyncConflict,
+  TaskCollaborationInvite,
+  UserRole,
+  WorkSession,
+} from './engine/types';
 import {
   buildLocalTrackingEvent,
   createEngineTaskApi,
@@ -39,6 +48,9 @@ import {
   filterAndEnqueueEvent,
   flushQueuedEventsOverHttp,
   getOrCreateLocalDeviceId,
+  inviteTaskCollaboratorApi,
+  removeTaskCollaboratorApi,
+  respondTaskInviteApi,
   updateEngineTaskApi,
 } from './services/engineClient';
 import {
@@ -289,9 +301,11 @@ export default function App() {
     drilldown?: boolean;
   }>({ key: 0 });
 
-  // Live Engine Sync State (Tasks, Sessions, Conflicts, Privacy Rules)
+  // Live Engine Sync State (Tasks, Sessions, Conflicts, Privacy Rules, Collaboration)
   const [enginePrivacyRules, setEnginePrivacyRules] = useState<PrivacyRule[]>([]);
   const [syncConflicts, setSyncConflicts] = useState<SyncConflict[]>([]);
+  const [staffUsers, setStaffUsers] = useState<ShiftUser[]>([]);
+  const [taskInvites, setTaskInvites] = useState<TaskCollaborationInvite[]>([]);
   const [engineTaskVersions, setEngineTaskVersions] = useState<Record<string, number>>({});
   const [engineSyncStatus, setEngineSyncStatus] = useState<'idle' | 'syncing' | 'error'>('idle');
   const demoSeedAppliedRef = useRef(false);
@@ -327,6 +341,8 @@ export default function App() {
     setWorkspaceHierarchy(createDefaultWorkspaceHierarchy());
     setEnginePrivacyRules([]);
     setSyncConflicts([]);
+    setStaffUsers([]);
+    setTaskInvites([]);
     setEngineTaskVersions({});
     setEngineSyncStatus('idle');
     demoSeedAppliedRef.current = false;
@@ -498,6 +514,8 @@ export default function App() {
 
         setEnginePrivacyRules(snapshot.privacyRules || []);
         setSyncConflicts(snapshot.conflicts || []);
+        setStaffUsers(snapshot.staffUsers || []);
+        setTaskInvites(snapshot.taskInvites || []);
         const versionMap: Record<string, number> = {};
         for (const t of snapshot.tasks) {
           versionMap[t.id] = t.version;
@@ -1491,8 +1509,9 @@ export default function App() {
         dueDateUtc: created.dueDate
           ? `${created.dueDate}T17:00:00.000Z`
           : new Date().toISOString(),
-        assignedUserId: user.userId,
+        assignedUserId: created.assignedUserId || user.userId,
         period: new Date().toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+        previewRole: activeRole,
       })
         .then(({ task: serverTask }: { task: EngineTask }) => {
           const mapped = mapEngineTaskToWorkspaceTask(
@@ -1515,8 +1534,11 @@ export default function App() {
             return withoutDuplicateServer.map((t) => (t.id === tempId ? mapped : t));
           });
         })
-        .catch(() => {
-          showToast('Saved locally; server sync will retry when online.');
+        .catch((err: any) => {
+          pendingTaskMetaRef.current.delete(tempId);
+          pendingTaskTempBySigRef.current.delete(sig);
+          setTasks((prev) => prev.filter((t) => t.id !== tempId));
+          showToast(err?.message || 'Unable to save task on server.');
         });
     }
     showToast(`Task "${created.title}" added to ${created.project}.`);
@@ -1540,14 +1562,38 @@ export default function App() {
           status: updates.status,
           estimatedMinutes: updates.estimatedMinutes,
           dueDateUtc: updates.dueDate ? `${updates.dueDate}T17:00:00.000Z` : undefined,
+          assignedUserId: updates.assignedUserId,
+          previewRole: activeRole,
         })
           .then(({ task: updatedServer }) => {
             setEngineTaskVersions((prev) => ({
               ...prev,
               [updatedServer.id]: updatedServer.version,
             }));
+            pendingTaskMetaRef.current.delete(updatedServer.id);
+            setTasks((prev) =>
+              prev.map((t) =>
+                t.id === updatedServer.id
+                  ? mapEngineTaskToWorkspaceTask(
+                      updatedServer,
+                      t,
+                      hierarchyBoardsRef.current
+                    )
+                  : t
+              )
+            );
+            if (updates.assignedUserId && updatedServer.assignedUserName) {
+              showToast(`Assigned "${updatedServer.title}" to ${updatedServer.assignedUserName}.`);
+            }
           })
-          .catch(() => undefined);
+          .catch((err: any) => {
+            if (previousTask) {
+              setTasks((prev) =>
+                prev.map((t) => (t.id === taskId ? previousTask : t))
+              );
+            }
+            showToast(err?.message || 'Unable to update task.');
+          });
 
         if (updates.status && previousTask && updates.status !== previousTask.status) {
           void persistTrackingEvent({
@@ -1567,6 +1613,7 @@ export default function App() {
   };
 
   const handleDeleteTask = (taskId: string) => {
+    const previousTask = tasks.find((t) => t.id === taskId);
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
     if (user && activeRole !== 'client') {
       const isServerTask =
@@ -1574,10 +1621,138 @@ export default function App() {
         taskId.startsWith('tsk-eng-') ||
         taskId.startsWith('demo_tsk_');
       if (isServerTask) {
-        void deleteEngineTaskApi(taskId).catch(() => undefined);
+        void deleteEngineTaskApi(taskId, activeRole)
+          .then(() => {
+            showToast('Task deleted.');
+          })
+          .catch((err: any) => {
+            if (previousTask) {
+              setTasks((prev) => [previousTask, ...prev]);
+            }
+            showToast(err?.message || 'Unable to delete task.');
+          });
+        return;
       }
     }
     showToast('Task deleted.');
+  };
+
+  const handleInviteCollaborator = async (
+    taskId: string,
+    inviteeUserId: string,
+    note?: string
+  ) => {
+    if (!user || activeRole === 'client') return;
+    try {
+      const res = await inviteTaskCollaboratorApi({
+        taskId,
+        inviteeUserId,
+        note,
+        tenantId: user.tenantId,
+        previewRole: activeRole,
+      });
+      setTaskInvites((prev) => [
+        res.invite,
+        ...prev.filter((inv) => inv.id !== res.invite.id),
+      ]);
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === res.task.id
+            ? mapEngineTaskToWorkspaceTask(res.task, t, hierarchyBoardsRef.current)
+            : t
+        )
+      );
+      showToast(
+        `Invited ${res.invite.inviteeName} to collaborate on "${res.task.title}".`
+      );
+    } catch (err: any) {
+      showToast(err?.message || 'Unable to send collaboration invite.');
+    }
+  };
+
+  const handleRespondTaskInvite = async (
+    inviteId: string,
+    action: 'accept' | 'decline'
+  ) => {
+    if (!user || activeRole === 'client') return;
+    try {
+      const res = await respondTaskInviteApi({
+        inviteId,
+        action,
+        tenantId: user.tenantId,
+        previewRole: activeRole,
+      });
+      setTaskInvites((prev) =>
+        prev.map((inv) => (inv.id === res.invite.id ? res.invite : inv))
+      );
+      setTasks((prev) => {
+        const exists = prev.some((t) => t.id === res.task.id);
+        if (exists) {
+          return prev.map((t) =>
+            t.id === res.task.id
+              ? mapEngineTaskToWorkspaceTask(
+                  res.task,
+                  t,
+                  hierarchyBoardsRef.current
+                )
+              : t
+          );
+        }
+        return [
+          mapEngineTaskToWorkspaceTask(
+            res.task,
+            undefined,
+            hierarchyBoardsRef.current
+          ),
+          ...prev,
+        ];
+      });
+      showToast(
+        action === 'accept'
+          ? `Joined "${res.task.title}" as a collaborator.`
+          : `Declined collaboration invite for "${res.task.title}".`
+      );
+      if (action === 'accept') {
+        void hydrateFromEngine(user, activeRole);
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'Unable to respond to invite.');
+    }
+  };
+
+  const handleRemoveCollaborator = async (
+    taskId: string,
+    targetUserId: string
+  ) => {
+    if (!user || activeRole === 'client') return;
+    try {
+      const res = await removeTaskCollaboratorApi({
+        taskId,
+        targetUserId,
+        tenantId: user.tenantId,
+        previewRole: activeRole,
+      });
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === res.task.id
+            ? mapEngineTaskToWorkspaceTask(res.task, t, hierarchyBoardsRef.current)
+            : t
+        )
+      );
+      setTaskInvites((prev) =>
+        prev.filter(
+          (inv) =>
+            !(
+              inv.taskId === taskId &&
+              inv.inviteeUserId === targetUserId &&
+              inv.status === 'pending'
+            )
+        )
+      );
+      showToast('Updated task collaborators.');
+    } catch (err: any) {
+      showToast(err?.message || 'Unable to update collaborators.');
+    }
   };
 
   // JSON Export & Import Handlers
@@ -1769,6 +1944,7 @@ export default function App() {
             selectedDate={selectedDate}
             weekDates={weekDates}
             preferences={preferences}
+            currentUserId={user?.userId || null}
             onSelectDate={setSelectedDate}
             onStartTimer={handleStartTimer}
             onPauseTimer={handlePauseTimer}
@@ -1888,6 +2064,7 @@ export default function App() {
                 setActiveTab('autotrack');
               }}
               onOpenAccount={() => setAccountModalOpen(true)}
+              onTasksMutated={() => void hydrateFromEngine(user, activeRole)}
               onNotify={showToast}
             />
           )}
@@ -1964,6 +2141,10 @@ export default function App() {
               selectedDate={selectedDate}
               activeTimerTaskId={timer.taskId}
               isTimerRunning={timer.isRunning && !timer.isPaused}
+              staffUsers={staffUsers}
+              taskInvites={taskInvites}
+              currentUserId={user?.userId || null}
+              activeRole={activeRole}
               onUpdateHierarchy={setWorkspaceHierarchy}
               onNotify={showToast}
               onStartTimerForTask={(taskId) => handleStartTimer(taskId)}
@@ -1971,6 +2152,9 @@ export default function App() {
               onCreateTask={handleCreateTask}
               onUpdateTask={handleUpdateTask}
               onDeleteTask={handleDeleteTask}
+              onInviteCollaborator={handleInviteCollaborator}
+              onRespondTaskInvite={handleRespondTaskInvite}
+              onRemoveCollaborator={handleRemoveCollaborator}
               onOpenQuickLogForTask={(task) => {
                 setEditingBlock(null);
                 setQuickLogRange(null);
@@ -2185,6 +2369,7 @@ export default function App() {
             initialBlock={editingBlock}
             initialRange={quickLogRange}
             initialTask={quickLogTask}
+            currentUserId={user?.userId || null}
             initialAppDoc={initialAppDoc}
             onSaveBlock={handleSaveTimeBlock}
             onClose={() => setQuickLogOpen(false)}

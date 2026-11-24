@@ -139,6 +139,12 @@ export function mapEngineTaskToWorkspaceTask(
       engTask.status === 'completed'
         ? existingTask?.completedAt || toLocalDateString(new Date())
         : undefined,
+    assignedUserId: engTask.assignedUserId,
+    assignedUserName: engTask.assignedUserName,
+    assignedUserRole: engTask.assignedUserRole,
+    collaboratorUserIds: engTask.collaboratorUserIds || [],
+    collaborators: engTask.collaborators || [],
+    pendingInviteUserIds: engTask.pendingInviteUserIds || [],
   };
 }
 

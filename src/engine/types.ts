@@ -177,6 +177,43 @@ export interface TaskTemplate {
   steps: TaskTemplateStep[];
 }
 
+export interface TaskCollaboratorSummary {
+  userId: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  teamId: string;
+  canEdit: boolean;
+  canAutoTrack: boolean;
+  addedAtUtc: string;
+}
+
+export type TaskCollaborationInviteStatus =
+  | 'pending'
+  | 'accepted'
+  | 'declined'
+  | 'revoked';
+
+export interface TaskCollaborationInvite {
+  id: string;
+  tenantId: string;
+  taskId: string;
+  taskTitle: string;
+  clientName: string;
+  period: string;
+  inviterUserId: string;
+  inviterName: string;
+  inviterRole: UserRole;
+  inviteeUserId: string;
+  inviteeName: string;
+  inviteeEmail: string;
+  inviteeRole: UserRole;
+  status: TaskCollaborationInviteStatus;
+  note: string;
+  respondedAtUtc: string | null;
+  createdAtUtc: string;
+}
+
 export interface EngineTask {
   id: string;
   tenantId: string;
@@ -188,6 +225,11 @@ export interface EngineTask {
   status: 'todo' | 'in_progress' | 'blocked' | 'completed';
   dueDateUtc: string;
   assignedUserId: string;
+  assignedUserName?: string;
+  assignedUserRole?: UserRole;
+  collaboratorUserIds?: string[];
+  collaborators?: TaskCollaboratorSummary[];
+  pendingInviteUserIds?: string[];
   estimatedMinutes: number;
   version: number;
   updatedAtUtc: string;

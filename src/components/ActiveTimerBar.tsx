@@ -33,6 +33,7 @@ interface ActiveTimerBarProps {
   selectedDate: string;
   weekDates: string[];
   preferences: WorkspacePreferences;
+  currentUserId?: string | null;
   onSelectDate: (date: string) => void;
   onStartTimer: (taskId?: string | null) => void;
   onPauseTimer: () => void;
@@ -53,6 +54,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
   selectedDate,
   weekDates,
   preferences,
+  currentUserId,
   onSelectDate,
   onStartTimer,
   onPauseTimer,
@@ -189,11 +191,23 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
                 className="px-3 py-2 text-xs font-medium bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full sm:w-auto sm:max-w-[230px] min-w-0 truncate"
               >
                 <option value="">Ad-hoc Activity / Custom Session</option>
-                {activeTasks.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    [{t.project}] {t.title}
-                  </option>
-                ))}
+                {activeTasks.map((t) => {
+                  const isCollaborator =
+                    Boolean(currentUserId) &&
+                    t.assignedUserId !== currentUserId &&
+                    (t.collaboratorUserIds || []).includes(currentUserId as string);
+                  const ownerTag = isCollaborator
+                    ? ` · Shared by ${t.assignedUserName || 'Lead'}`
+                    : t.assignedUserName && t.assignedUserId !== currentUserId
+                    ? ` · ${t.assignedUserName}`
+                    : '';
+                  return (
+                    <option key={t.id} value={t.id}>
+                      [{t.project}] {t.title}
+                      {ownerTag}
+                    </option>
+                  );
+                })}
               </select>
 
               {!timer.taskId && (

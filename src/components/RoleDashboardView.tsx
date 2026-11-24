@@ -23,15 +23,23 @@ import {
   WifiOff,
 } from 'lucide-react';
 import {
+  EngineTask,
   PortalAccentTheme,
   ShiftPattern,
+  TaskCollaborationInvite,
   TaskTemplate,
   UserRole,
 } from '../engine/types';
 import { AuthUser } from '../services/authClient';
 import {
+  createEngineTaskApi,
+  fetchEngineTasksApi,
+  fetchTaskInvitesApi,
+  inviteTaskCollaboratorApi,
   purgeRetentionApi,
+  removeTaskCollaboratorApi,
   updateEngineConfigApi,
+  updateEngineTaskApi,
   updateStaffRoleApi,
 } from '../services/engineClient';
 import {
@@ -45,7 +53,11 @@ import {
   updatePortalBrandingApi,
   updateTemplateMilestonesApi,
 } from '../services/portalClient';
-import { ROLE_OPTIONS, getRolePolicy } from '../utils/roleConfig';
+import {
+  ROLE_OPTIONS,
+  formatStaffRoleShort,
+  getRolePolicy,
+} from '../utils/roleConfig';
 
 interface RoleDashboardViewProps {
   activeRole: UserRole;
@@ -53,6 +65,7 @@ interface RoleDashboardViewProps {
   onInspectStaffTimeline?: (targetUserId: string) => void;
   onOpenAutoTrackConfig?: () => void;
   onOpenAccount?: () => void;
+  onTasksMutated?: () => void;
   onNotify: (msg: string) => void;
 }
 
@@ -62,6 +75,7 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
   onInspectStaffTimeline,
   onOpenAutoTrackConfig,
   onOpenAccount,
+  onTasksMutated,
   onNotify,
 }) => {
   const tenantId = currentUser ? currentUser.tenantId : 'firm_demo';
@@ -69,6 +83,12 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
 
   const [data, setData] = useState<RoleOverviewData | null>(null);
   const [invites, setInvites] = useState<InviteRecord[]>([]);
+  const [adminTasks, setAdminTasks] = useState<EngineTask[]>([]);
+  const [adminTaskInvites, setAdminTaskInvites] = useState<TaskCollaborationInvite[]>([]);
+  const [dispatchTitle, setDispatchTitle] = useState('');
+  const [dispatchAssigneeId, setDispatchAssigneeId] = useState('');
+  const [dispatchEstMinutes, setDispatchEstMinutes] = useState(120);
+  const [collabTargetsByTask, setCollabTargetsByTask] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
@@ -164,16 +184,24 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
           setInvites([]);
         }
         try {
-          const cfg = await fetchBrandingAndTemplatesApi({
-            tenantId,
-            viewerRole: activeRole,
-          });
-          syncPortalConfigState(cfg);
+          const [cfg, tasksRes, taskInvRes] = await Promise.all([
+            fetchBrandingAndTemplatesApi({
+              tenantId,
+              viewerRole: activeRole,
+            }).catch(() => null),
+            fetchEngineTasksApi(tenantId, activeRole).catch(() => ({ tasks: [] })),
+            fetchTaskInvitesApi(tenantId, activeRole).catch(() => ({ invites: [] })),
+          ]);
+          if (cfg) syncPortalConfigState(cfg);
+          setAdminTasks(tasksRes.tasks || []);
+          setAdminTaskInvites(taskInvRes.invites || []);
         } catch {
           // ignore if unavailable
         }
       } else {
         setInvites([]);
+        setAdminTasks([]);
+        setAdminTaskInvites([]);
       }
     } catch (err: any) {
       setError(err?.message || 'Unable to load role operational overview.');
@@ -210,15 +238,25 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
           } else {
             setInvites([]);
           }
-          const cfg = await fetchBrandingAndTemplatesApi({
-            tenantId,
-            viewerRole: activeRole,
-          }).catch(() => null);
+          const [cfg, tasksRes, taskInvRes] = await Promise.all([
+            fetchBrandingAndTemplatesApi({
+              tenantId,
+              viewerRole: activeRole,
+            }).catch(() => null),
+            fetchEngineTasksApi(tenantId, activeRole).catch(() => ({ tasks: [] })),
+            fetchTaskInvitesApi(tenantId, activeRole).catch(() => ({ invites: [] })),
+          ]);
           if (active && cfg) {
             syncPortalConfigState(cfg);
           }
+          if (active) {
+            setAdminTasks(tasksRes.tasks || []);
+            setAdminTaskInvites(taskInvRes.invites || []);
+          }
         } else {
           setInvites([]);
+          setAdminTasks([]);
+          setAdminTaskInvites([]);
         }
       } catch (err: any) {
         if (active) {
@@ -388,6 +426,104 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
       await loadData();
     } catch (err: any) {
       onNotify(err?.message || 'Failed to update template milestones.');
+    } finally {
+      setBusyAction(false);
+    }
+  };
+
+  const handleDispatchCreateTask = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanTitle = dispatchTitle.trim();
+    if (!cleanTitle) return;
+    const internalStaff = (data?.staffCapacity || []).filter((s) => s.role !== 'client');
+    const assigneeId = dispatchAssigneeId || internalStaff[0]?.userId;
+    if (!assigneeId) {
+      onNotify('Select a staff member to assign this task.');
+      return;
+    }
+    setBusyAction(true);
+    try {
+      await createEngineTaskApi({
+        tenantId,
+        title: cleanTitle,
+        assignedUserId: assigneeId,
+        estimatedMinutes: Math.max(15, Number(dispatchEstMinutes) || 120),
+        previewRole: activeRole,
+      });
+      setDispatchTitle('');
+      onNotify(`Created and assigned "${cleanTitle}".`);
+      await loadData();
+      onTasksMutated?.();
+    } catch (err: any) {
+      onNotify(err?.message || 'Unable to create assigned task.');
+    } finally {
+      setBusyAction(false);
+    }
+  };
+
+  const handleReassignTaskOwner = async (
+    taskId: string,
+    newOwnerUserId: string
+  ) => {
+    setBusyAction(true);
+    try {
+      const res = await updateEngineTaskApi(taskId, {
+        assignedUserId: newOwnerUserId,
+        previewRole: activeRole,
+      });
+      onNotify(
+        `Reassigned "${res.task.title}" to ${res.task.assignedUserName || newOwnerUserId}.`
+      );
+      await loadData();
+      onTasksMutated?.();
+    } catch (err: any) {
+      onNotify(err?.message || 'Unable to reassign task.');
+    } finally {
+      setBusyAction(false);
+    }
+  };
+
+  const handleAdminInviteCollaborator = async (taskId: string) => {
+    const targetUserId = collabTargetsByTask[taskId];
+    if (!targetUserId) return;
+    setBusyAction(true);
+    try {
+      const res = await inviteTaskCollaboratorApi({
+        taskId,
+        inviteeUserId: targetUserId,
+        tenantId,
+        previewRole: activeRole,
+      });
+      setCollabTargetsByTask((prev) => ({ ...prev, [taskId]: '' }));
+      onNotify(
+        `Sent collaboration invite to ${res.invite.inviteeName} for "${res.task.title}".`
+      );
+      await loadData();
+      onTasksMutated?.();
+    } catch (err: any) {
+      onNotify(err?.message || 'Unable to invite collaborator.');
+    } finally {
+      setBusyAction(false);
+    }
+  };
+
+  const handleAdminRemoveCollaborator = async (
+    taskId: string,
+    targetUserId: string
+  ) => {
+    setBusyAction(true);
+    try {
+      await removeTaskCollaboratorApi({
+        taskId,
+        targetUserId,
+        tenantId,
+        previewRole: activeRole,
+      });
+      onNotify('Removed collaborator / revoked pending invite.');
+      await loadData();
+      onTasksMutated?.();
+    } catch (err: any) {
+      onNotify(err?.message || 'Unable to remove collaborator.');
     } finally {
       setBusyAction(false);
     }
@@ -1205,6 +1341,215 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
               )}
             </section>
           </div>
+
+          {/* Admin/IT Task Assignment & Collaboration Dispatch (Staff-Level Routing, Zero Raw Timelines) */}
+          <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Users className="w-4 h-4 text-indigo-600" />
+                  <span>Firm Task Assignment &amp; Collaboration Dispatch</span>
+                </h2>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                  Create and assign tasks across all staff levels or invite internal colleagues to collaborate without exposing workstation timelines.
+                </p>
+              </div>
+              <span className="font-mono tabular-nums text-[11px] text-slate-500 dark:text-slate-400">
+                {adminTasks.length} tasks · {adminTaskInvites.filter((i) => i.status === 'pending').length} pending invites
+              </span>
+            </div>
+
+            <form
+              onSubmit={handleDispatchCreateTask}
+              className="flex flex-wrap items-center gap-2.5 text-xs p-3 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800"
+            >
+              <input
+                type="text"
+                required
+                value={dispatchTitle}
+                onChange={(e) => setDispatchTitle(e.target.value)}
+                placeholder="New firm task title..."
+                className="flex-1 min-w-[200px] px-3 py-1.5 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+              />
+              <select
+                aria-label="Assign dispatched task to staff member"
+                value={
+                  dispatchAssigneeId ||
+                  data.staffCapacity.find((s) => s.role !== 'client')?.userId ||
+                  ''
+                }
+                onChange={(e) => setDispatchAssigneeId(e.target.value)}
+                className="px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+              >
+                {data.staffCapacity
+                  .filter((s) => s.role !== 'client')
+                  .map((staff) => (
+                    <option key={staff.userId} value={staff.userId}>
+                      Owner: {staff.name} ({formatStaffRoleShort(staff.role)})
+                    </option>
+                  ))}
+              </select>
+              <input
+                type="number"
+                min={15}
+                step={15}
+                value={dispatchEstMinutes}
+                onChange={(e) => setDispatchEstMinutes(Number(e.target.value))}
+                aria-label="Estimated minutes"
+                className="w-20 px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-mono tabular-nums"
+              />
+              <button
+                type="submit"
+                disabled={busyAction}
+                className="px-3 py-1.5 font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg cursor-pointer disabled:opacity-50"
+              >
+                Create &amp; Assign
+              </button>
+            </form>
+
+            {adminTasks.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400">
+                      <th className="py-2 pr-3 font-medium">Task</th>
+                      <th className="py-2 pr-3 font-medium">Primary Owner</th>
+                      <th className="py-2 pr-3 font-medium">Collaborators &amp; Invites</th>
+                      <th className="py-2 pr-3 font-medium">Share / Invite</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {adminTasks.map((t) => {
+                      const internalStaff = data.staffCapacity.filter(
+                        (s) => s.role !== 'client'
+                      );
+                      const eligibleInvitees = internalStaff.filter(
+                        (s) =>
+                          s.userId !== t.assignedUserId &&
+                          !(t.collaboratorUserIds || []).includes(s.userId) &&
+                          !(t.pendingInviteUserIds || []).includes(s.userId)
+                      );
+                      const taskPendingInvites = adminTaskInvites.filter(
+                        (inv) => inv.taskId === t.id && inv.status === 'pending'
+                      );
+                      return (
+                        <tr key={t.id}>
+                          <td className="py-2.5 pr-3">
+                            <div className="font-medium text-slate-900 dark:text-white">
+                              {t.title}
+                            </div>
+                            <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                              {t.period} · {t.status}
+                            </div>
+                          </td>
+                          <td className="py-2.5 pr-3">
+                            <select
+                              aria-label={`Assign owner for ${t.title}`}
+                              value={t.assignedUserId}
+                              disabled={busyAction}
+                              onChange={(e) =>
+                                void handleReassignTaskOwner(t.id, e.target.value)
+                              }
+                              className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                            >
+                              {internalStaff.map((s) => (
+                                <option key={s.userId} value={s.userId}>
+                                  {s.name} ({formatStaffRoleShort(s.role)})
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="py-2.5 pr-3">
+                            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                              {(t.collaborators || []).length === 0 &&
+                                taskPendingInvites.length === 0 && (
+                                  <span className="text-slate-400">Owner only</span>
+                                )}
+                              {(t.collaborators || []).map((c) => (
+                                <span
+                                  key={c.userId}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200"
+                                >
+                                  <span>{c.name}</span>
+                                  <button
+                                    type="button"
+                                    disabled={busyAction}
+                                    onClick={() =>
+                                      void handleAdminRemoveCollaborator(t.id, c.userId)
+                                    }
+                                    className="text-rose-600 hover:underline cursor-pointer"
+                                    title="Remove collaborator"
+                                  >
+                                    ×
+                                  </button>
+                                </span>
+                              ))}
+                              {taskPendingInvites.map((inv) => (
+                                <span
+                                  key={inv.id}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200"
+                                >
+                                  <span>{inv.inviteeName} (pending)</span>
+                                  <button
+                                    type="button"
+                                    disabled={busyAction}
+                                    onClick={() =>
+                                      void handleAdminRemoveCollaborator(
+                                        t.id,
+                                        inv.inviteeUserId
+                                      )
+                                    }
+                                    className="text-rose-600 hover:underline cursor-pointer"
+                                    title="Revoke invite"
+                                  >
+                                    ×
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="py-2.5 pr-3">
+                            <div className="flex items-center gap-1.5">
+                              <select
+                                aria-label={`Invite collaborator for ${t.title}`}
+                                value={collabTargetsByTask[t.id] || ''}
+                                onChange={(e) =>
+                                  setCollabTargetsByTask((prev) => ({
+                                    ...prev,
+                                    [t.id]: e.target.value,
+                                  }))
+                                }
+                                className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white max-w-[165px]"
+                              >
+                                <option value="">
+                                  {eligibleInvitees.length === 0
+                                    ? 'No staff left'
+                                    : 'Invite colleague...'}
+                                </option>
+                                {eligibleInvitees.map((s) => (
+                                  <option key={s.userId} value={s.userId}>
+                                    {s.name} ({formatStaffRoleShort(s.role)})
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                disabled={busyAction || !collabTargetsByTask[t.id]}
+                                onClick={() => void handleAdminInviteCollaborator(t.id)}
+                                className="px-2.5 py-1 font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded cursor-pointer disabled:opacity-50"
+                              >
+                                Invite
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
         </>
       )}
 
@@ -1516,21 +1861,53 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
                           <div className="text-xs font-semibold text-slate-900 dark:text-white">
                             {item.title}
                           </div>
-                          <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                            {item.clientName} · {item.period} · {item.assignedUserName}
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 flex flex-wrap items-center gap-1.5">
+                            <span>
+                              {item.clientName} · {item.period} · {item.assignedUserName}
+                            </span>
+                            {(item.collaboratorCount ?? 0) > 0 && (
+                              <span
+                                className="text-indigo-600 dark:text-indigo-400 font-mono tabular-nums"
+                                title={item.collaboratorNames?.join(', ')}
+                              >
+                                · +{item.collaboratorCount} shared
+                              </span>
+                            )}
                           </div>
                         </div>
-                        <span
-                          className={`px-2 py-0.5 rounded border text-[11px] font-mono font-semibold whitespace-nowrap ${
-                            item.riskLevel === 'high'
-                              ? 'border-rose-300 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300'
-                              : item.riskLevel === 'medium'
-                              ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
-                              : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
-                          }`}
-                        >
-                          {item.riskLevel.toUpperCase()} RISK
-                        </span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <select
+                            aria-label={`Reassign owner for ${item.title}`}
+                            value={item.assignedUserId}
+                            disabled={busyAction}
+                            onChange={(e) =>
+                              void handleReassignTaskOwner(
+                                item.taskId,
+                                e.target.value
+                              )
+                            }
+                            className="px-2 py-0.5 text-[11px] rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200"
+                          >
+                            {data.staffCapacity
+                              .filter((s) => s.role !== 'client')
+                              .map((s) => (
+                                <option key={s.userId} value={s.userId}>
+                                  {s.name} ({formatStaffRoleShort(s.role)})
+                                </option>
+                              ))}
+                          </select>
+                          <span
+                            className={`px-2 py-0.5 rounded border text-[11px] font-mono font-semibold whitespace-nowrap ${
+                              item.riskLevel === 'high'
+                                ? 'border-rose-300 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300'
+                                : item.riskLevel === 'medium'
+                                ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
+                                : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+                            }`}
+                          >
+                            {item.riskLevel.toUpperCase()} RISK
+                          </span>
+                        </div>
                       </div>
 
                       {/* Solid (confirmed) + Hatched (detected) progress bar */}

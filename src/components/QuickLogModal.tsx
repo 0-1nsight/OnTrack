@@ -18,6 +18,7 @@ interface QuickLogModalProps {
   initialBlock: TimeBlock | null;
   initialRange: { startTime: number; endTime: number } | null;
   initialTask: Task | null;
+  currentUserId?: string | null;
   initialAppDoc?: {
     appName: string;
     documentTitle: string;
@@ -118,6 +119,7 @@ export const QuickLogModal: React.FC<QuickLogModalProps> = ({
   initialBlock,
   initialRange,
   initialTask,
+  currentUserId,
   initialAppDoc,
   onSaveBlock,
   onClose,
@@ -227,11 +229,23 @@ export const QuickLogModal: React.FC<QuickLogModalProps> = ({
               className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
             >
               <option value="">-- Custom / Unlinked Timeline Entry --</option>
-              {tasks.map((t) => (
-                <option key={t.id} value={t.id}>
-                  [{t.project}] {t.title}
-                </option>
-              ))}
+              {tasks.map((t) => {
+                const isCollaborator =
+                  Boolean(currentUserId) &&
+                  t.assignedUserId !== currentUserId &&
+                  (t.collaboratorUserIds || []).includes(currentUserId as string);
+                const ownerTag = isCollaborator
+                  ? ` · Shared by ${t.assignedUserName || 'Lead'}`
+                  : t.assignedUserName && t.assignedUserId !== currentUserId
+                  ? ` · ${t.assignedUserName}`
+                  : '';
+                return (
+                  <option key={t.id} value={t.id}>
+                    [{t.project}] {t.title}
+                    {ownerTag}
+                  </option>
+                );
+              })}
             </select>
           </div>
 

@@ -57,6 +57,8 @@ export interface DeadlineRiskItem {
   period: string;
   assignedUserId: string;
   assignedUserName: string;
+  collaboratorCount: number;
+  collaboratorNames: string[];
   dueDateUtc: string;
   status: string;
   estimatedHours: number;
@@ -377,7 +379,11 @@ export async function buildRoleOverview(params: {
     }
     trackedMinutesByUser.set(uid, activeMinutes);
 
-    const userTasks = visibleTasks.filter((t) => t.assignedUserId === uid);
+    const userTasks = visibleTasks.filter(
+      (t) =>
+        t.assignedUserId === uid ||
+        Boolean(t.collaboratorUserIds?.includes(uid))
+    );
     const pipelineOut = runAttributionPipeline({
       sessions: userSessions,
       rawEvents: userEvents,
@@ -511,8 +517,10 @@ export async function buildRoleOverview(params: {
 
   const scopedTasks = visibleTasks.filter((t) =>
     params.viewerRole === 'accountant'
-      ? t.assignedUserId === params.viewerUserId
+      ? t.assignedUserId === params.viewerUserId ||
+        Boolean(t.collaboratorUserIds?.includes(params.viewerUserId))
       : scopedUserIds.has(t.assignedUserId) ||
+        Boolean(t.collaboratorUserIds?.some((cid) => scopedUserIds.has(cid))) ||
         params.viewerRole === 'line_manager' ||
         params.viewerRole === 'executive'
   );
@@ -571,6 +579,8 @@ export async function buildRoleOverview(params: {
       period: t.period,
       assignedUserId: t.assignedUserId,
       assignedUserName: userNameMap.get(t.assignedUserId) || t.assignedUserId,
+      collaboratorCount: t.collaborators?.length || 0,
+      collaboratorNames: (t.collaborators || []).map((c) => c.name),
       dueDateUtc: t.dueDateUtc,
       status: t.status,
       estimatedHours,

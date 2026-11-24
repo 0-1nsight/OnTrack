@@ -19,6 +19,7 @@ import {
   ShiftUser,
   StoredFileRecord,
   SyncConflict,
+  TaskCollaborationInvite,
   TaskTemplate,
   TenantConfig,
   TrackingEvent,
@@ -47,6 +48,7 @@ export interface EngineSnapshot {
   privacyRules: PrivacyRule[];
   templates: TaskTemplate[];
   tasks: EngineTask[];
+  taskInvites?: TaskCollaborationInvite[];
   learnedRules: LearnedRule[];
   sessions: WorkSession[];
   attributions: AttributionRecord[];
@@ -455,6 +457,7 @@ export async function createEngineTaskApi(payload: {
   dueDateUtc?: string;
   assignedUserId?: string;
   estimatedMinutes: number;
+  previewRole?: UserRole;
 }): Promise<{ task: EngineTask }> {
   const res = await fetch('/api/engine/tasks', {
     method: 'POST',
@@ -462,7 +465,10 @@ export async function createEngineTaskApi(payload: {
     headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error('Failed to create task');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.message || 'Failed to create task');
+  }
   return res.json();
 }
 
@@ -477,6 +483,7 @@ export async function updateEngineTaskApi(
     assignedUserId?: string;
     clientId?: string;
     clientName?: string;
+    previewRole?: UserRole;
   }
 ): Promise<{ task: EngineTask }> {
   const res = await fetch(`/api/engine/tasks/${encodeURIComponent(taskId)}`, {
@@ -485,17 +492,157 @@ export async function updateEngineTaskApi(
     headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(updates),
   });
-  if (!res.ok) throw new Error('Failed to update task');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.message || 'Failed to update task');
+  }
   return res.json();
 }
 
-export async function deleteEngineTaskApi(taskId: string): Promise<{ ok: boolean }> {
-  const res = await fetch(`/api/engine/tasks/${encodeURIComponent(taskId)}`, {
+export async function deleteEngineTaskApi(
+  taskId: string,
+  previewRole?: UserRole
+): Promise<{ ok: boolean }> {
+  const qs = previewRole ? `?previewRole=${encodeURIComponent(previewRole)}` : '';
+  const res = await fetch(`/api/engine/tasks/${encodeURIComponent(taskId)}${qs}`, {
     method: 'DELETE',
     credentials: 'include',
     headers: buildAuthHeaders(),
   });
-  if (!res.ok) throw new Error('Failed to delete task');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.message || 'Failed to delete task');
+  }
+  return res.json();
+}
+
+export async function fetchEngineStaffDirectoryApi(
+  tenantId: string,
+  viewerRole?: UserRole
+): Promise<{ staff: ShiftUser[] }> {
+  const qs = new URLSearchParams({ tenantId });
+  if (viewerRole) qs.set('previewRole', viewerRole);
+  const res = await fetch(`/api/engine/staff?${qs.toString()}`, {
+    credentials: 'include',
+    headers: buildAuthHeaders(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.message || 'Failed to load staff directory');
+  }
+  return res.json();
+}
+
+export async function fetchEngineTasksApi(
+  tenantId: string,
+  viewerRole?: UserRole
+): Promise<{ tasks: EngineTask[] }> {
+  const qs = new URLSearchParams({ tenantId });
+  if (viewerRole) qs.set('previewRole', viewerRole);
+  const res = await fetch(`/api/engine/tasks?${qs.toString()}`, {
+    credentials: 'include',
+    headers: buildAuthHeaders(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.message || 'Failed to load tasks');
+  }
+  return res.json();
+}
+
+export async function fetchTaskInvitesApi(
+  tenantId: string,
+  viewerRole?: UserRole
+): Promise<{ invites: TaskCollaborationInvite[] }> {
+  const qs = new URLSearchParams({ tenantId });
+  if (viewerRole) qs.set('previewRole', viewerRole);
+  const res = await fetch(`/api/engine/task-invites?${qs.toString()}`, {
+    credentials: 'include',
+    headers: buildAuthHeaders(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.message || 'Failed to load task invitations');
+  }
+  return res.json();
+}
+
+export async function inviteTaskCollaboratorApi(payload: {
+  taskId: string;
+  inviteeUserId: string;
+  note?: string;
+  tenantId?: string;
+  previewRole?: UserRole;
+}): Promise<{ invite: TaskCollaborationInvite; task: EngineTask }> {
+  const res = await fetch(
+    `/api/engine/tasks/${encodeURIComponent(payload.taskId)}/invites`,
+    {
+      method: 'POST',
+      credentials: 'include',
+      headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        tenantId: payload.tenantId,
+        previewRole: payload.previewRole,
+        inviteeUserId: payload.inviteeUserId,
+        note: payload.note,
+      }),
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.message || 'Failed to send task collaboration invite');
+  }
+  return res.json();
+}
+
+export async function respondTaskInviteApi(payload: {
+  inviteId: string;
+  action: 'accept' | 'decline';
+  tenantId?: string;
+  previewRole?: UserRole;
+}): Promise<{ invite: TaskCollaborationInvite; task: EngineTask }> {
+  const res = await fetch(
+    `/api/engine/task-invites/${encodeURIComponent(payload.inviteId)}/respond`,
+    {
+      method: 'POST',
+      credentials: 'include',
+      headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        tenantId: payload.tenantId,
+        previewRole: payload.previewRole,
+        action: payload.action,
+      }),
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.message || 'Failed to respond to task invite');
+  }
+  return res.json();
+}
+
+export async function removeTaskCollaboratorApi(payload: {
+  taskId: string;
+  targetUserId: string;
+  tenantId?: string;
+  previewRole?: UserRole;
+}): Promise<{ ok: boolean; task: EngineTask }> {
+  const qs = new URLSearchParams();
+  if (payload.tenantId) qs.set('tenantId', payload.tenantId);
+  if (payload.previewRole) qs.set('previewRole', payload.previewRole);
+  const query = qs.toString() ? `?${qs.toString()}` : '';
+  const res = await fetch(
+    `/api/engine/tasks/${encodeURIComponent(payload.taskId)}/collaborators/${encodeURIComponent(payload.targetUserId)}${query}`,
+    {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: buildAuthHeaders(),
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.message || 'Failed to remove collaborator');
+  }
   return res.json();
 }
 

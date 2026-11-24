@@ -16,12 +16,20 @@ import {
   createStandardSections,
   SECTION_COLOR_META,
 } from '../utils/taskHierarchy';
+import {
+  formatStaffRoleShort,
+  getAssignableStaffFilter,
+} from '../utils/roleConfig';
+import { ShiftUser, UserRole } from '../engine/types';
 import { ObjectModalIntent } from './TaskHierarchySidebar';
 
 interface WorkspaceObjectModalProps {
   intent: ObjectModalIntent;
   hierarchy: WorkspaceHierarchy;
   selectedDate: string;
+  staffUsers?: ShiftUser[];
+  currentUserId?: string | null;
+  activeRole?: UserRole;
   onClose: () => void;
   onSaveSpace: (params: { id?: string; name: string; color: BoardSectionColor }) => void;
   onSaveFolder: (params: { id?: string; spaceId: string; name: string }) => void;
@@ -49,6 +57,9 @@ export const WorkspaceObjectModal: React.FC<WorkspaceObjectModalProps> = ({
   intent,
   hierarchy,
   selectedDate,
+  staffUsers = [],
+  currentUserId,
+  activeRole = 'accountant',
   onClose,
   onSaveSpace,
   onSaveFolder,
@@ -120,6 +131,9 @@ export const WorkspaceObjectModal: React.FC<WorkspaceObjectModalProps> = ({
   const [taskEstimate, setTaskEstimate] = useState(90);
   const [taskDueDate, setTaskDueDate] = useState(selectedDate);
   const [taskTags, setTaskTags] = useState('deliverable');
+  const [taskAssigneeId, setTaskAssigneeId] = useState(currentUserId || '');
+
+  const internalStaff = staffUsers.filter((u) => u.role !== 'client');
 
   const availableFoldersForBoard = hierarchy.folders.filter(
     (f) => f.spaceId === boardSpaceId
@@ -242,6 +256,7 @@ export const WorkspaceObjectModal: React.FC<WorkspaceObjectModalProps> = ({
         .map((s) => s.trim().replace(/^#/, ''))
         .filter(Boolean);
 
+      const selectedAssignee = internalStaff.find((u) => u.userId === taskAssigneeId);
       onCreateTask({
         title: taskTitle.trim(),
         description:
@@ -257,6 +272,9 @@ export const WorkspaceObjectModal: React.FC<WorkspaceObjectModalProps> = ({
         subtasks: [],
         startDate: selectedDate || new Date().toISOString().slice(0, 10),
         dueDate: taskDueDate || selectedDate || new Date().toISOString().slice(0, 10),
+        assignedUserId: selectedAssignee?.userId || currentUserId || undefined,
+        assignedUserName: selectedAssignee?.name,
+        assignedUserRole: selectedAssignee?.role,
       });
       onClose();
     }
@@ -725,6 +743,45 @@ export const WorkspaceObjectModal: React.FC<WorkspaceObjectModalProps> = ({
                   />
                 </div>
               </div>
+
+              {internalStaff.length > 0 && (
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                    Assign Primary Owner
+                  </label>
+                  <select
+                    aria-label="Assign primary owner"
+                    value={taskAssigneeId}
+                    onChange={(e) => setTaskAssigneeId(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                  >
+                    <option value="">Default (Current User)</option>
+                    {internalStaff.map((member) => {
+                      const check = getAssignableStaffFilter({
+                        actorRole: activeRole,
+                        actorUserId: currentUserId,
+                        targetUser: member,
+                      });
+                      return (
+                        <option
+                          key={member.userId}
+                          value={member.userId}
+                          disabled={!check.allowed}
+                        >
+                          {member.name} ({formatStaffRoleShort(member.role)})
+                          {member.userId === currentUserId ? ' · You' : ''}
+                          {!check.allowed ? ' · Restricted for your role' : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  {activeRole === 'accountant' && (
+                    <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                      Accountants can self-assign or delegate to peer accountants. Leads and managers assign across all levels.
+                    </p>
+                  )}
+                </div>
+              )}
 
               <div>
                 <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">

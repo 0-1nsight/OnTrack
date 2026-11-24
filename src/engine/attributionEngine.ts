@@ -196,11 +196,19 @@ export function runAttributionPipeline(params: {
         reasons.push(`keyword match (${wordHits.slice(0, 2).join(', ')})`);
       }
 
-      // Signal 3: Today's active task list & due date proximity
-      if (task.assignedUserId === session.userId) {
+      // Signal 3: Today's active task list & due date proximity (primary owner or collaborator)
+      const isPrimaryOwner = task.assignedUserId === session.userId;
+      const isCollaborator = Boolean(
+        task.collaboratorUserIds?.includes(session.userId)
+      );
+      if (isPrimaryOwner || isCollaborator) {
         if (task.status === 'in_progress') {
           score += 0.10;
-          reasons.push('assigned in-progress task');
+          reasons.push(
+            isPrimaryOwner
+              ? 'assigned in-progress task'
+              : 'collaborating on shared in-progress task'
+          );
         }
         if (task.dueDateUtc.slice(0, 10) >= todayIso) {
           score += 0.05;
@@ -424,7 +432,7 @@ export function runAttributionPipeline(params: {
             id: `chk-${task.id}-${step.id}`,
             tenantId: task.tenantId,
             taskId: task.id,
-            userId: task.assignedUserId,
+            userId: matchingPairs[0]?.session.userId || task.assignedUserId,
             stepId: step.id,
             orderIndex: step.order,
             title: step.title,
@@ -450,7 +458,7 @@ export function runAttributionPipeline(params: {
         id: `chk-free-${task.id}-${p.session.id}`,
         tenantId: task.tenantId,
         taskId: task.id,
-        userId: task.assignedUserId,
+        userId: p.session.userId || task.assignedUserId,
         stepId: null,
         orderIndex: 100 + idx,
         title: `Reviewed ${docLabel}, ${mins} min`,

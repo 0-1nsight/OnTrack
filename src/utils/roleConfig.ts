@@ -85,6 +85,7 @@ export const ROLE_POLICIES: Record<UserRole, RolePolicyConfig> = {
     defaultTab: 'overview',
     allowedTabs: [
       { id: 'overview', label: 'Executive Overview' },
+      { id: 'tasks', label: 'Tasks' },
       { id: 'report', label: 'Executive Report' },
       { id: 'analytics', label: 'Firm Analytics' },
     ],
@@ -122,3 +123,54 @@ export const ROLE_POLICIES: Record<UserRole, RolePolicyConfig> = {
 export function getRolePolicy(role: UserRole | null | undefined): RolePolicyConfig {
   return ROLE_POLICIES[role || 'accountant'] || ROLE_POLICIES.accountant;
 }
+
+export function formatStaffRoleShort(role: UserRole | undefined): string {
+  if (!role) return 'Staff';
+  return ROLE_POLICIES[role]?.shortLabel || role;
+}
+
+export function getAssignableStaffFilter(params: {
+  actorRole: UserRole;
+  actorUserId: string | null | undefined;
+  targetUser: { userId: string; role: UserRole };
+  taskOwnerUserId?: string;
+  collaboratorUserIds?: string[];
+}): { allowed: boolean; reason?: string } {
+  const { actorRole, actorUserId, targetUser, taskOwnerUserId, collaboratorUserIds } = params;
+  if (targetUser.role === 'client' || actorRole === 'client') {
+    return {
+      allowed: false,
+      reason: 'External client accounts cannot be assigned internal tasks.',
+    };
+  }
+  if (
+    actorRole === 'team_lead' ||
+    actorRole === 'line_manager' ||
+    actorRole === 'executive' ||
+    actorRole === 'admin_it'
+  ) {
+    return { allowed: true };
+  }
+  if (actorRole === 'accountant') {
+    if (
+      taskOwnerUserId &&
+      actorUserId &&
+      taskOwnerUserId !== actorUserId &&
+      !(collaboratorUserIds || []).includes(actorUserId)
+    ) {
+      return {
+        allowed: false,
+        reason: 'Accountants can only reassign tasks they own or collaborate on.',
+      };
+    }
+    if (targetUser.role !== 'accountant' && targetUser.userId !== actorUserId) {
+      return {
+        allowed: false,
+        reason: 'Accountants can self-assign or delegate to peer accountants.',
+      };
+    }
+    return { allowed: true };
+  }
+  return { allowed: false, reason: 'Insufficient role permissions.' };
+}
+

@@ -1,3 +1,5 @@
+import type { TaskCollaboratorSummary, UserRole } from './engine/types';
+
 export type TaskStatus = 'in_progress' | 'todo' | 'blocked' | 'completed';
 export type TaskPriority = 'urgent' | 'high' | 'medium' | 'low';
 export type WorkCategory = 'deep_work' | 'collaborative' | 'billable' | 'admin';
@@ -66,6 +68,12 @@ export interface Task {
   startDate?: string;
   dueDate?: string;
   completedAt?: string;
+  assignedUserId?: string;
+  assignedUserName?: string;
+  assignedUserRole?: UserRole;
+  collaboratorUserIds?: string[];
+  collaborators?: TaskCollaboratorSummary[];
+  pendingInviteUserIds?: string[];
 }
 
 export interface TimeBlock {

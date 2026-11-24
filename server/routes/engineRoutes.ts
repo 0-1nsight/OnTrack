@@ -7,7 +7,7 @@ import JSZip from 'jszip';
 import { z } from 'zod';
 import { AuthStore } from '../authStore.ts';
 import { appConfig } from '../config.ts';
-import { EngineSQLStore } from '../engineStore.ts';
+import { canActorAssignTask, EngineSQLStore } from '../engineStore.ts';
 import { asyncHandler, HttpError } from '../errors.ts';
 import {
   readPortableFileFromDisk,
@@ -80,6 +80,15 @@ const TaskUpdateSchema = z.object({
   assignedUserId: z.string().trim().min(1).max(120).optional(),
   clientId: z.string().trim().min(1).max(120).optional(),
   clientName: z.string().trim().min(1).max(160).optional(),
+});
+
+const TaskCollaboratorInviteSchema = z.object({
+  inviteeUserId: z.string().trim().min(1).max(120),
+  note: z.string().trim().max(400).optional(),
+});
+
+const TaskCollaboratorRespondSchema = z.object({
+  action: z.enum(['accept', 'decline']),
 });
 
 const PackageBuildBodySchema = z.object({
@@ -246,19 +255,12 @@ export function createEngineRouter(deps: {
     '/staff',
     asyncHandler(async (req, res) => {
       const authCtx = await requireStaff(req);
-      if (
-        authCtx.role !== 'admin_it' &&
-        authCtx.role !== 'team_lead' &&
-        authCtx.role !== 'line_manager' &&
-        authCtx.role !== 'executive'
-      ) {
-        throw new HttpError(403, 'FORBIDDEN', 'Insufficient role permissions.');
-      }
       const staff = await deps.engineStore.listShiftUsers(authCtx.tenantId);
+      // Internal firm directory excludes external Client Portal principals for non-Admin pickers
       const scoped =
-        authCtx.role === 'team_lead'
-          ? staff.filter((s) => s.teamId === authCtx.teamId)
-          : staff;
+        authCtx.role === 'admin_it'
+          ? staff
+          : staff.filter((s) => s.role !== 'client');
       res.json({ staff: scoped });
     })
   );
@@ -669,6 +671,29 @@ export function createEngineRouter(deps: {
     })
   );
 
+  router.get(
+    '/tasks',
+    asyncHandler(async (req, res) => {
+      const authCtx = await requireStaff(req);
+      const [tasks, clients] = await Promise.all([
+        deps.engineStore.getTasks(authCtx.tenantId),
+        deps.engineStore.getClients(authCtx.tenantId),
+      ]);
+      const clientMap = new Map(clients.map((c) => [c.id, c]));
+      const visibleTasks = tasks.filter((t) => {
+        if (authCtx.role === 'admin_it') return true;
+        const c = clientMap.get(t.clientId);
+        if (!c || c.restrictedUserIds.length === 0) return true;
+        return (
+          c.restrictedUserIds.includes(authCtx.userId) ||
+          t.assignedUserId === authCtx.userId ||
+          Boolean(t.collaboratorUserIds?.includes(authCtx.userId))
+        );
+      });
+      res.json({ tasks: visibleTasks });
+    })
+  );
+
   router.post(
     '/tasks',
     asyncHandler(async (req, res) => {
@@ -677,8 +702,8 @@ export function createEngineRouter(deps: {
       const title = typeof b.title === 'string' ? b.title.trim() : '';
       const rawClientId = typeof b.clientId === 'string' ? b.clientId.trim() : '';
       const rawProject = typeof b.project === 'string' ? b.project.trim() : '';
-      if (!title || (!rawClientId && !rawProject)) {
-        throw new HttpError(400, 'MISSING_FIELDS', 'title and clientId are required.');
+      if (!title) {
+        throw new HttpError(400, 'MISSING_FIELDS', 'title is required.');
       }
       const slug = (rawClientId || rawProject)
         .toLowerCase()
@@ -686,6 +711,45 @@ export function createEngineRouter(deps: {
         .replace(/^-|-$/g, '') || 'internal';
       const clientId = rawClientId || `cli-${slug}`;
       const clientName = String(b.clientName || rawProject || 'Internal Firm');
+
+      const requestedAssigneeId =
+        typeof b.assignedUserId === 'string' && b.assignedUserId.trim()
+          ? b.assignedUserId.trim()
+          : authCtx.userId;
+
+      const [staff, clients] = await Promise.all([
+        deps.engineStore.listShiftUsers(authCtx.tenantId),
+        deps.engineStore.getClients(authCtx.tenantId),
+      ]);
+      const assigneeUser = staff.find((u) => u.userId === requestedAssigneeId);
+      if (assigneeUser) {
+        const perm = canActorAssignTask({
+          actorUserId: authCtx.userId,
+          actorRole: authCtx.role,
+          targetAssigneeUserId: assigneeUser.userId,
+          targetAssigneeRole: assigneeUser.role,
+        });
+        if (!perm.allowed) {
+          throw new HttpError(403, 'FORBIDDEN', perm.reason || 'Not permitted to assign this task.');
+        }
+      } else if (requestedAssigneeId !== authCtx.userId) {
+        throw new HttpError(404, 'ASSIGNEE_NOT_FOUND', 'Assignee user was not found in this firm.');
+      }
+
+      const targetClient = clients.find(
+        (c) => c.id === clientId || c.legalName.toLowerCase() === clientName.toLowerCase()
+      );
+      if (
+        targetClient &&
+        targetClient.restrictedUserIds.length > 0 &&
+        !targetClient.restrictedUserIds.includes(requestedAssigneeId)
+      ) {
+        throw new HttpError(
+          403,
+          'CLIENT_RESTRICTED',
+          'Assignee does not have clearance for this restricted client engagement.'
+        );
+      }
 
       const created = await deps.engineStore.createEngineTask({
         tenantId: authCtx.tenantId,
@@ -698,12 +762,25 @@ export function createEngineRouter(deps: {
         period: String(b.period || 'Oct 2026'),
         status: b.status || 'todo',
         dueDateUtc: b.dueDateUtc || new Date().toISOString(),
-        assignedUserId: String(b.assignedUserId || authCtx.userId),
+        assignedUserId: requestedAssigneeId,
         estimatedMinutes: Math.max(5, Number(b.estimatedMinutes) || 120),
       });
+
+      if (created.assignedUserId !== authCtx.userId) {
+        await deps.engineStore.recordAuditLog({
+          tenantId: authCtx.tenantId,
+          actorUserId: authCtx.userId,
+          actorRole: authCtx.role,
+          targetUserId: created.assignedUserId,
+          action: 'task.assigned',
+          details: `Created task "${created.title}" assigned to ${created.assignedUserName || created.assignedUserId}`,
+        });
+      }
+
       await deps.wsGateway.publish({
         tenantId: authCtx.tenantId,
         affectedUserId: created.assignedUserId,
+        affectedUserIds: Array.from(new Set([authCtx.userId, created.assignedUserId])),
         affectedTeamId: authCtx.teamId,
         eventType: 'state:updated',
       });
@@ -721,21 +798,92 @@ export function createEngineRouter(deps: {
       if (!target) {
         throw new HttpError(404, 'TASK_NOT_FOUND', 'Task not found.');
       }
-      if (
-        authCtx.role === 'accountant' &&
-        target.assignedUserId !== authCtx.userId &&
-        !authCtx.isDemoSandbox
-      ) {
-        throw new HttpError(403, 'FORBIDDEN', 'Accountants can only update their assigned tasks.');
+
+      const isOwnerOrCollab =
+        target.assignedUserId === authCtx.userId ||
+        Boolean(target.collaboratorUserIds?.includes(authCtx.userId));
+
+      if (authCtx.role === 'accountant' && !isOwnerOrCollab) {
+        throw new HttpError(
+          403,
+          'FORBIDDEN',
+          'Accountants can only update tasks assigned to or shared with them.'
+        );
       }
+
+      if (parsed.assignedUserId && parsed.assignedUserId !== target.assignedUserId) {
+        const [staff, clients] = await Promise.all([
+          deps.engineStore.listShiftUsers(authCtx.tenantId),
+          deps.engineStore.getClients(authCtx.tenantId),
+        ]);
+        const targetAssignee = staff.find((u) => u.userId === parsed.assignedUserId);
+        if (!targetAssignee) {
+          throw new HttpError(
+            404,
+            'ASSIGNEE_NOT_FOUND',
+            'Task assignee must be an active member of this firm.'
+          );
+        }
+        const perm = canActorAssignTask({
+          actorUserId: authCtx.userId,
+          actorRole: authCtx.role,
+          targetAssigneeUserId: targetAssignee.userId,
+          targetAssigneeRole: targetAssignee.role,
+          existingTask: target,
+        });
+        if (!perm.allowed) {
+          throw new HttpError(
+            403,
+            'FORBIDDEN',
+            perm.reason || 'Insufficient permissions to reassign this task.'
+          );
+        }
+
+        const targetClient = clients.find((c) => c.id === (parsed.clientId || target.clientId));
+        if (
+          targetClient &&
+          targetClient.restrictedUserIds.length > 0 &&
+          !targetClient.restrictedUserIds.includes(targetAssignee.userId)
+        ) {
+          throw new HttpError(
+            403,
+            'CLIENT_RESTRICTED',
+            'Assignee does not have clearance for this restricted client engagement.'
+          );
+        }
+      }
+
       const updated = await deps.engineStore.updateEngineTask({
         tenantId: authCtx.tenantId,
         taskId: req.params.taskId,
         updates: parsed,
       });
+
+      if (parsed.assignedUserId && parsed.assignedUserId !== target.assignedUserId) {
+        await deps.engineStore.recordAuditLog({
+          tenantId: authCtx.tenantId,
+          actorUserId: authCtx.userId,
+          actorRole: authCtx.role,
+          targetUserId: updated.assignedUserId,
+          action: 'task.reassigned',
+          details: `Reassigned "${updated.title}" from ${target.assignedUserName || target.assignedUserId} to ${updated.assignedUserName || updated.assignedUserId}`,
+        });
+      }
+
+      const affectedUserIds = Array.from(
+        new Set([
+          authCtx.userId,
+          target.assignedUserId,
+          updated.assignedUserId,
+          ...(target.collaboratorUserIds || []),
+          ...(updated.collaboratorUserIds || []),
+        ])
+      );
+
       await deps.wsGateway.publish({
         tenantId: authCtx.tenantId,
         affectedUserId: updated.assignedUserId,
+        affectedUserIds,
         affectedTeamId: authCtx.teamId,
         eventType: 'state:updated',
       });
@@ -754,10 +902,9 @@ export function createEngineRouter(deps: {
       }
       if (
         authCtx.role === 'accountant' &&
-        target.assignedUserId !== authCtx.userId &&
-        !authCtx.isDemoSandbox
+        target.assignedUserId !== authCtx.userId
       ) {
-        throw new HttpError(403, 'FORBIDDEN', 'Accountants can only delete their assigned tasks.');
+        throw new HttpError(403, 'FORBIDDEN', 'Accountants can only delete tasks they own.');
       }
       const deleted = await deps.engineStore.deleteEngineTask({
         tenantId: authCtx.tenantId,
@@ -774,10 +921,139 @@ export function createEngineRouter(deps: {
       await deps.wsGateway.publish({
         tenantId: authCtx.tenantId,
         affectedUserId: target.assignedUserId,
+        affectedUserIds: Array.from(
+          new Set([authCtx.userId, target.assignedUserId, ...(target.collaboratorUserIds || [])])
+        ),
         affectedTeamId: authCtx.teamId,
         eventType: 'state:updated',
       });
       res.json({ ok: true });
+    })
+  );
+
+  router.get(
+    '/task-invites',
+    asyncHandler(async (req, res) => {
+      const authCtx = await requireStaff(req);
+      const invites = await deps.engineStore.listTaskCollaborationInvites({
+        tenantId: authCtx.tenantId,
+        viewerUserId: authCtx.userId,
+        viewerRole: authCtx.role,
+      });
+      res.json({ invites });
+    })
+  );
+
+  router.post(
+    '/tasks/:taskId/invites',
+    asyncHandler(async (req, res) => {
+      const authCtx = await requireStaff(req);
+      const parsed = TaskCollaboratorInviteSchema.parse(req.body || {});
+      const { invite, task } = await deps.engineStore.inviteTaskCollaborator({
+        tenantId: authCtx.tenantId,
+        taskId: req.params.taskId,
+        inviterUserId: authCtx.userId,
+        inviterRole: authCtx.role,
+        inviteeUserId: parsed.inviteeUserId,
+        note: parsed.note,
+      });
+      await deps.engineStore.recordAuditLog({
+        tenantId: authCtx.tenantId,
+        actorUserId: authCtx.userId,
+        actorRole: authCtx.role,
+        targetUserId: parsed.inviteeUserId,
+        action: 'task.collab_invited',
+        details: `Invited ${invite.inviteeName} (${invite.inviteeRole}) to collaborate on "${task.title}"`,
+      });
+      await deps.wsGateway.publish({
+        tenantId: authCtx.tenantId,
+        affectedUserId: parsed.inviteeUserId,
+        affectedUserIds: Array.from(
+          new Set([
+            authCtx.userId,
+            parsed.inviteeUserId,
+            task.assignedUserId,
+            ...(task.collaboratorUserIds || []),
+          ])
+        ),
+        affectedTeamId: authCtx.teamId,
+        eventType: 'state:updated',
+      });
+      res.status(201).json({ invite, task });
+    })
+  );
+
+  router.post(
+    '/task-invites/:inviteId/respond',
+    asyncHandler(async (req, res) => {
+      const authCtx = await requireStaff(req);
+      const parsed = TaskCollaboratorRespondSchema.parse(req.body || {});
+      const { invite, task } = await deps.engineStore.respondToTaskCollaborationInvite({
+        tenantId: authCtx.tenantId,
+        inviteId: req.params.inviteId,
+        actorUserId: authCtx.userId,
+        action: parsed.action,
+      });
+      await deps.engineStore.recordAuditLog({
+        tenantId: authCtx.tenantId,
+        actorUserId: authCtx.userId,
+        actorRole: authCtx.role,
+        targetUserId: invite.inviterUserId,
+        action: parsed.action === 'accept' ? 'task.collab_accepted' : 'task.collab_declined',
+        details: `${invite.inviteeName} ${parsed.action}ed collaboration invite for "${task.title}"`,
+      });
+      await deps.wsGateway.publish({
+        tenantId: authCtx.tenantId,
+        affectedUserId: task.assignedUserId,
+        affectedUserIds: Array.from(
+          new Set([
+            authCtx.userId,
+            invite.inviterUserId,
+            task.assignedUserId,
+            ...(task.collaboratorUserIds || []),
+          ])
+        ),
+        affectedTeamId: authCtx.teamId,
+        eventType: 'state:updated',
+      });
+      res.json({ invite, task });
+    })
+  );
+
+  router.delete(
+    '/tasks/:taskId/collaborators/:userId',
+    asyncHandler(async (req, res) => {
+      const authCtx = await requireStaff(req);
+      const { task } = await deps.engineStore.removeTaskCollaboratorOrPendingInvite({
+        tenantId: authCtx.tenantId,
+        taskId: req.params.taskId,
+        targetUserId: req.params.userId,
+        actorUserId: authCtx.userId,
+        actorRole: authCtx.role,
+      });
+      await deps.engineStore.recordAuditLog({
+        tenantId: authCtx.tenantId,
+        actorUserId: authCtx.userId,
+        actorRole: authCtx.role,
+        targetUserId: req.params.userId,
+        action: 'task.collab_removed',
+        details: `Removed collaborator / revoked pending invite for ${req.params.userId} on "${task.title}"`,
+      });
+      await deps.wsGateway.publish({
+        tenantId: authCtx.tenantId,
+        affectedUserId: req.params.userId,
+        affectedUserIds: Array.from(
+          new Set([
+            authCtx.userId,
+            req.params.userId,
+            task.assignedUserId,
+            ...(task.collaboratorUserIds || []),
+          ])
+        ),
+        affectedTeamId: authCtx.teamId,
+        eventType: 'state:updated',
+      });
+      res.json({ task });
     })
   );
 
