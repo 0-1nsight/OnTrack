@@ -2998,7 +2998,7 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
                   <p className="mt-1 text-slate-500 dark:text-slate-400">
                     {windowsExeReady
                       ? 'Run OnTrack-Setup.exe and confirm the single token prompt.'
-                      : 'Extract and double-click OnTrack-Setup.bat to launch the GUI progress installer.'}
+                      : 'Open OnTrack-Setup-Windows.zip and double-click OnTrack-Setup.bat (works extracted or directly inside the ZIP).'}
                   </p>
                 </div>
                 <div className="p-3 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">

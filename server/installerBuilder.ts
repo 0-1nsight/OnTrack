@@ -138,6 +138,35 @@ export function appendBundleOverlayToExe(templateExeBuffer: Buffer, bundleZip: B
   return Buffer.concat([templateExeBuffer, bundleZip, lenBuf, OVERLAY_MAGIC]);
 }
 
+function wrapBase64Crlf(buf: Buffer, width = 76): string {
+  const b64 = buf.toString('base64');
+  const lines: string[] = [];
+  for (let i = 0; i < b64.length; i += width) {
+    lines.push(b64.slice(i, i + width));
+  }
+  return lines.join('\r\n');
+}
+
+export function buildSelfContainedWindowsBat(
+  batTemplate: string,
+  csSourceBuffer: Buffer,
+  bundleZipBuffer: Buffer
+): Buffer {
+  const normalizedBat = batTemplate.replace(/\r?\n/g, '\r\n').trimEnd();
+  const content = [
+    normalizedBat,
+    'exit /b 0',
+    '__ONTRACK_CS_B64_START__',
+    wrapBase64Crlf(csSourceBuffer),
+    '__ONTRACK_CS_B64_END__',
+    '__ONTRACK_ZIP_B64_START__',
+    wrapBase64Crlf(bundleZipBuffer),
+    '__ONTRACK_ZIP_B64_END__',
+    '',
+  ].join('\r\n');
+  return Buffer.from(content, 'ascii');
+}
+
 export async function buildWindowsInstallerArtifact(params: {
   tenantId: string;
   userId: string;
@@ -164,8 +193,8 @@ export async function buildWindowsInstallerArtifact(params: {
   }
 
   // Fallback when server runs on Linux/Docker without a pre-compiled .exe template:
-  // Ship a 1-click unified archive with OnTrack-Setup.bat + OnTrackSetup.cs + ontrack-bundle.zip
-  // so Windows compiles & launches the exact same native GUI installer on double-click.
+  // Ship a 1-click unified archive with self-contained OnTrack-Setup.bat + sidecars
+  // so Windows builds & launches the native GUI installer whether extracted or opened directly in Explorer.
   const winDir = path.resolve(appConfig.projectRoot, 'packages', 'installer', 'windows');
   const batPath = path.resolve(winDir, 'OnTrack-Setup.bat');
   const csPath = path.resolve(winDir, 'OnTrackSetup.cs');
@@ -173,9 +202,13 @@ export async function buildWindowsInstallerArtifact(params: {
     throw new HttpError(404, 'INSTALLER_NOT_FOUND', 'Windows installer sources not found.');
   }
 
+  const batTemplate = fs.readFileSync(batPath, 'utf8');
+  const csSourceBuffer = fs.readFileSync(csPath);
+  const selfContainedBat = buildSelfContainedWindowsBat(batTemplate, csSourceBuffer, bundleZip);
+
   const outerZip = new JSZip();
-  outerZip.file('OnTrack-Setup.bat', fs.readFileSync(batPath));
-  outerZip.file('OnTrackSetup.cs', fs.readFileSync(csPath));
+  outerZip.file('OnTrack-Setup.bat', selfContainedBat);
+  outerZip.file('OnTrackSetup.cs', csSourceBuffer);
   outerZip.file('ontrack-bundle.zip', bundleZip);
 
   const buffer = await outerZip.generateAsync({

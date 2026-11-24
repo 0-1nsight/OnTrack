@@ -173,7 +173,16 @@ describe('Admin Lockout Prevention & Unified Collector Installer Bundles', () =>
       expect(Object.keys(outer.files)).toContain('OnTrack-Setup.bat');
       expect(Object.keys(outer.files)).toContain('OnTrackSetup.cs');
       expect(Object.keys(outer.files)).toContain('ontrack-bundle.zip');
+      const batText = await outer.files['OnTrack-Setup.bat'].async('string');
+      const csBytes = await outer.files['OnTrackSetup.cs'].async('nodebuffer');
       innerBundleBuf = await outer.files['ontrack-bundle.zip'].async('nodebuffer');
+
+      const csMatch = batText.match(/__ONTRACK_CS_B64_START__\r?\n([\s\S]*?)\r?\n__ONTRACK_CS_B64_END__/);
+      const zipMatch = batText.match(/__ONTRACK_ZIP_B64_START__\r?\n([\s\S]*?)\r?\n__ONTRACK_ZIP_B64_END__/);
+      expect(csMatch?.[1]).toBeTruthy();
+      expect(zipMatch?.[1]).toBeTruthy();
+      expect(Buffer.from(csMatch![1].replace(/\s+/g, ''), 'base64').equals(csBytes)).toBe(true);
+      expect(Buffer.from(zipMatch![1].replace(/\s+/g, ''), 'base64').equals(innerBundleBuf)).toBe(true);
     }
 
     const inner = await JSZip.loadAsync(innerBundleBuf);
