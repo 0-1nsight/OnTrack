@@ -367,19 +367,22 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       // WebSocket unsupported or blocked; HTTPS polling fallback handles sync
     }
 
-    // HTTPS polling fallback (5s when WS is offline, 30s safety refresh otherwise)
-    const pollTimer = window.setInterval(() => {
-      void loadPortal({ silent: true });
-    }, wsConnected ? 30000 : 5000);
-
     return () => {
       disposed = true;
-      window.clearInterval(pollTimer);
       if (ws && ws.readyState < WebSocket.CLOSING) {
         ws.close();
       }
     };
-  }, [tenantId, activeRole, currentUser?.userId, errorInfo?.code, loadPortal, wsConnected]);
+  }, [tenantId, activeRole, currentUser?.userId, errorInfo?.code, loadPortal]);
+
+  // HTTPS polling fallback (5s when WS is offline, 30s safety refresh otherwise)
+  useEffect(() => {
+    if (errorInfo?.code === 'ADMIN_NO_CLIENT_CONTENT') return;
+    const pollTimer = window.setInterval(() => {
+      void loadPortal({ silent: true });
+    }, wsConnected ? 30000 : 5000);
+    return () => window.clearInterval(pollTimer);
+  }, [errorInfo?.code, loadPortal, wsConnected]);
 
   const handleCreateRequest = async (e: React.FormEvent) => {
     e.preventDefault();

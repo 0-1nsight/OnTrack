@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Play,
   Pause,
@@ -27,11 +27,11 @@ import {
 
 interface ActiveTimerBarProps {
   timer: ActiveTimerState;
-  elapsedSeconds: number;
+  lastActivityMsRef: React.MutableRefObject<number>;
+  isIdleModalOpen: boolean;
   tasks: Task[];
   selectedDate: string;
   weekDates: string[];
-  idleSeconds: number;
   preferences: WorkspacePreferences;
   onSelectDate: (date: string) => void;
   onStartTimer: (taskId?: string | null) => void;
@@ -47,11 +47,11 @@ interface ActiveTimerBarProps {
 
 export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
   timer,
-  elapsedSeconds,
+  lastActivityMsRef,
+  isIdleModalOpen,
   tasks,
   selectedDate,
   weekDates,
-  idleSeconds,
   preferences,
   onSelectDate,
   onStartTimer,
@@ -64,6 +64,32 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
   onOpenPreferences,
   onToggleTheme,
 }) => {
+  const [clockState, setClockState] = useState<{ nowMs: number; idleSeconds: number }>({
+    nowMs: 0,
+    idleSeconds: 0,
+  });
+
+  useEffect(() => {
+    const syncTick = () => {
+      const now = Date.now();
+      const lastAct = lastActivityMsRef.current;
+      const nextIdle =
+        !isIdleModalOpen && lastAct > 0 ? Math.max(0, Math.floor((now - lastAct) / 1000)) : 0;
+      setClockState({ nowMs: now, idleSeconds: nextIdle });
+    };
+    syncTick();
+    const id = window.setInterval(syncTick, 1000);
+    return () => window.clearInterval(id);
+  }, [isIdleModalOpen, lastActivityMsRef]);
+
+  const elapsedSeconds =
+    timer.isRunning && !timer.isPaused && timer.startedAtMs && clockState.nowMs > 0
+      ? timer.accumulatedSeconds +
+        Math.max(0, Math.floor((clockState.nowMs - timer.startedAtMs) / 1000))
+      : timer.accumulatedSeconds;
+
+  const idleSeconds = clockState.idleSeconds;
+
   const activeTasks = tasks.filter((t) => t.status !== 'completed');
   const isApproachingIdle =
     idleSeconds >= Math.max(10, preferences.idleThresholdSeconds * 0.6);
@@ -77,7 +103,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
           <div className="flex flex-wrap items-center gap-3 flex-1 min-w-[320px]">
             {/* Stopwatch Digital Readout */}
             <div
-              className={`flex items-center gap-2.5 px-3.5 py-2 rounded-lg border transition-colors ${
+              className={`flex items-center gap-2.5 px-3.5 py-2 min-w-[116px] rounded-lg border transition-colors ${
                 timer.isRunning && !timer.isPaused
                   ? 'bg-indigo-600 text-white border-indigo-700'
                   : timer.isPaused
@@ -224,7 +250,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
               ) : (
                 <UserCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
               )}
-              <span className="text-slate-600 dark:text-slate-400 whitespace-nowrap">
+              <span className="text-slate-600 dark:text-slate-400 whitespace-nowrap min-w-[106px]">
                 Presence:{' '}
                 <strong className="font-semibold text-slate-900 dark:text-slate-100">
                   {isApproachingIdle ? 'Idle Soon' : 'Active'}
@@ -232,7 +258,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
               </span>
               <span className="text-slate-300 dark:text-slate-600">·</span>
               <span
-                className="font-mono tabular-nums text-slate-500 dark:text-slate-400 whitespace-nowrap"
+                className="font-mono tabular-nums text-slate-500 dark:text-slate-400 whitespace-nowrap min-w-[92px] text-right"
                 title="Seconds since last mouse or keyboard activity"
               >
                 Idle {idleSeconds}s / {preferences.idleThresholdSeconds}s

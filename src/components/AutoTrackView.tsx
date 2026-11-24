@@ -321,11 +321,15 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
               drilldownGranted,
             });
         setSnapshot(data);
-        if (data.tasks.length > 0 && !data.tasks.some((t) => t.id === selectedTaskIdForChecklist)) {
-          setSelectedTaskIdForChecklist(data.tasks[0].id);
+        if (data.tasks.length > 0) {
+          setSelectedTaskIdForChecklist((prev) =>
+            data.tasks.some((t) => t.id === prev) ? prev : data.tasks[0].id
+          );
         }
-        if (data.clients.length > 0 && !data.clients.some((c) => c.id === newTaskClientId)) {
-          setNewTaskClientId(data.clients[0].id);
+        if (data.clients.length > 0) {
+          setNewTaskClientId((prev) =>
+            data.clients.some((c) => c.id === prev) ? prev : data.clients[0].id
+          );
         }
       } catch (err: any) {
         setLoadError(err?.message || 'Unable to load tracking snapshot');
@@ -339,8 +343,6 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
       viewerRole,
       targetUserId,
       drilldownGranted,
-      selectedTaskIdForChecklist,
-      newTaskClientId,
     ]
   );
 

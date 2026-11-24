@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   AuthUser,
   DemoAccountSummary,
@@ -97,7 +97,7 @@ function getCurrentMinuteOfDay(): number {
 }
 
 export default function App() {
-  const weekDates = getRecentWeekDates();
+  const weekDates = useMemo(() => getRecentWeekDates(), []);
   const todayDate = weekDates[weekDates.length - 1];
 
   const [activeTab, setActiveTab] = useState<NavigationTab>('timeline');
@@ -242,11 +242,8 @@ export default function App() {
     activeDocumentTitle: 'Workspace — OnTrack',
   });
 
-  const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
-
   // Automatic Browser Activity & Idle Presence Tracking
   const lastActivityMsRef = useRef<number>(0);
-  const [idleSeconds, setIdleSeconds] = useState<number>(0);
   const [idleAlert, setIdleAlert] = useState<IdleAlertState>({
     isOpen: false,
     idleStartedAtMs: 0,
@@ -331,7 +328,6 @@ export default function App() {
     setEngineTaskVersions({});
     setEngineSyncStatus('idle');
     demoSeedAppliedRef.current = false;
-    setElapsedSeconds(0);
     setTimer((prev) => ({
       ...prev,
       isRunning: false,
@@ -886,7 +882,6 @@ export default function App() {
     const handleUserActivity = () => {
       if (!idleAlert.isOpen) {
         lastActivityMsRef.current = Date.now();
-        setIdleSeconds(0);
       }
     };
 
@@ -903,46 +898,47 @@ export default function App() {
     };
   }, [idleAlert.isOpen]);
 
-  // 1-second master ticker for Stopwatch & Idle Sensor
+  // Background Idle Threshold Sensor (checks every 2s via ref without re-rendering App)
+  const idleCheckConfigRef = useRef({
+    customTitle: timer.customTitle,
+    thresholdSeconds: preferences.idleThresholdSeconds,
+    enabled: !idleAlert.isOpen && !(showLanding && !user) && activeRole !== 'client',
+  });
   useEffect(() => {
-    const interval = setInterval(() => {
+    idleCheckConfigRef.current = {
+      customTitle: timer.customTitle,
+      thresholdSeconds: preferences.idleThresholdSeconds,
+      enabled: !idleAlert.isOpen && !(showLanding && !user) && activeRole !== 'client',
+    };
+  }, [timer.customTitle, preferences.idleThresholdSeconds, idleAlert.isOpen, showLanding, user, activeRole]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      const cfg = idleCheckConfigRef.current;
+      if (!cfg.enabled) return;
       const now = Date.now();
-
-      // Update live stopwatch elapsed seconds
-      if (timer.isRunning && !timer.isPaused && timer.startedAtMs) {
-        const deltaSec = Math.floor((now - timer.startedAtMs) / 1000);
-        setElapsedSeconds(timer.accumulatedSeconds + deltaSec);
-      } else {
-        setElapsedSeconds(timer.accumulatedSeconds);
+      if (lastActivityMsRef.current === 0) {
+        lastActivityMsRef.current = now;
+        return;
       }
-
-      // Check idle sensor (only when inside staff workspace)
-      if (!idleAlert.isOpen && !(showLanding && !user) && activeRole !== 'client') {
-        if (lastActivityMsRef.current === 0) {
-          lastActivityMsRef.current = now;
-        }
-        const inactiveSec = Math.floor((now - lastActivityMsRef.current) / 1000);
-        setIdleSeconds(inactiveSec);
-
-        if (inactiveSec >= preferences.idleThresholdSeconds) {
-          const endMin = getCurrentMinuteOfDay();
-          const durationMin = Math.max(15, Math.round(inactiveSec / 60));
-          const startMin = Math.max(0, endMin - durationMin);
-          setIdleAlert({
-            isOpen: true,
-            idleStartedAtMs: lastActivityMsRef.current,
-            idleDurationSeconds: Math.max(inactiveSec, 15 * 60),
-            activeTaskTitle:
-              timer.customTitle || 'Active Workstation Session',
-            startMinuteOfDay: startMin,
-            endMinuteOfDay: endMin,
-          });
-        }
+      const inactiveSec = Math.floor((now - lastActivityMsRef.current) / 1000);
+      if (inactiveSec >= cfg.thresholdSeconds) {
+        const endMin = getCurrentMinuteOfDay();
+        const durationMin = Math.max(15, Math.round(inactiveSec / 60));
+        const startMin = Math.max(0, endMin - durationMin);
+        setIdleAlert({
+          isOpen: true,
+          idleStartedAtMs: lastActivityMsRef.current,
+          idleDurationSeconds: Math.max(inactiveSec, 15 * 60),
+          activeTaskTitle: cfg.customTitle || 'Active Workstation Session',
+          startMinuteOfDay: startMin,
+          endMinuteOfDay: endMin,
+        });
       }
-    }, 1000);
+    }, 2000);
 
-    return () => clearInterval(interval);
-  }, [timer, idleAlert.isOpen, preferences.idleThresholdSeconds, showLanding, user, activeRole]);
+    return () => window.clearInterval(interval);
+  }, []);
 
   // Sync browser document.title with active work context
   useEffect(() => {
@@ -1045,7 +1041,6 @@ export default function App() {
         prev.activeDocumentTitle ||
         (foundTask ? `${foundTask.title} — Workspace` : 'Active Document'),
     }));
-    setElapsedSeconds(0);
     if (foundTask && foundTask.status === 'todo') {
       setTasks((prev) =>
         prev.map((t) =>
@@ -1165,7 +1160,6 @@ export default function App() {
       startedAtMs: null,
       accumulatedSeconds: 0,
     }));
-    setElapsedSeconds(0);
     void persistTrackingEvent({
       type: 'activity.window',
       priority: 'activity',
@@ -1280,7 +1274,6 @@ export default function App() {
       newSeg,
     ]);
     lastActivityMsRef.current = Date.now();
-    setIdleSeconds(0);
     setIdleAlert((prev) => ({ ...prev, isOpen: false }));
     void persistTrackingEvent({
       type: 'activity.idle',
@@ -1313,7 +1306,6 @@ export default function App() {
       newSeg,
     ]);
     lastActivityMsRef.current = Date.now();
-    setIdleSeconds(0);
     setIdleAlert((prev) => ({ ...prev, isOpen: false }));
     void persistTrackingEvent({
       type: 'activity.window',
@@ -1365,7 +1357,6 @@ export default function App() {
       )
     );
     lastActivityMsRef.current = Date.now();
-    setIdleSeconds(0);
     setIdleAlert((prev) => ({ ...prev, isOpen: false }));
     void persistTrackingEvent({
       type: 'activity.window',
@@ -1673,7 +1664,6 @@ export default function App() {
         onBootstrapFirm={handleBootstrapFirm}
         onContinueLocal={() => {
           lastActivityMsRef.current = Date.now();
-          setIdleSeconds(0);
           setShowLanding(false);
         }}
       />
@@ -1726,11 +1716,11 @@ export default function App() {
         {rolePolicy.showTimerBar && (
           <ActiveTimerBar
             timer={timer}
-            elapsedSeconds={elapsedSeconds}
+            lastActivityMsRef={lastActivityMsRef}
+            isIdleModalOpen={idleAlert.isOpen}
             tasks={tasks}
             selectedDate={selectedDate}
             weekDates={weekDates}
-            idleSeconds={idleSeconds}
             preferences={preferences}
             onSelectDate={setSelectedDate}
             onStartTimer={handleStartTimer}
