@@ -183,6 +183,7 @@ describe('Admin Lockout Prevention & Unified Collector Installer Bundles', () =>
       expect(zipMatch?.[1]).toBeTruthy();
       expect(Buffer.from(csMatch![1].replace(/\s+/g, ''), 'base64').equals(csBytes)).toBe(true);
       expect(Buffer.from(zipMatch![1].replace(/\s+/g, ''), 'base64').equals(innerBundleBuf)).toBe(true);
+      expect(csBytes.toString('utf8')).toContain('public sealed class InstallMeta');
     }
 
     const inner = await JSZip.loadAsync(innerBundleBuf);

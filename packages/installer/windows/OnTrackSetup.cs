@@ -19,7 +19,7 @@ using Microsoft.Win32;
 
 namespace OnTrackInstaller
 {
-    internal sealed class InstallMeta
+    public sealed class InstallMeta
     {
         public string ServerUrl = "http://localhost:3000";
         public string TenantId = "";
