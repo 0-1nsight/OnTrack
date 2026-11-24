@@ -616,7 +616,10 @@ export async function updateStaffRoleApi(
     headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ tenantId, role, shiftPattern, onLeave, canDrilldownTimeline }),
   });
-  if (!res.ok) throw new Error('Failed to update staff role');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to update staff role');
+  }
   return res.json();
 }
 
@@ -778,4 +781,70 @@ export async function downloadPackageZip(params: {
   a.download = `ontrack-${params.kind}.zip`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+export interface InstallerCapabilities {
+  windowsExeReady: boolean;
+  windowsFilename: string;
+  unixFilename: string;
+  platform: string;
+}
+
+export async function fetchInstallerCapabilitiesApi(
+  tenantId: string
+): Promise<InstallerCapabilities> {
+  const res = await fetch(
+    `/api/engine/package/installer-info?tenantId=${encodeURIComponent(tenantId)}`,
+    { credentials: 'include', headers: buildAuthHeaders() }
+  );
+  if (!res.ok) {
+    return {
+      windowsExeReady: false,
+      windowsFilename: 'OnTrack-Setup-Windows.zip',
+      unixFilename: 'ontrack-collector-unix.zip',
+      platform: 'unknown',
+    };
+  }
+  return res.json();
+}
+
+export async function downloadUnifiedInstaller(params: {
+  targetOs: 'windows' | 'unix';
+  userId?: string;
+  bridgeSecret?: string;
+}): Promise<{ filename: string; format: string }> {
+  const origin =
+    typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+  const kind = params.targetOs === 'windows' ? 'windows-installer' : 'unix-installer';
+  const res = await fetch(`/api/engine/package/${kind}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      serverUrl: origin,
+      userId: params.userId,
+      bridgeSecret: params.bridgeSecret,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Installer download failed (${res.status})`);
+  }
+
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="?([^"]+)"?/i);
+  const filename =
+    match?.[1] ||
+    (params.targetOs === 'windows' ? 'OnTrack-Setup-Windows.zip' : 'ontrack-collector-unix.zip');
+  const format = res.headers.get('X-OnTrack-Installer-Format') || 'zip';
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+
+  return { filename, format };
 }

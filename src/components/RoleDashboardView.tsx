@@ -701,10 +701,21 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
 
           {/* Device Sync Health Table */}
           <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5">
-            <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2 mb-4">
-              <Wifi className="w-4 h-4 text-indigo-600" />
-              <span>Device Fleet Sync Health &amp; Delayed Alerts</span>
-            </h2>
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+              <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Wifi className="w-4 h-4 text-indigo-600" />
+                <span>Device Fleet Sync Health &amp; Delayed Alerts</span>
+              </h2>
+              {onOpenAutoTrackConfig && (
+                <button
+                  type="button"
+                  onClick={onOpenAutoTrackConfig}
+                  className="px-2.5 py-1 text-xs font-medium rounded border border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 cursor-pointer"
+                >
+                  Open Collector Setup
+                </button>
+              )}
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead>
@@ -777,34 +788,65 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {data.staffCapacity.map((u) => (
-                    <tr key={u.userId}>
-                      <td className="py-2.5 pr-3">
-                        <div className="font-medium text-slate-900 dark:text-white">{u.name}</div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400">{u.email}</div>
-                      </td>
-                      <td className="py-2.5 pr-3">
-                        <select
-                          value={u.role}
-                          disabled={busyAction}
-                          onChange={(e) =>
-                            void handleRoleUpdate(
-                              u.userId,
-                              e.target.value as UserRole,
-                              u.shiftPattern,
-                              u.onLeave,
-                              u.canDrilldownTimeline
-                            )
-                          }
-                          className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200"
-                        >
-                          {ROLE_OPTIONS.map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
+                  {(() => {
+                    const adminCount = data.staffCapacity.filter(
+                      (s) => s.role === 'admin_it'
+                    ).length;
+                    return data.staffCapacity.map((u) => {
+                      const isSelf = Boolean(
+                        currentUser?.userId && currentUser.userId === u.userId
+                      );
+                      const isLastAdmin = u.role === 'admin_it' && adminCount <= 1;
+                      const roleLocked = u.role === 'admin_it' && (isSelf || isLastAdmin);
+                      const lockReason = isSelf
+                        ? 'Your signed-in Admin/IT role cannot be demoted'
+                        : isLastAdmin
+                        ? 'Last active Admin/IT in the firm cannot be demoted'
+                        : '';
+                      return (
+                        <tr key={u.userId}>
+                          <td className="py-2.5 pr-3">
+                            <div className="font-medium text-slate-900 dark:text-white">
+                              {u.name}
+                            </div>
+                            <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                              {u.email}
+                            </div>
+                          </td>
+                          <td className="py-2.5 pr-3">
+                            <select
+                              value={u.role}
+                              disabled={busyAction || roleLocked}
+                              title={lockReason || undefined}
+                              onChange={(e) =>
+                                void handleRoleUpdate(
+                                  u.userId,
+                                  e.target.value as UserRole,
+                                  u.shiftPattern,
+                                  u.onLeave,
+                                  u.canDrilldownTimeline
+                                )
+                              }
+                              className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 disabled:opacity-60 disabled:cursor-not-allowed"
+                            >
+                              {ROLE_OPTIONS.map((opt) => (
+                                <option
+                                  key={opt.value}
+                                  value={opt.value}
+                                  disabled={roleLocked && opt.value !== 'admin_it'}
+                                >
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                            {roleLocked && (
+                              <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
+                                {isSelf
+                                  ? 'Signed-in Admin/IT (locked)'
+                                  : 'Last firm Admin/IT (locked)'}
+                              </div>
+                            )}
+                          </td>
                       <td className="py-2.5 pr-3">
                         <select
                           value={u.shiftPattern}
@@ -871,7 +913,9 @@ export const RoleDashboardView: React.FC<RoleDashboardViewProps> = ({
                         </button>
                       </td>
                     </tr>
-                  ))}
+                      );
+                    });
+                  })()}
                 </tbody>
               </table>
             </div>

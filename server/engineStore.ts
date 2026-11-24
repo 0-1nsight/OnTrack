@@ -812,10 +812,47 @@ export class EngineSQLStore {
     role: UserRole,
     shiftPattern?: ShiftPattern,
     onLeave?: boolean,
-    canDrilldownTimeline?: boolean
+    canDrilldownTimeline?: boolean,
+    actorUserId?: string
   ) {
     await this.ready();
-    await this.db.withTenantTransaction({ tenantId }, async (tx) => {
+    await this.db.withTenantTransaction({ tenantId, userId: actorUserId }, async (tx) => {
+      const target = await tx.get<{ user_id: string; role: string; status: string }>(
+        'SELECT user_id, role, status FROM shift_users WHERE tenant_id = ? AND user_id = ?',
+        tenantId,
+        userId
+      );
+      if (!target) {
+        throw new HttpError(404, 'USER_NOT_FOUND', 'Staff user not found.');
+      }
+
+      if (
+        actorUserId &&
+        actorUserId === userId &&
+        target.role === 'admin_it' &&
+        role !== 'admin_it'
+      ) {
+        throw new HttpError(
+          400,
+          'CANNOT_DEMOTE_SELF',
+          'You cannot change your own role away from Admin / IT. Have another administrator update your role if needed.'
+        );
+      }
+
+      if (target.role === 'admin_it' && role !== 'admin_it') {
+        const adminRow = await tx.get<{ cnt: number }>(
+          "SELECT COUNT(*) as cnt FROM shift_users WHERE tenant_id = ? AND role = 'admin_it' AND status = 'active'",
+          tenantId
+        );
+        if (Number(adminRow?.cnt || 0) <= 1) {
+          throw new HttpError(
+            409,
+            'LAST_ADMIN_REQUIRED',
+            'At least one active Admin / IT user is required in the workspace.'
+          );
+        }
+      }
+
       const hours = shiftPattern ? getShiftWindowHoursUtc(shiftPattern) : null;
       const startHour = hours ? hours.startHourUtc : null;
       const endHour = hours ? hours.endHourUtc : null;

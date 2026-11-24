@@ -296,6 +296,8 @@ export default function App() {
   const [engineSyncStatus, setEngineSyncStatus] = useState<'idle' | 'syncing' | 'error'>('idle');
   const demoSeedAppliedRef = useRef(false);
   const hierarchyBoardsRef = useRef(workspaceHierarchy.boards);
+  const pendingTaskMetaRef = useRef<Map<string, Task>>(new Map());
+  const pendingTaskTempBySigRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
     hierarchyBoardsRef.current = workspaceHierarchy.boards;
   }, [workspaceHierarchy.boards]);
@@ -503,9 +505,32 @@ export default function App() {
         setEngineTaskVersions(versionMap);
 
         const latest = latestWorkspaceRef.current;
+        const matchedTempIds = new Set<string>();
+        const enrichedExisting = latest.tasks.map((t) => {
+          const override = pendingTaskMetaRef.current.get(t.id);
+          return override ? { ...t, ...override, id: t.id } : t;
+        });
+
+        for (const st of snapshot.tasks) {
+          const sig = `${st.title.trim().toLowerCase()}::${st.clientName.trim().toLowerCase()}`;
+          const matchingTempId = pendingTaskTempBySigRef.current.get(sig);
+          if (matchingTempId && !enrichedExisting.some((t) => t.id === st.id)) {
+            const pendingMeta = pendingTaskMetaRef.current.get(matchingTempId);
+            if (pendingMeta) {
+              matchedTempIds.add(matchingTempId);
+              enrichedExisting.push({ ...pendingMeta, id: st.id });
+            }
+          }
+        }
+
+        const filteredExisting =
+          matchedTempIds.size > 0
+            ? enrichedExisting.filter((t) => !matchedTempIds.has(t.id))
+            : enrichedExisting;
+
         const adapted = adaptEngineSnapshotToWorkspace({
           snapshot,
-          existingTasks: latest.tasks,
+          existingTasks: filteredExisting,
           existingBlocks: latest.timeBlocks,
           existingActivity: latest.activitySegments,
           existingApps: latest.appSegments,
@@ -515,7 +540,14 @@ export default function App() {
           isDemoSandbox: Boolean(currentUser.isDemoSandbox),
         });
 
-        setTasks(adapted.tasks);
+        const seenTaskIds = new Set<string>();
+        const dedupedTasks = adapted.tasks.filter((t) => {
+          if (seenTaskIds.has(t.id)) return false;
+          seenTaskIds.add(t.id);
+          return true;
+        });
+
+        setTasks(dedupedTasks);
         setTimeBlocks(adapted.timeBlocks);
         setActivitySegments(adapted.activitySegments);
         setAppSegments(adapted.appSegments);
@@ -1435,24 +1467,29 @@ export default function App() {
 
   // Task CRUD Handlers (Optimistic UI + Engine DB Sync)
   const handleCreateTask = (newTaskData: Omit<Task, 'id' | 'createdAt'>) => {
-    const tempId = `tsk-${Date.now()}`;
+    const tempId = `tsk-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const safeProject = (newTaskData.project || '').trim() || 'Internal Firm';
     const created: Task = {
       ...newTaskData,
+      project: safeProject,
       id: tempId,
       createdAt: todayDate,
     };
+    const sig = `${created.title.trim().toLowerCase()}::${safeProject.toLowerCase()}`;
+    pendingTaskMetaRef.current.set(tempId, created);
+    pendingTaskTempBySigRef.current.set(sig, tempId);
     setTasks((prev) => [created, ...prev]);
 
     if (user && activeRole !== 'client') {
       void createEngineTaskApi({
         tenantId: user.tenantId,
-        project: newTaskData.project,
-        clientName: newTaskData.project,
-        title: newTaskData.title,
-        status: newTaskData.status,
-        estimatedMinutes: newTaskData.estimatedMinutes,
-        dueDateUtc: newTaskData.dueDate
-          ? `${newTaskData.dueDate}T17:00:00.000Z`
+        project: safeProject,
+        clientName: safeProject,
+        title: created.title,
+        status: created.status,
+        estimatedMinutes: created.estimatedMinutes,
+        dueDateUtc: created.dueDate
+          ? `${created.dueDate}T17:00:00.000Z`
           : new Date().toISOString(),
         assignedUserId: user.userId,
         period: new Date().toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
@@ -1463,10 +1500,20 @@ export default function App() {
             created,
             hierarchyBoardsRef.current
           );
+          pendingTaskMetaRef.current.delete(tempId);
+          pendingTaskTempBySigRef.current.delete(sig);
+          pendingTaskMetaRef.current.set(serverTask.id, mapped);
           setEngineTaskVersions((prev) => ({ ...prev, [serverTask.id]: serverTask.version }));
-          setTasks((prev) =>
-            prev.map((t) => (t.id === tempId ? mapped : t))
-          );
+          setTasks((prev) => {
+            const withoutDuplicateServer = prev.filter(
+              (t) => t.id !== serverTask.id || t.id === tempId
+            );
+            const hasTemp = withoutDuplicateServer.some((t) => t.id === tempId);
+            if (!hasTemp) {
+              return [mapped, ...withoutDuplicateServer];
+            }
+            return withoutDuplicateServer.map((t) => (t.id === tempId ? mapped : t));
+          });
         })
         .catch(() => {
           showToast('Saved locally; server sync will retry when online.');

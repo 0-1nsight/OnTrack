@@ -49,8 +49,10 @@ import {
   deletePrivacyRuleApi,
   downloadPackageZip,
   downloadPortableFileWithAuth,
+  downloadUnifiedInstaller,
   EngineSnapshot,
   fetchEngineSnapshot,
+  fetchInstallerCapabilitiesApi,
   filterAndEnqueueEvent,
   flushQueuedEventsOverHttp,
   getOrCreateLocalDeviceId,
@@ -272,8 +274,14 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
     generatePairingBridgeSecret()
   );
   const [downloadingPkg, setDownloadingPkg] = useState<
-    'desktop-agent' | 'browser-extension' | 'paired' | null
+    | 'desktop-agent'
+    | 'browser-extension'
+    | 'paired'
+    | 'windows-installer'
+    | 'unix-installer'
+    | null
   >(null);
+  const [windowsExeReady, setWindowsExeReady] = useState<boolean>(false);
 
   // Dictionaries, Privacy & Portable Vault Forms
   const [manualLegalName, setManualLegalName] = useState<string>('');
@@ -407,6 +415,20 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
       window.clearInterval(timer);
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetchInstallerCapabilitiesApi(tenantId)
+      .then((info) => {
+        if (active) setWindowsExeReady(Boolean(info.windowsExeReady));
+      })
+      .catch(() => {
+        if (active) setWindowsExeReady(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [tenantId]);
 
   // Flush queued events silently when coming back online
   const flushQueue = useCallback(async () => {
@@ -1767,17 +1789,19 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
                     type="button"
                     disabled={downloadingPkg !== null}
                     onClick={async () => {
-                      setDownloadingPkg('desktop-agent');
+                      setDownloadingPkg('windows-installer');
                       try {
-                        await downloadPackageZip({
-                          kind: 'desktop-agent',
+                        const out = await downloadUnifiedInstaller({
+                          targetOs: 'windows',
                           userId: targetUserId,
                           bridgeSecret: pairingBridgeSecret,
                         });
-                        onNotify('Downloaded ontrack-desktop-agent.zip');
+                        onNotify(
+                          `Downloaded ${out.filename} — run it once and paste your pairing key when prompted.`
+                        );
                       } catch (err) {
                         onNotify(
-                          err instanceof Error ? err.message : 'Desktop agent download failed'
+                          err instanceof Error ? err.message : 'Installer download failed'
                         );
                       } finally {
                         setDownloadingPkg(null);
@@ -1787,9 +1811,11 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
                   >
                     <Download className="w-3 h-3" />
                     <span>
-                      {downloadingPkg === 'desktop-agent'
-                        ? 'Packaging...'
-                        : 'Download Pre-Paired Agent .zip'}
+                      {downloadingPkg === 'windows-installer'
+                        ? 'Building Installer...'
+                        : windowsExeReady
+                        ? 'Download OnTrack-Setup.exe'
+                        : 'Download Unified Windows Setup'}
                     </span>
                   </button>
                 </div>
@@ -2213,40 +2239,79 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
                 </button>
               </div>
               <div className="divide-y divide-slate-200 dark:divide-slate-800 text-xs">
-                {snapshot!.staffUsers.map((st) => (
-                  <div
-                    key={st.userId}
-                    className="px-4 py-2.5 flex flex-wrap items-center justify-between gap-3"
-                  >
-                    <div>
-                      <span className="font-medium text-slate-900 dark:text-white">{st.name}</span>
-                      <span className="ml-2 font-mono text-slate-500 dark:text-slate-400">
-                        {st.email} · Shift {st.shiftPattern}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={st.role}
-                        onChange={async (e) => {
-                          await updateStaffRoleApi(
-                            tenantId,
-                            st.userId,
-                            e.target.value as UserRole
-                          );
-                          await loadSnapshot(false);
-                          onNotify(`Updated role for ${st.name}.`);
-                        }}
-                        className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                {(() => {
+                  const adminCount = snapshot!.staffUsers.filter(
+                    (u) => u.role === 'admin_it'
+                  ).length;
+                  return snapshot!.staffUsers.map((st) => {
+                    const isSelf = Boolean(
+                      currentUser?.userId && currentUser.userId === st.userId
+                    );
+                    const isLastAdmin = st.role === 'admin_it' && adminCount <= 1;
+                    const roleLocked = st.role === 'admin_it' && (isSelf || isLastAdmin);
+                    return (
+                      <div
+                        key={st.userId}
+                        className="px-4 py-2.5 flex flex-wrap items-center justify-between gap-3"
                       >
-                        {ROLE_OPTIONS.map((r) => (
-                          <option key={r.value} value={r.value}>
-                            {r.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                ))}
+                        <div>
+                          <span className="font-medium text-slate-900 dark:text-white">
+                            {st.name}
+                          </span>
+                          <span className="ml-2 font-mono text-slate-500 dark:text-slate-400">
+                            {st.email} · Shift {st.shiftPattern}
+                          </span>
+                          {roleLocked && (
+                            <span className="ml-2 text-[11px] text-slate-500 dark:text-slate-400">
+                              · {isSelf ? 'Signed-in Admin/IT (locked)' : 'Last firm Admin/IT'}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={st.role}
+                            disabled={roleLocked}
+                            title={
+                              roleLocked
+                                ? isSelf
+                                  ? 'Your signed-in Admin/IT role cannot be demoted'
+                                  : 'At least one active Admin/IT is required'
+                                : undefined
+                            }
+                            onChange={async (e) => {
+                              try {
+                                await updateStaffRoleApi(
+                                  tenantId,
+                                  st.userId,
+                                  e.target.value as UserRole
+                                );
+                                await loadSnapshot(false);
+                                onNotify(`Updated role for ${st.name}.`);
+                              } catch (err) {
+                                onNotify(
+                                  err instanceof Error
+                                    ? err.message
+                                    : 'Failed to update staff role.'
+                                );
+                              }
+                            }}
+                            className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {ROLE_OPTIONS.map((r) => (
+                              <option
+                                key={r.value}
+                                value={r.value}
+                                disabled={roleLocked && r.value !== 'admin_it'}
+                              >
+                                {r.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
               </div>
             </section>
           )}
@@ -2794,19 +2859,163 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
       {/* ===================================================================== */}
       {subTab === 'packages' && (
         <div className="space-y-5">
-          {/* Paired Collector Bridge Secret & One-Click Bundle Bar */}
+          {/* Unified 1-Step Workstation Installer */}
           <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-4">
             <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
+              <div className="max-w-2xl">
                 <h2 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
                   <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                  <span>Authenticated Loopback Bridge &amp; Paired Collector Bundle</span>
+                  <span>One-Step Workstation Installer (Desktop Agent + Browser Extension)</span>
                 </h2>
                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                  Both packages share a per-install cryptographic secret (<code className="font-mono">X-OnTrack-Bridge-Secret</code>)
-                  embedded into <code className="font-mono">agent.config.json</code> and <code className="font-mono">config.defaults.json</code> so untrusted browser tabs cannot spoof local telemetry.
+                  Installs both collectors silently with a progress bar, registers background startup, shares a pre-paired loopback secret (<code className="font-mono">X-OnTrack-Bridge-Secret</code>), and asks <strong>only once</strong> for your device pairing key when setup begins.
                 </p>
               </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={downloadingPkg !== null}
+                  onClick={async () => {
+                    setDownloadingPkg('windows-installer');
+                    try {
+                      if (!newPairedRawToken) {
+                        const paired = await pairDeviceTokenApi({
+                          tenantId,
+                          userId: targetUserId,
+                          label: newDeviceLabel.trim() || 'Windows Workstation',
+                        });
+                        setNewPairedRawToken(paired.rawToken);
+                        void navigator.clipboard?.writeText(paired.rawToken);
+                        await loadSnapshot(false);
+                      }
+                      const out = await downloadUnifiedInstaller({
+                        targetOs: 'windows',
+                        userId: targetUserId,
+                        bridgeSecret: pairingBridgeSecret,
+                      });
+                      onNotify(
+                        `Downloaded ${out.filename}. Your pairing key is copied — run setup and paste it once.`
+                      );
+                    } catch (err) {
+                      onNotify(
+                        err instanceof Error ? err.message : 'Failed to download Windows installer'
+                      );
+                    } finally {
+                      setDownloadingPkg(null);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-indigo-600 text-white rounded hover:bg-indigo-500 disabled:opacity-60 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>
+                    {downloadingPkg === 'windows-installer'
+                      ? 'Building Windows Setup...'
+                      : windowsExeReady
+                      ? 'Download OnTrack-Setup.exe'
+                      : 'Download Windows Setup (1-Click)'}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  disabled={downloadingPkg !== null}
+                  onClick={async () => {
+                    setDownloadingPkg('unix-installer');
+                    try {
+                      if (!newPairedRawToken) {
+                        const paired = await pairDeviceTokenApi({
+                          tenantId,
+                          userId: targetUserId,
+                          label: newDeviceLabel.trim() || 'Workstation',
+                        });
+                        setNewPairedRawToken(paired.rawToken);
+                        void navigator.clipboard?.writeText(paired.rawToken);
+                        await loadSnapshot(false);
+                      }
+                      const out = await downloadUnifiedInstaller({
+                        targetOs: 'unix',
+                        userId: targetUserId,
+                        bridgeSecret: pairingBridgeSecret,
+                      });
+                      onNotify(
+                        `Downloaded ${out.filename}. Unzip and run ./install.sh (pairing key copied).`
+                      );
+                    } catch (err) {
+                      onNotify(
+                        err instanceof Error ? err.message : 'Failed to download macOS/Linux installer'
+                      );
+                    } finally {
+                      setDownloadingPkg(null);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200 rounded hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-60 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>
+                    {downloadingPkg === 'unix-installer'
+                      ? 'Packaging...'
+                      : 'macOS / Linux Installer'}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {newPairedRawToken ? (
+              <div className="p-3 rounded bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-300 dark:border-emerald-800 text-xs flex flex-wrap items-center justify-between gap-3">
+                <div className="space-y-0.5">
+                  <div className="font-semibold text-emerald-900 dark:text-emerald-200">
+                    Active Pairing Key Ready (Paste Once When Setup Starts)
+                  </div>
+                  <code className="font-mono text-emerald-800 dark:text-emerald-300 select-all">
+                    {newPairedRawToken}
+                  </code>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(newPairedRawToken);
+                    onNotify('Pairing key copied to clipboard.');
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 cursor-pointer"
+                >
+                  <Copy className="w-3 h-3" />
+                  <span>Copy Key</span>
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs pt-1">
+                <div className="p-3 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                  <div className="font-semibold text-slate-900 dark:text-white">
+                    1. Download &amp; Auto-Key
+                  </div>
+                  <p className="mt-1 text-slate-500 dark:text-slate-400">
+                    Clicking Download automatically generates a workstation pairing key and copies it to your clipboard.
+                  </p>
+                </div>
+                <div className="p-3 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                  <div className="font-semibold text-slate-900 dark:text-white">
+                    2. Run Setup Once
+                  </div>
+                  <p className="mt-1 text-slate-500 dark:text-slate-400">
+                    {windowsExeReady
+                      ? 'Run OnTrack-Setup.exe and confirm the single token prompt.'
+                      : 'Extract and double-click OnTrack-Setup.bat to launch the GUI progress installer.'}
+                  </p>
+                </div>
+                <div className="p-3 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                  <div className="font-semibold text-slate-900 dark:text-white">
+                    3. Silent Background Sync
+                  </div>
+                  <p className="mt-1 text-slate-500 dark:text-slate-400">
+                    Installs Desktop Agent, Focus Watcher, and pre-paired Chrome/Edge Extension into <code className="font-mono">%LOCALAPPDATA%\OnTrack</code>.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200 dark:border-slate-800 text-[11px]">
+              <span className="text-slate-500 dark:text-slate-400">
+                Manual ZIP bundles (for custom scripts or unpacked browser testing):
+              </span>
               <button
                 type="button"
                 disabled={downloadingPkg !== null}
@@ -2832,13 +3041,13 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
                     setDownloadingPkg(null);
                   }
                 }}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-indigo-600 text-white rounded hover:bg-indigo-500 disabled:opacity-60 cursor-pointer shrink-0"
+                className="inline-flex items-center gap-1 px-2.5 py-1 font-medium rounded border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-60 cursor-pointer"
               >
-                <Download className="w-3.5 h-3.5" />
+                <Download className="w-3 h-3" />
                 <span>
                   {downloadingPkg === 'paired'
                     ? 'Packaging...'
-                    : 'Download Paired Bundle (.zip x2)'}
+                    : 'Download Paired .zip Archives (x2)'}
                 </span>
               </button>
             </div>

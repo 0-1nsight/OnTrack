@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   AlertOctagon,
   ArrowLeft,
@@ -135,6 +135,8 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
   // Quick inline task creation form state
+  const quickTitleInputRef = useRef<HTMLInputElement | null>(null);
+  const [quickTitleError, setQuickTitleError] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newSectionId, setNewSectionId] = useState<string>('');
   const [newPriority, setNewPriority] = useState<TaskPriority>('high');
@@ -500,7 +502,19 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
   // Inline quick-create bar submit
   const handleQuickCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTitle.trim() || !primaryBoard) return;
+    if (!primaryBoard) {
+      notify('Create a board first before adding tasks.');
+      return;
+    }
+    const cleanTitle = newTitle.trim();
+    if (!cleanTitle) {
+      setQuickTitleError(true);
+      quickTitleInputRef.current?.focus();
+      notify('Enter a task title first before clicking Add Task.');
+      return;
+    }
+    setQuickTitleError(false);
+
     const chosenSection =
       primaryBoard.sections.find((s) => s.id === newSectionId) ||
       primaryBoard.sections[0];
@@ -509,8 +523,27 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
       .map((s) => s.trim().replace(/^#/, ''))
       .filter(Boolean);
 
+    if (categoryFilter !== 'all' && categoryFilter !== newCategory) {
+      setCategoryFilter('all');
+    }
+    if (
+      searchQuery.trim() &&
+      !cleanTitle.toLowerCase().includes(searchQuery.trim().toLowerCase()) &&
+      !(primaryBoard.projectTag || primaryBoard.name)
+        .toLowerCase()
+        .includes(searchQuery.trim().toLowerCase())
+    ) {
+      setSearchQuery('');
+    }
+    if (
+      (selection.kind === 'space' || selection.kind === 'folder') &&
+      scopedBoards.length === 0
+    ) {
+      setSelection({ kind: 'board', boardId: primaryBoard.id });
+    }
+
     onCreateTask({
-      title: newTitle.trim(),
+      title: cleanTitle,
       description: 'Created from OnTrack task workspace.',
       project: primaryBoard.projectTag || primaryBoard.name,
       boardId: primaryBoard.id,
@@ -519,7 +552,7 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
       priority: newPriority,
       category: newCategory,
       tags: parsedTags.length > 0 ? parsedTags : ['work'],
-      estimatedMinutes: Math.max(15, Number(newEstimate) || 60),
+      estimatedMinutes: Math.max(5, Number(newEstimate) || 60),
       subtasks: [],
       startDate: selectedDate || new Date().toISOString().slice(0, 10),
       dueDate:
@@ -529,23 +562,45 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
     setNewDueDate('');
   };
 
-  // Quick-add card directly inside a board column
+  // Quick-add card directly inside a board or list section
   const handleCreateTaskInSection = (
     e: React.FormEvent,
     board: WorkspaceBoard,
     sec: BoardSection
   ) => {
     e.preventDefault();
-    if (!sectionTaskDraftTitle.trim()) return;
+    const cleanTitle = sectionTaskDraftTitle.trim();
+    if (!cleanTitle) {
+      notify('Enter a task title before saving.');
+      return;
+    }
+    const targetCategory: WorkCategory =
+      categoryFilter !== 'all' ? (categoryFilter as WorkCategory) : 'deep_work';
+    if (
+      searchQuery.trim() &&
+      !cleanTitle.toLowerCase().includes(searchQuery.trim().toLowerCase()) &&
+      !(board.projectTag || board.name)
+        .toLowerCase()
+        .includes(searchQuery.trim().toLowerCase())
+    ) {
+      setSearchQuery('');
+    }
+    if (
+      (selection.kind === 'space' || selection.kind === 'folder') &&
+      scopedBoards.length === 0
+    ) {
+      setSelection({ kind: 'board', boardId: board.id });
+    }
+
     onCreateTask({
-      title: sectionTaskDraftTitle.trim(),
+      title: cleanTitle,
       description: `Added to ${sec.name} on ${board.name}.`,
       project: board.projectTag || board.name,
       boardId: board.id,
       sectionId: sec.id,
       status: sec.mappedStatus,
       priority: 'medium',
-      category: 'deep_work',
+      category: targetCategory,
       tags: ['board'],
       estimatedMinutes: 60,
       subtasks: [],
@@ -962,14 +1017,29 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
         {/* Inline Quick Task Creator Bar */}
         <form
           onSubmit={handleQuickCreateSubmit}
+          noValidate
           className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3.5 flex flex-wrap items-center gap-2.5"
         >
           <input
+            ref={quickTitleInputRef}
             type="text"
             value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            placeholder={`Add task to ${primaryBoard?.name || 'board'}...`}
-            className="flex-1 min-w-[210px] px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            onChange={(e) => {
+              setNewTitle(e.target.value);
+              if (quickTitleError && e.target.value.trim()) {
+                setQuickTitleError(false);
+              }
+            }}
+            placeholder={
+              quickTitleError
+                ? 'Type a task title here to add...'
+                : `Add task to ${primaryBoard?.name || 'board'}...`
+            }
+            className={`flex-1 min-w-[210px] px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border rounded-lg text-slate-900 dark:text-white focus:outline-none focus:ring-2 ${
+              quickTitleError
+                ? 'border-rose-500 ring-2 ring-rose-500/30 focus:ring-rose-500'
+                : 'border-slate-200 dark:border-slate-700 focus:ring-indigo-500'
+            }`}
           />
           <select
             aria-label="Target board section"
@@ -1014,8 +1084,7 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
             <span className="text-xs text-slate-500">Est (m):</span>
             <input
               type="number"
-              min={15}
-              step={15}
+              min={5}
               value={newEstimate}
               onChange={(e) => setNewEstimate(Number(e.target.value))}
               className="w-18 px-2 py-2 text-xs font-mono tabular-nums bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
@@ -1520,6 +1589,8 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
               const colorMeta =
                 SECTION_COLOR_META[section.color] || SECTION_COLOR_META.indigo;
               const isEditing = editingSectionKey === section.id;
+              const targetBoard =
+                hierarchy.boards.find((b) => b.id === boardId) || primaryBoard;
 
               return (
                 <div
@@ -1618,9 +1689,23 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
                               onClick={() =>
                                 handleReorderSection(boardId, index, -1)
                               }
-                              className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                              className="font-sans text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
                             >
                               Move Up
+                            </button>
+                          )}
+                          {targetBoard && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSectionTaskDraftId(section.id);
+                                setSectionTaskDraftTitle('');
+                              }}
+                              aria-label={`Add task to ${section.name}`}
+                              className="font-sans inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 rounded-md transition-colors cursor-pointer"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>Add Task</span>
                             </button>
                           )}
                         </div>
@@ -1628,9 +1713,55 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
                     )}
                   </div>
 
+                  {sectionTaskDraftId === section.id && targetBoard && (
+                    <form
+                      onSubmit={(e) =>
+                        handleCreateTaskInSection(e, targetBoard, section)
+                      }
+                      className="px-5 py-3 bg-indigo-50/40 dark:bg-indigo-950/20 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center gap-2 text-xs"
+                    >
+                      <input
+                        type="text"
+                        autoFocus
+                        value={sectionTaskDraftTitle}
+                        onChange={(e) =>
+                          setSectionTaskDraftTitle(e.target.value)
+                        }
+                        placeholder={`New task in ${section.name}...`}
+                        className="flex-1 min-w-[200px] px-3 py-1.5 bg-white dark:bg-slate-900 border border-indigo-300 dark:border-indigo-700 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                      <button
+                        type="submit"
+                        className="px-3 py-1.5 font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg cursor-pointer"
+                      >
+                        Add to {section.name}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSectionTaskDraftId(null)}
+                        className="px-2.5 py-1.5 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </form>
+                  )}
+
                   {groupTasks.length === 0 ? (
-                    <div className="px-5 py-6 text-xs text-slate-500 dark:text-slate-400">
-                      No tasks in {section.name.toLowerCase()}.
+                    <div className="px-5 py-5 text-xs text-slate-500 dark:text-slate-400 flex items-center justify-between gap-3">
+                      <span>No tasks in {section.name.toLowerCase()}.</span>
+                      {targetBoard && sectionTaskDraftId !== section.id && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSectionTaskDraftId(section.id);
+                            setSectionTaskDraftTitle('');
+                          }}
+                          className="inline-flex items-center gap-1 font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Add task to {section.name}</span>
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <div className="overflow-x-auto">

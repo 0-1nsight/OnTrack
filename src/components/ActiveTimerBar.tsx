@@ -98,12 +98,12 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
     <section className="no-print bg-slate-100/80 dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800 px-6 py-3">
       <div className="max-w-[1440px] mx-auto space-y-2.5">
         {/* Primary Row: Stopwatch, Task Selector, Presence Sensor, Date & Prefs */}
-        <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           {/* Left: Live Task Timer & Task Binding */}
-          <div className="flex flex-wrap items-center gap-3 flex-1 min-w-[320px]">
+          <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-0">
             {/* Stopwatch Digital Readout */}
             <div
-              className={`flex items-center gap-2.5 px-3.5 py-2 min-w-[116px] rounded-lg border transition-colors ${
+              className={`flex items-center gap-2.5 px-3.5 py-2 min-w-[116px] shrink-0 rounded-lg border transition-colors ${
                 timer.isRunning && !timer.isPaused
                   ? 'bg-indigo-600 text-white border-indigo-700'
                   : timer.isPaused
@@ -118,7 +118,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
             </div>
 
             {/* Play / Pause / Stop Controls */}
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 shrink-0">
               {!timer.isRunning ? (
                 <button
                   type="button"
@@ -164,7 +164,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
             </div>
 
             {/* Task Selector or Custom Activity Input */}
-            <div className="flex items-center gap-2 flex-1 min-w-[240px]">
+            <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[220px] max-w-full">
               <select
                 aria-label="Select task to track"
                 value={timer.taskId || ''}
@@ -186,7 +186,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
                     });
                   }
                 }}
-                className="px-3 py-2 text-xs font-medium bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 max-w-[260px] truncate"
+                className="px-3 py-2 text-xs font-medium bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full sm:w-auto sm:max-w-[230px] min-w-0 truncate"
               >
                 <option value="">Ad-hoc Activity / Custom Session</option>
                 {activeTasks.map((t) => (
@@ -204,7 +204,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
                     onUpdateTimerMeta({ customTitle: e.target.value })
                   }
                   placeholder="What are you working on right now?"
-                  className="px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 flex-1 min-w-[160px]"
+                  className="px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 flex-1 min-w-[170px] max-w-full"
                 />
               )}
 
@@ -212,7 +212,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
                 aria-label="Project selection"
                 value={timer.project}
                 onChange={(e) => onUpdateTimerMeta({ project: e.target.value })}
-                className="hidden xl:block px-2.5 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-300"
+                className="hidden xl:block px-2.5 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-300 max-w-[150px] shrink-0"
               >
                 {PROJECTS.map((proj) => (
                   <option key={proj} value={proj}>
@@ -230,7 +230,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
                     isBillable: e.target.value === 'billable',
                   })
                 }
-                className="hidden lg:block px-2.5 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-300"
+                className="hidden lg:block px-2.5 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-300 max-w-[140px] shrink-0"
               >
                 {(Object.keys(CATEGORY_LABELS) as WorkCategory[]).map((cat) => (
                   <option key={cat} value={cat}>
@@ -242,9 +242,9 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
           </div>
 
           {/* Right: OnTrack Presence Sensor, Date Picker & Workspace Settings */}
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0 max-w-full">
             {/* Presence & Idle Sensor Readout */}
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs">
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs max-w-full">
               {isApproachingIdle ? (
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
               ) : (
@@ -340,7 +340,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
 
         {/* Secondary Row: OnTrack Active Application & Document Context Tracker */}
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-200/70 dark:border-slate-800 text-xs">
-          <div className="flex flex-wrap items-center gap-2.5 flex-1">
+          <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-0">
             <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap">
               Active Window Context:
             </span>

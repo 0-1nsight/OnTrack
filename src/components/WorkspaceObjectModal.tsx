@@ -611,6 +611,7 @@ export const WorkspaceObjectModal: React.FC<WorkspaceObjectModalProps> = ({
                 </label>
                 <input
                   type="text"
+                  autoFocus
                   required
                   value={taskTitle}
                   onChange={(e) => setTaskTitle(e.target.value)}
@@ -705,8 +706,7 @@ export const WorkspaceObjectModal: React.FC<WorkspaceObjectModalProps> = ({
                   </label>
                   <input
                     type="number"
-                    min={15}
-                    step={15}
+                    min={5}
                     value={taskEstimate}
                     onChange={(e) => setTaskEstimate(Number(e.target.value))}
                     className="w-full px-3 py-2 font-mono tabular-nums bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"

@@ -16,7 +16,8 @@
     "lint:eslint": "eslint .",
     "test": "vitest run",
     "migrate": "tsx server/scripts/migrate.ts",
-    "seed": "tsx server/scripts/seed.ts"
+    "seed": "tsx server/scripts/seed.ts",
+    "build:win-installer": "tsx server/scripts/buildWinInstaller.ts"
   },
   "dependencies": {
     "@eslint/js": "^10.0.1",

@@ -13,6 +13,11 @@ import {
   readPortableFileFromDisk,
   savePortableFileToDisk,
 } from '../fileStorage.ts';
+import {
+  buildUnixInstallerArtifact,
+  buildWindowsInstallerArtifact,
+  getInstallerCapabilities,
+} from '../installerBuilder.ts';
 import { buildRoleOverview } from '../roleOverview.ts';
 import { EngineWsGateway } from '../wsGateway.ts';
 import { normalizeRole, resolveHttpAuthContext } from './authMiddleware.ts';
@@ -301,7 +306,8 @@ export function createEngineRouter(deps: {
         normalizeRole(parsed.role),
         parsed.shiftPattern,
         parsed.onLeave,
-        parsed.canDrilldownTimeline
+        parsed.canDrilldownTimeline,
+        authCtx.userId
       );
       await deps.engineStore.recordAuditLog({
         tenantId: authCtx.tenantId,
@@ -1130,10 +1136,76 @@ export function createEngineRouter(deps: {
   };
 
   router.get(
+    '/package/installer-info',
+    asyncHandler(async (req, res) => {
+      await requireStaff(req);
+      const info = await getInstallerCapabilities();
+      res.json(info);
+    })
+  );
+
+  const buildPackageArtifactResponse = async (params: {
+    kind: string;
+    tenantId: string;
+    viewerUserId: string;
+    viewerRole: string;
+    requestedUserId?: string;
+    serverUrl?: string;
+    bridgeSecret?: string;
+  }): Promise<{
+    buffer: Buffer;
+    filename: string;
+    contentType: string;
+    format: string;
+  }> => {
+    const { kind } = params;
+    const targetUserId =
+      params.viewerRole === 'admin_it' && params.requestedUserId?.trim()
+        ? params.requestedUserId.trim()
+        : params.viewerUserId;
+    const serverUrl = params.serverUrl || appConfig.appUrl || 'http://localhost:3000';
+    const bridgeSecret =
+      params.bridgeSecret?.trim() || crypto.randomBytes(24).toString('base64url');
+
+    if (kind === 'windows-installer') {
+      return buildWindowsInstallerArtifact({
+        tenantId: params.tenantId,
+        userId: targetUserId,
+        serverUrl,
+        bridgeSecret,
+      });
+    }
+
+    if (kind === 'unix-installer') {
+      return buildUnixInstallerArtifact({
+        tenantId: params.tenantId,
+        userId: targetUserId,
+        serverUrl,
+        bridgeSecret,
+      });
+    }
+
+    const zipOut = await buildPackageZipResponse({
+      kind,
+      tenantId: params.tenantId,
+      viewerUserId: params.viewerUserId,
+      viewerRole: params.viewerRole,
+      requestedUserId: params.requestedUserId,
+      serverUrl,
+      bridgeSecret,
+    });
+    return {
+      ...zipOut,
+      contentType: 'application/zip',
+      format: 'zip',
+    };
+  };
+
+  router.get(
     '/package/:kind',
     asyncHandler(async (req, res) => {
       const authCtx = await requireStaff(req);
-      const { buffer, filename } = await buildPackageZipResponse({
+      const out = await buildPackageArtifactResponse({
         kind: req.params.kind,
         tenantId: authCtx.tenantId,
         viewerUserId: authCtx.userId,
@@ -1145,9 +1217,14 @@ export function createEngineRouter(deps: {
             ? req.query.serverUrl.trim()
             : undefined,
       });
-      res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-      res.send(buffer);
+      res.setHeader('Content-Type', out.contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`);
+      res.setHeader('X-OnTrack-Installer-Format', out.format);
+      res.setHeader(
+        'Access-Control-Expose-Headers',
+        'Content-Disposition, X-OnTrack-Installer-Format'
+      );
+      res.send(out.buffer);
     })
   );
 
@@ -1156,7 +1233,7 @@ export function createEngineRouter(deps: {
     asyncHandler(async (req, res) => {
       const authCtx = await requireStaff(req);
       const parsed = PackageBuildBodySchema.parse(req.body || {});
-      const { buffer, filename } = await buildPackageZipResponse({
+      const out = await buildPackageArtifactResponse({
         kind: req.params.kind,
         tenantId: authCtx.tenantId,
         viewerUserId: authCtx.userId,
@@ -1165,9 +1242,14 @@ export function createEngineRouter(deps: {
         serverUrl: parsed.serverUrl,
         bridgeSecret: parsed.bridgeSecret,
       });
-      res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-      res.send(buffer);
+      res.setHeader('Content-Type', out.contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`);
+      res.setHeader('X-OnTrack-Installer-Format', out.format);
+      res.setHeader(
+        'Access-Control-Expose-Headers',
+        'Content-Disposition, X-OnTrack-Installer-Format'
+      );
+      res.send(out.buffer);
     })
   );
 
