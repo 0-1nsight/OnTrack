@@ -1,0 +1,71 @@
+{
+ "description": "Excel work, short alt-tab glance, QuickBooks, then 6 minutes away, then back.",
+ "samples": [
+  {
+   "t": 0,
+   "app": "Microsoft Excel",
+   "title": "Acme_Ltd_Bank_Rec_Oct 2026.xlsx - Saved to this PC - Excel",
+   "idle": 0
+  },
+  {
+   "t": 5,
+   "app": "Microsoft Excel",
+   "title": "Acme_Ltd_Bank_Rec_Oct 2026.xlsx - Saved to this PC - Excel",
+   "idle": 0
+  },
+  {
+   "t": 10,
+   "app": "Microsoft Excel",
+   "title": "Acme_Ltd_Bank_Rec_Oct 2026.xlsx - Saved to this PC - Excel",
+   "idle": 0
+  },
+  {
+   "t": 11,
+   "app": "Notepad",
+   "title": "Untitled - Notepad",
+   "idle": 0
+  },
+  {
+   "t": 12,
+   "app": "Microsoft Excel",
+   "title": "Acme_Ltd_Bank_Rec_Oct 2026.xlsx - Saved to this PC - Excel",
+   "idle": 0
+  },
+  {
+   "t": 30,
+   "app": "QuickBooks",
+   "title": "QuickBooks Desktop Pro 2024 - Acme Ltd - [Reconcile]",
+   "idle": 0
+  },
+  {
+   "t": 60,
+   "app": "QuickBooks",
+   "title": "QuickBooks Desktop Pro 2024 - Acme Ltd - [Reconcile]",
+   "idle": 30
+  },
+  {
+   "t": 240,
+   "app": "QuickBooks",
+   "title": "QuickBooks Desktop Pro 2024 - Acme Ltd - [Reconcile]",
+   "idle": 210
+  },
+  {
+   "t": 420,
+   "app": "QuickBooks",
+   "title": "QuickBooks Desktop Pro 2024 - Acme Ltd - [Reconcile]",
+   "idle": 390
+  },
+  {
+   "t": 430,
+   "app": "QuickBooks",
+   "title": "QuickBooks Desktop Pro 2024 - Acme Ltd - [Reconcile]",
+   "idle": 0
+  },
+  {
+   "t": 445,
+   "app": "QuickBooks",
+   "title": "QuickBooks Desktop Pro 2024 - Acme Ltd - [Reconcile]",
+   "idle": 0
+  }
+ ]
+}

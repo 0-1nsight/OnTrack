@@ -1,0 +1,37 @@
+{
+ "description": "A call where the user listens without touching the keyboard for 20 minutes.",
+ "samples": [
+  {
+   "t": 0,
+   "app": "Microsoft Teams",
+   "title": "Acme quarterly review | Microsoft Teams",
+   "idle": 0,
+   "meeting": true,
+   "media": true
+  },
+  {
+   "t": 600,
+   "app": "Microsoft Teams",
+   "title": "Acme quarterly review | Microsoft Teams",
+   "idle": 600,
+   "meeting": true,
+   "media": true
+  },
+  {
+   "t": 1200,
+   "app": "Microsoft Teams",
+   "title": "Acme quarterly review | Microsoft Teams",
+   "idle": 1200,
+   "meeting": true,
+   "media": true
+  },
+  {
+   "t": 1210,
+   "app": "Microsoft Teams",
+   "title": "Acme quarterly review | Microsoft Teams",
+   "idle": 0,
+   "meeting": true,
+   "media": true
+  }
+ ]
+}

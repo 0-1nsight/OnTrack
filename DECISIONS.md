@@ -23,3 +23,7 @@
 ## 6. Deterministic 5-Signal Scoring, Context Propagation & Retroactive Revision Events
 - **Decision**: Score candidate tasks deterministically across explicit active task, client/period extraction, today's tasks/due dates, neighboring blocks, and learned user rules, persisting versioned `state.session_attributed` revision events whenever a later strong signal (`>= 0.85`) upgrades earlier ambiguous sessions (`ATTR-3`).
 - **Rationale**: Every attribution can answer *"Why was this assigned here?"* (`ATTR-1`), respects `< 0.50` Review Tray isolation (`ATTR-2`), and produces reproducible offline replay metrics (`ATTR-4`).
+
+## 7. Capture-Stage Modules Live Inside the Desktop Agent Package
+- **Decision**: Place the document adapters, activity-state machine, tracking controls, capture-health check and capture sampler under `packages/desktop-agent/src/capture/` rather than `src/engine/`. They stay runtime-agnostic and are imported directly by tests.
+- **Rationale**: The downloadable agent bundle zips only `packages/desktop-agent/`. Code imported from `src/engine/` would be missing on a user's machine. `tests/agentBundle.test.ts` builds the real zip, extracts it and boots the agent from it to guard this.

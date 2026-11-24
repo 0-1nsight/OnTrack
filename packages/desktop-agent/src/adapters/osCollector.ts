@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { detectMeeting } from './appNames.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -16,9 +17,15 @@ export interface WindowSample {
   meetingActive: boolean;
   osPlatform: AgentOSPlatform;
   isVirtualDesktop: boolean;
+  sessionLocked: boolean;
+  mediaInUse: boolean;
+  virtualDesktopId: string | null;
+  /** macOS: false when window titles are blocked by the Accessibility permission. */
+  accessibilityGranted?: boolean;
+  linuxSession?: 'x11' | 'wayland' | 'unknown';
+  /** True when the OS probe failed; the other fields are placeholders and must not be recorded. */
+  collectorFailed: boolean;
 }
-
-const MEETING_APP_PATTERN = /zoom|microsoft teams|teams|webex|google meet|slack huddle/i;
 
 function isRDPSession(): boolean {
   const sessionName = (process.env.SESSIONNAME || '').toLowerCase();
@@ -108,14 +115,17 @@ async function sampleMacOS(): Promise<Partial<WindowSample>> {
     tell application "System Events"
       set frontApp to name of first application process whose frontmost is true
       set winTitle to ""
+      set axState to "ok"
       try
         set winTitle to name of front window of application process frontApp
+      on error errMsg number errNum
+        if errNum is -25211 or errNum is -1719 then set axState to "denied"
       end try
-      return frontApp & "||" & winTitle
+      return frontApp & "||" & winTitle & "||" & axState
     end tell
   `;
   const { stdout } = await execFileAsync('osascript', ['-e', script], { timeout: 2000 });
-  const [appRaw = 'Unknown', titleRaw = ''] = stdout.trim().split('||');
+  const [appRaw = 'Unknown', titleRaw = '', axRaw = 'ok'] = stdout.trim().split('||');
 
   let idleSeconds: number;
   try {
@@ -129,17 +139,33 @@ async function sampleMacOS(): Promise<Partial<WindowSample>> {
     idleSeconds = 0;
   }
 
+  let sessionLocked: boolean;
+  try {
+    const { stdout: lockOut } = await execFileAsync(
+      'sh',
+      ['-c', 'ioreg -n Root -d1 -a | grep -c "CGSSessionScreenIsLocked" || true'],
+      { timeout: 1200 }
+    );
+    sessionLocked = Number.parseInt(lockOut.trim(), 10) > 0;
+  } catch {
+    sessionLocked = false;
+  }
+
   return {
     app: appRaw.trim() || 'macOS App',
     windowTitle: titleRaw.trim() || appRaw.trim(),
     idleSeconds,
+    sessionLocked,
+    accessibilityGranted: axRaw.trim() !== 'denied',
   };
 }
 
 async function sampleLinux(): Promise<Partial<WindowSample>> {
   const { stdout } = await execFileAsync(
     'sh',
-    ['-c', 'xdotool getactivewindow getwindowname 2>/dev/null || echo "Active Window"'],
+    // No fallback text: if xdotool is missing or fails, the collector must report failure
+    // instead of recording a made-up window.
+    ['-c', 'xdotool getactivewindow getwindowname'],
     { timeout: 1500 }
   );
   const title = stdout.trim() || 'Linux Workspace';
@@ -157,10 +183,25 @@ async function sampleLinux(): Promise<Partial<WindowSample>> {
     idleSeconds = 0;
   }
 
+  let sessionLocked: boolean;
+  try {
+    const { stdout: lockOut } = await execFileAsync(
+      'sh',
+      ['-c', 'loginctl show-session "$XDG_SESSION_ID" -p LockedHint --value 2>/dev/null || echo no'],
+      { timeout: 1000 }
+    );
+    sessionLocked = lockOut.trim() === 'yes';
+  } catch {
+    sessionLocked = false;
+  }
+
+  const sessionType = (process.env.XDG_SESSION_TYPE || '').toLowerCase();
   return {
     app: title.split(' - ').pop() || 'Desktop App',
     windowTitle: title,
     idleSeconds,
+    sessionLocked,
+    linuxSession: sessionType === 'wayland' ? 'wayland' : sessionType === 'x11' ? 'x11' : 'unknown',
   };
 }
 
@@ -181,11 +222,13 @@ export async function captureForegroundMetadata(): Promise<WindowSample> {
     : 'linux';
 
   let partial: Partial<WindowSample>;
+  let collectorFailed = false;
   try {
     if (platform === 'win32') partial = await sampleWindows();
     else if (platform === 'darwin') partial = await sampleMacOS();
     else partial = await sampleLinux();
   } catch {
+    collectorFailed = true;
     partial = {
       app: osPlatform === 'vdi' ? 'Remote Desktop Session' : 'Workstation App',
       windowTitle: `${os.hostname()} Active Session`,
@@ -202,8 +245,14 @@ export async function captureForegroundMetadata(): Promise<WindowSample> {
     windowTitle,
     filePath: fileMatch ? fileMatch[1] : null,
     idleSeconds: partial.idleSeconds ?? 0,
-    meetingActive: MEETING_APP_PATTERN.test(`${app} ${windowTitle}`),
+    meetingActive: detectMeeting(app, windowTitle, false),
     osPlatform,
     isVirtualDesktop: virtualDesktop,
+    sessionLocked: partial.sessionLocked ?? false,
+    mediaInUse: false,
+    virtualDesktopId: null,
+    accessibilityGranted: partial.accessibilityGranted,
+    linuxSession: partial.linuxSession,
+    collectorFailed,
   };
 }
