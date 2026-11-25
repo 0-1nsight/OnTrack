@@ -201,6 +201,8 @@ export function adaptEngineSessionsToTimeline(params: {
   const documentSegments: DocumentUsageSegment[] = [];
 
   for (const s of sessions) {
+    const attr = attrMap.get(s.id);
+    const isDismissed = attr?.status === 'dismissed';
     const startObj = new Date(s.startTimeUtc);
     const endObj = new Date(s.endTimeUtc);
     const dateStr = Number.isNaN(startObj.getTime())
@@ -218,6 +220,12 @@ export function adaptEngineSessionsToTimeline(params: {
     );
     const endMin = Math.min(1440, startMin + rawDur);
 
+    const isSyntheticEntry =
+      s.primaryApp === 'OnTrack Manual' || s.primaryApp === 'OnTrack Reconciled';
+    if (isDismissed && isSyntheticEntry) {
+      continue;
+    }
+
     activitySegments.push({
       id: `seg-eng-sync-${s.id}`,
       date: dateStr,
@@ -225,9 +233,13 @@ export function adaptEngineSessionsToTimeline(params: {
       endTime: endMin,
       state: s.isIdle ? 'idle' : 'active',
       label: s.isIdle
-        ? `Unreconciled Idle (${s.primaryTitle})`
+        ? attr?.status === 'confirmed'
+          ? `Reconciled Idle (${attr.taskTitle || s.primaryTitle})`
+          : isDismissed
+          ? `Away (${s.primaryTitle})`
+          : `Unreconciled Idle (${s.primaryTitle})`
         : `${s.primaryApp}: ${s.primaryTitle}`,
-      reconciled: !s.isIdle,
+      reconciled: !s.isIdle || attr?.status === 'confirmed' || isDismissed,
     });
 
     if (s.isIdle) {
@@ -243,7 +255,6 @@ export function adaptEngineSessionsToTimeline(params: {
       appCategory: inferAppCategory(s.primaryApp),
     });
 
-    const attr = attrMap.get(s.id);
     documentSegments.push({
       id: `doc-eng-sync-${s.id}`,
       date: dateStr,
@@ -255,6 +266,10 @@ export function adaptEngineSessionsToTimeline(params: {
       linkedTaskId: attr?.taskId || null,
     });
 
+    if (isDismissed) {
+      continue;
+    }
+
     const entrySource = getSignalValue(s.entities.signals, 'entry_source:');
     const entryProject = getSignalValue(s.entities.signals, 'entry_project:');
     const entryTitle = getSignalValue(s.entities.signals, 'entry_title:');
@@ -263,8 +278,7 @@ export function adaptEngineSessionsToTimeline(params: {
       entrySource === 'manual' ||
       entrySource === 'timer' ||
       entrySource === 'reconciled' ||
-      s.primaryApp === 'OnTrack Manual' ||
-      s.primaryApp === 'OnTrack Reconciled';
+      isSyntheticEntry;
 
     const shouldCreateBlock =
       includeAllAttributions ||

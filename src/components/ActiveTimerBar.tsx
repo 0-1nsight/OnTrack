@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Play,
   Pause,
@@ -12,12 +12,14 @@ import {
   Sun,
   Moon,
 } from 'lucide-react';
+import { ClientDictionaryEntry } from '../engine/types';
 import {
   ActiveTimerState,
   Task,
   WorkCategory,
   WorkspacePreferences,
 } from '../types';
+import { deriveDynamicWorkstreams } from '../utils/analyticsMetrics';
 import {
   PROJECTS,
   CATEGORY_LABELS,
@@ -30,6 +32,7 @@ interface ActiveTimerBarProps {
   lastActivityMsRef: React.MutableRefObject<number>;
   isIdleModalOpen: boolean;
   tasks: Task[];
+  clients?: ClientDictionaryEntry[];
   selectedDate: string;
   weekDates: string[];
   preferences: WorkspacePreferences;
@@ -51,6 +54,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
   lastActivityMsRef,
   isIdleModalOpen,
   tasks,
+  clients = [],
   selectedDate,
   weekDates,
   preferences,
@@ -66,6 +70,18 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
   onOpenPreferences,
   onToggleTheme,
 }) => {
+  const projectOptions = useMemo(() => {
+    const base = deriveDynamicWorkstreams({
+      clients,
+      tasks,
+      timeBlocks: [],
+      fallbackDefaults: PROJECTS,
+    });
+    if (timer.project && !base.some((p) => p.toLowerCase() === timer.project.toLowerCase())) {
+      return [timer.project, ...base];
+    }
+    return base;
+  }, [clients, tasks, timer.project]);
   const [clockState, setClockState] = useState<{ nowMs: number; idleSeconds: number }>({
     nowMs: 0,
     idleSeconds: 0,
@@ -228,7 +244,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
                 onChange={(e) => onUpdateTimerMeta({ project: e.target.value })}
                 className="hidden xl:block px-2.5 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-300 max-w-[150px] shrink-0"
               >
-                {PROJECTS.map((proj) => (
+                {projectOptions.map((proj) => (
                   <option key={proj} value={proj}>
                     {proj}
                   </option>

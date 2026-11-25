@@ -14,57 +14,135 @@
       }
       body {
         margin: 0;
-        width: 340px;
+        width: 360px;
         background: #f8fafc;
         color: #0f172a;
-        padding: 14px;
+        padding: 12px;
         font-size: 12px;
       }
       .card {
         background: #ffffff;
         border: 1px solid #e2e8f0;
-        border-radius: 6px;
-        padding: 12px;
+        border-radius: 8px;
+        padding: 14px;
       }
       .header {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 8px;
-        margin-bottom: 10px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid #e2e8f0;
+        margin-bottom: 12px;
       }
       .title {
         font-size: 13px;
-        font-weight: 600;
+        font-weight: 700;
         margin: 0;
+        color: #0f172a;
       }
-      .badge {
+      .status-text {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 10px;
+        font-size: 11px;
         font-weight: 600;
-        padding: 2px 6px;
-        border-radius: 4px;
-        border: 1px solid #cbd5e1;
-        background: #f1f5f9;
+        font-variant-numeric: tabular-nums;
+      }
+      .status-text.connected { color: #047857; }
+      .status-text.paused { color: #b45309; }
+      .status-text.off_the_record { color: #be123c; }
+      .status-text.unauthorized { color: #be123c; }
+      .status-text.offline { color: #b45309; }
+      .status-text.unconfigured { color: #475569; }
+      .section {
+        margin-bottom: 12px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid #e2e8f0;
+      }
+      .section-title {
+        font-size: 11px;
+        font-weight: 600;
+        color: #475569;
+        margin: 0 0 8px 0;
+      }
+      .control-note {
+        font-size: 11px;
         color: #334155;
+        margin-bottom: 8px;
+        line-height: 1.4;
       }
-      .badge.connected {
-        border-color: #10b981;
-        background: #ecfdf5;
-        color: #047857;
+      .actions-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
       }
-      .badge.unauthorized {
-        border-color: #f43f5e;
+      .actions {
+        display: flex;
+        gap: 8px;
+      }
+      button {
+        padding: 7px 10px;
+        border-radius: 6px;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+        border: 1px solid transparent;
+        white-space: nowrap;
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .btn-primary {
+        background: #4f46e5;
+        color: #ffffff;
+        width: 100%;
+      }
+      .btn-primary:hover:not(:disabled) {
+        background: #4338ca;
+      }
+      .btn-secondary {
+        background: #ffffff;
+        color: #334155;
+        border-color: #cbd5e1;
+      }
+      .btn-secondary:hover:not(:disabled) {
+        background: #f1f5f9;
+      }
+      .btn-danger {
         background: #fff1f2;
         color: #be123c;
+        border-color: #fecdd3;
       }
-      .badge.offline {
-        border-color: #f59e0b;
-        background: #fffbeb;
+      .btn-danger:hover:not(:disabled) {
+        background: #ffe4e6;
+      }
+      .stats-list {
+        display: grid;
+        gap: 6px;
+        font-size: 11px;
+        color: #475569;
+      }
+      .stat-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .issue-note {
+        margin-top: 6px;
+        font-size: 11px;
         color: #b45309;
+        line-height: 1.4;
+      }
+      details summary {
+        font-size: 11px;
+        font-weight: 600;
+        color: #475569;
+        cursor: pointer;
+        margin-bottom: 8px;
       }
       .field {
-        margin-bottom: 10px;
+        margin-bottom: 8px;
       }
       .field label {
         display: block;
@@ -76,48 +154,11 @@
         width: 100%;
         padding: 6px 8px;
         border: 1px solid #cbd5e1;
-        border-radius: 4px;
+        border-radius: 6px;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 11px;
         color: #0f172a;
         background: #ffffff;
-      }
-      .actions {
-        display: flex;
-        gap: 8px;
-      }
-      button {
-        flex: 1;
-        padding: 7px 10px;
-        border-radius: 4px;
-        font-size: 11px;
-        font-weight: 600;
-        cursor: pointer;
-        border: 1px solid transparent;
-      }
-      .btn-primary {
-        background: #4f46e5;
-        color: #ffffff;
-      }
-      .btn-primary:hover {
-        background: #4338ca;
-      }
-      .btn-secondary {
-        background: #ffffff;
-        color: #334155;
-        border-color: #cbd5e1;
-      }
-      .btn-secondary:hover {
-        background: #f1f5f9;
-      }
-      .meta {
-        margin-top: 10px;
-        padding-top: 10px;
-        border-top: 1px solid #e2e8f0;
-        font-size: 11px;
-        color: #475569;
-        display: grid;
-        gap: 4px;
       }
       .mono {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -134,42 +175,81 @@
   <body>
     <div class="card">
       <div class="header">
-        <h1 class="title">OnTrack Browser Collector</h1>
-        <span id="statusBadge" class="badge">Unconfigured</span>
+        <h1 class="title">OnTrack Workstation Collector</h1>
+        <span id="statusBadge" class="status-text unconfigured">Unconfigured</span>
       </div>
 
-      <form id="bridgeForm">
-        <div class="field">
-          <label for="bridgeUrl">Local Bridge URL</label>
-          <input
-            id="bridgeUrl"
-            type="url"
-            required
-            placeholder="http://127.0.0.1:47621/browser-event"
-          />
+      <div class="section">
+        <div class="section-title">Capture Controls</div>
+        <div id="controlNote" class="control-note">
+          Checking local Desktop Agent status...
         </div>
-        <div class="field">
-          <label for="bridgeSecret">Bridge Secret (X-OnTrack-Bridge-Secret)</label>
-          <input
-            id="bridgeSecret"
-            type="password"
-            autocomplete="off"
-            placeholder="Paste pairing secret from agent.config.json"
-          />
+        <div id="recordingControls" class="actions-grid">
+          <button type="button" id="pause15Btn" class="btn-secondary">Pause 15m</button>
+          <button type="button" id="pause60Btn" class="btn-secondary">Pause 1h</button>
+          <button type="button" id="offRecordBtn" class="btn-danger">Off the Record</button>
         </div>
-        <div class="actions">
-          <button type="submit" class="btn-primary">Save &amp; Test Bridge</button>
-          <button type="button" id="toggleSecretBtn" class="btn-secondary">Show</button>
+        <div id="resumeControls" style="display: none;">
+          <button type="button" id="resumeBtn" class="btn-primary">Resume Recording Now</button>
         </div>
-      </form>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Capture Health &amp; Local SQLite Buffer</div>
+        <div class="stats-list">
+          <div class="stat-row">
+            <span>Capture Health</span>
+            <span id="captureHealthSummary" class="mono">Waiting...</span>
+          </div>
+          <div class="stat-row">
+            <span>Local SQLite Queue</span>
+            <span id="sqliteSummary" class="mono">--</span>
+          </div>
+          <div class="stat-row">
+            <span>Last Sync</span>
+            <span id="lastSyncUtc" class="mono">Never</span>
+          </div>
+          <div class="stat-row">
+            <span>Exclusions Loaded</span>
+            <span id="exclusionCount" class="mono">0</span>
+          </div>
+          <div class="stat-row">
+            <span>Last Browser Tab</span>
+            <span id="lastEventSummary" class="mono" style="max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">None</span>
+          </div>
+        </div>
+        <div id="healthIssueNote" class="issue-note" style="display: none;"></div>
+      </div>
+
+      <details id="pairingDetails">
+        <summary>Local Bridge Pairing Settings</summary>
+        <form id="bridgeForm">
+          <div class="field">
+            <label for="bridgeUrl">Local Bridge URL</label>
+            <input
+              id="bridgeUrl"
+              type="url"
+              required
+              placeholder="http://127.0.0.1:47621/browser-event"
+            />
+          </div>
+          <div class="field">
+            <label for="bridgeSecret">Bridge Secret (X-OnTrack-Bridge-Secret)</label>
+            <input
+              id="bridgeSecret"
+              type="password"
+              autocomplete="off"
+              placeholder="Paste pairing secret from agent.config.json"
+            />
+          </div>
+          <div class="actions">
+            <button type="submit" class="btn-primary">Save &amp; Test Bridge</button>
+            <button type="button" id="toggleSecretBtn" class="btn-secondary">Show</button>
+          </div>
+        </form>
+      </details>
 
       <div id="feedback" class="feedback" role="status"></div>
-
-      <div class="meta">
-        <div>Last Sync: <span id="lastSyncUtc" class="mono">Never</span></div>
-        <div>Exclusions Loaded: <span id="exclusionCount" class="mono">0</span></div>
-        <div>Last Event: <span id="lastEventSummary" class="mono">None</span></div>
-      </div>
     </div>
     <script src="popup.js" type="module"></script>
   </body>

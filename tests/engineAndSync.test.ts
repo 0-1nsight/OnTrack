@@ -375,4 +375,159 @@ describe('7-Stage Engine, Privacy Filter, Offline Sync, Freshness & Portable Upl
       });
     expect(crossUpload.status).toBe(403);
   });
+
+  it('persists edited, deleted, and idle-reconciled timeline blocks across snapshot hydration', async () => {
+    const { adaptEngineSessionsToTimeline } = await import(
+      '../src/utils/engineWorkspaceAdapter.ts'
+    );
+
+    const loginRes = await request(ctx.app)
+      .post('/api/auth/demo-login')
+      .send({ userId: 'demo_u_acc_01' });
+    expect(loginRes.status).toBe(200);
+    const accCookie = loginRes.headers['set-cookie'];
+
+    const tStart = new Date();
+    tStart.setHours(10, 0, 0, 0);
+    const tIdle = new Date();
+    tIdle.setHours(11, 0, 0, 0);
+
+    const initialSync = await request(ctx.app)
+      .post('/api/engine/sync')
+      .set('Cookie', accCookie)
+      .send({
+        deviceId: 'dev-timeline-test',
+        events: [
+          {
+            event_id: 'tl-ev-1',
+            schema_version: 1,
+            tenant_id: 'firm_demo',
+            user_id: 'demo_u_acc_01',
+            device_id: 'dev-timeline-test',
+            seq: 10,
+            type: 'activity.window',
+            priority: 'activity',
+            event_time_utc: tStart.toISOString(),
+            received_at: null,
+            payload: {
+              app: 'Microsoft Excel',
+              window_title: 'Draft Close Workbook',
+              duration_ms: 30 * 60_000,
+              entry_source: 'manual',
+              entry_project: 'Acme Ltd',
+              entry_category: 'billable',
+              entry_title: 'Initial Draft Close',
+            },
+          },
+          {
+            event_id: 'tl-idle-1',
+            schema_version: 1,
+            tenant_id: 'firm_demo',
+            user_id: 'demo_u_acc_01',
+            device_id: 'dev-timeline-test',
+            seq: 11,
+            type: 'activity.idle',
+            priority: 'activity',
+            event_time_utc: tIdle.toISOString(),
+            received_at: null,
+            payload: {
+              app: 'Workstation',
+              window_title: 'Idle away gap',
+              idle: true,
+              duration_ms: 20 * 60_000,
+            },
+          },
+        ],
+      });
+    expect(initialSync.status).toBe(200);
+
+    const snap1 = await request(ctx.app)
+      .get('/api/engine/snapshot?tenantId=firm_demo&viewerUserId=demo_u_acc_01&viewerRole=accountant&targetUserId=demo_u_acc_01')
+      .set('Cookie', accCookie);
+    expect(snap1.status).toBe(200);
+
+    const workSession = snap1.body.sessions.find(
+      (s: any) => s.deviceId === 'dev-timeline-test' && !s.isIdle
+    );
+    const idleSession = snap1.body.sessions.find(
+      (s: any) => s.deviceId === 'dev-timeline-test' && s.isIdle
+    );
+    expect(workSession).toBeTruthy();
+    expect(idleSession).toBeTruthy();
+
+    // Dismiss the old block and post replacement edited manual block (45m instead of 30m)
+    const dismissRes = await request(ctx.app)
+      .post(`/api/engine/attributions/${encodeURIComponent(workSession.id)}/resolve`)
+      .set('Cookie', accCookie)
+      .send({
+        taskId: null,
+        status: 'dismissed',
+        customReason: 'Replaced by edited timeline block',
+      });
+    expect(dismissRes.status).toBe(200);
+
+    const editSync = await request(ctx.app)
+      .post('/api/engine/sync')
+      .set('Cookie', accCookie)
+      .send({
+        deviceId: 'dev-timeline-test',
+        events: [
+          {
+            event_id: 'tl-ev-2',
+            schema_version: 1,
+            tenant_id: 'firm_demo',
+            user_id: 'demo_u_acc_01',
+            device_id: 'dev-timeline-test',
+            seq: 12,
+            type: 'activity.window',
+            priority: 'activity',
+            event_time_utc: tStart.toISOString(),
+            received_at: null,
+            payload: {
+              app: 'Microsoft Excel',
+              window_title: 'Draft Close Workbook',
+              duration_ms: 45 * 60_000,
+              entry_source: 'manual',
+              entry_project: 'Tax & Close',
+              entry_category: 'billable',
+              entry_title: 'Adjusted Tax Close Work',
+            },
+          },
+        ],
+      });
+    expect(editSync.status).toBe(200);
+
+    // Reconcile the idle gap as Away (dismissed)
+    const idleResolveRes = await request(ctx.app)
+      .post(`/api/engine/attributions/${encodeURIComponent(idleSession.id)}/resolve`)
+      .set('Cookie', accCookie)
+      .send({
+        taskId: null,
+        status: 'dismissed',
+        customReason: 'Trimmed Idle Time (Marked Away)',
+      });
+    expect(idleResolveRes.status).toBe(200);
+
+    const snap2 = await request(ctx.app)
+      .get('/api/engine/snapshot?tenantId=firm_demo&viewerUserId=demo_u_acc_01&viewerRole=accountant&targetUserId=demo_u_acc_01')
+      .set('Cookie', accCookie);
+    expect(snap2.status).toBe(200);
+
+    const adapted = adaptEngineSessionsToTimeline({
+      sessions: snap2.body.sessions,
+      attributions: snap2.body.attributions,
+    });
+
+    expect(adapted.timeBlocks.some((b) => b.title === 'Initial Draft Close')).toBe(false);
+    const updatedBlock = adapted.timeBlocks.find((b) => b.title === 'Adjusted Tax Close Work');
+    expect(updatedBlock).toBeTruthy();
+    expect(updatedBlock?.durationMinutes).toBe(45);
+    expect(updatedBlock?.project).toBe('Tax & Close');
+
+    const idleSeg = adapted.activitySegments.find(
+      (seg) => seg.id === `seg-eng-sync-${idleSession.id}`
+    );
+    expect(idleSeg?.reconciled).toBe(true);
+    expect(idleSeg?.label).toContain('Away');
+  });
 });

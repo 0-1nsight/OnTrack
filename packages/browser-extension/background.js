@@ -47,6 +47,8 @@ async function getConfig() {
     'bridgeUrl',
     'bridgeSecret',
     'excludedDomains',
+    'agentControls',
+    'captureHealth',
   ]);
   return {
     bridgeUrl: stored.bridgeUrl || DEFAULT_BRIDGE_URL,
@@ -54,6 +56,8 @@ async function getConfig() {
     excludedDomains: Array.isArray(stored.excludedDomains)
       ? stored.excludedDomains
       : DEFAULT_EXCLUDED_DOMAINS,
+    agentControls: stored.agentControls || null,
+    captureHealth: stored.captureHealth || null,
   };
 }
 
@@ -72,31 +76,39 @@ async function syncExclusionsFromAgentBridge() {
       lastSyncStatus: 'unconfigured',
       lastSyncUtc: new Date().toISOString(),
     });
-    return 'unconfigured';
+    return { status: 'unconfigured', agentControls: null, captureHealth: null };
   }
 
   const origin = deriveBridgeOrigin(cfg.bridgeUrl);
+  const headers = {
+    'X-OnTrack-Bridge-Secret': cfg.bridgeSecret,
+  };
   try {
-    const res = await fetch(`${origin}/config`, {
-      headers: {
-        'X-OnTrack-Bridge-Secret': cfg.bridgeSecret,
-      },
-    });
-    if (res.status === 401 || res.status === 403) {
+    const [cfgRes, controlsRes, healthRes] = await Promise.all([
+      fetch(`${origin}/config`, { headers }),
+      fetch(`${origin}/controls`, { headers }).catch(() => null),
+      fetch(`${origin}/capture-health`, { headers }).catch(() => null),
+    ]);
+
+    if (cfgRes.status === 401 || cfgRes.status === 403) {
       await chrome.storage.local.set({
         lastSyncStatus: 'unauthorized',
         lastSyncUtc: new Date().toISOString(),
       });
-      return 'unauthorized';
+      return { status: 'unauthorized', agentControls: null, captureHealth: null };
     }
-    if (!res.ok) {
+    if (!cfgRes.ok) {
       await chrome.storage.local.set({
         lastSyncStatus: 'offline',
         lastSyncUtc: new Date().toISOString(),
       });
-      return 'offline';
+      return { status: 'offline', agentControls: null, captureHealth: null };
     }
-    const data = await res.json();
+
+    const data = await cfgRes.json();
+    const agentControls = controlsRes && controlsRes.ok ? await controlsRes.json().catch(() => null) : null;
+    const captureHealth = healthRes && healthRes.ok ? await healthRes.json().catch(() => null) : null;
+
     const nextState = {
       lastSyncStatus: 'connected',
       lastSyncUtc: new Date().toISOString(),
@@ -104,14 +116,67 @@ async function syncExclusionsFromAgentBridge() {
     if (Array.isArray(data.excludedDomains)) {
       nextState.excludedDomains = data.excludedDomains;
     }
+    if (agentControls) {
+      nextState.agentControls = agentControls;
+    }
+    if (captureHealth) {
+      nextState.captureHealth = captureHealth;
+    }
     await chrome.storage.local.set(nextState);
-    return 'connected';
+    return { status: 'connected', agentControls, captureHealth };
   } catch {
     await chrome.storage.local.set({
       lastSyncStatus: 'offline',
       lastSyncUtc: new Date().toISOString(),
     });
-    return 'offline';
+    return { status: 'offline', agentControls: null, captureHealth: null };
+  }
+}
+
+async function applyAgentControlAction(actionPayload) {
+  const cfg = await getConfig();
+  if (!cfg.bridgeSecret) {
+    return { ok: false, status: 'unconfigured', error: 'Bridge secret is required.' };
+  }
+
+  const origin = deriveBridgeOrigin(cfg.bridgeUrl);
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-OnTrack-Bridge-Secret': cfg.bridgeSecret,
+  };
+  try {
+    const res = await fetch(`${origin}/controls`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(actionPayload || {}),
+    });
+    if (res.status === 401 || res.status === 403) {
+      await chrome.storage.local.set({
+        lastSyncStatus: 'unauthorized',
+        lastSyncUtc: new Date().toISOString(),
+      });
+      return { ok: false, status: 'unauthorized', error: 'Invalid bridge secret.' };
+    }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.ok === false) {
+      return { ok: false, status: 'connected', error: body.error || 'Control request failed.' };
+    }
+    const healthRes = await fetch(`${origin}/capture-health`, {
+      headers: { 'X-OnTrack-Bridge-Secret': cfg.bridgeSecret },
+    }).catch(() => null);
+    const captureHealth = healthRes && healthRes.ok ? await healthRes.json().catch(() => null) : null;
+
+    const nextUpdates = {
+      lastSyncStatus: 'connected',
+      lastSyncUtc: new Date().toISOString(),
+    };
+    if (body.controls) nextUpdates.agentControls = body.controls;
+    if (captureHealth) nextUpdates.captureHealth = captureHealth;
+    await chrome.storage.local.set(nextUpdates);
+    return { ok: true, status: 'connected', controls: body.controls, captureHealth };
+  } catch {
+    await chrome.storage.local.set({ lastSyncStatus: 'offline' });
+    return { ok: false, status: 'offline', error: 'Desktop agent offline.' };
   }
 }
 
@@ -130,6 +195,15 @@ function sanitizeUrlMetadata(rawUrl) {
   }
 }
 
+function isTrackingLocallyBlocked(agentControls) {
+  if (!agentControls) return false;
+  if (agentControls.offTheRecord) return true;
+  if (typeof agentControls.pausedUntilMs === 'number' && Date.now() < agentControls.pausedUntilMs) {
+    return true;
+  }
+  return false;
+}
+
 async function emitTabMetadata(tab, extra = {}) {
   // PRIV-1: Ignore private / incognito windows completely before storage or bridge call
   if (!tab || tab.incognito) {
@@ -144,6 +218,10 @@ async function emitTabMetadata(tab, extra = {}) {
     await chrome.storage.local.set({
       lastSyncStatus: 'unconfigured',
     });
+    return;
+  }
+
+  if (isTrackingLocallyBlocked(cfg.agentControls)) {
     return;
   }
 
@@ -183,11 +261,15 @@ async function emitTabMetadata(tab, extra = {}) {
     }
 
     if (res.ok) {
-      await chrome.storage.local.set({
+      const data = await res.json().catch(() => ({}));
+      const updates = {
         lastSyncStatus: 'connected',
         lastSyncUtc: new Date().toISOString(),
-        lastEventSummary: `${urlMeta.domain}${extra.downloadFilename ? ` · ${extra.downloadFilename}` : ''}`,
-      });
+      };
+      if (data.accepted !== false) {
+        updates.lastEventSummary = `${urlMeta.domain}${extra.downloadFilename ? ` · ${extra.downloadFilename}` : ''}`;
+      }
+      await chrome.storage.local.set(updates);
     }
   } catch {
     await chrome.storage.local.set({
@@ -203,10 +285,21 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === 'ontrack:sync-config') {
+  if (message?.type === 'ontrack:sync-config' || message?.type === 'ontrack:get-status') {
     defaultsSeedPromise = null;
-    void syncExclusionsFromAgentBridge().then((status) => {
-      sendResponse({ ok: status === 'connected', status });
+    void syncExclusionsFromAgentBridge().then((result) => {
+      sendResponse({
+        ok: result.status === 'connected',
+        status: result.status,
+        agentControls: result.agentControls,
+        captureHealth: result.captureHealth,
+      });
+    });
+    return true;
+  }
+  if (message?.type === 'ontrack:apply-control') {
+    void applyAgentControlAction(message.payload).then((result) => {
+      sendResponse(result);
     });
     return true;
   }

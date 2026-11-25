@@ -73,6 +73,28 @@ export const PROJECT_COLORS: Record<string, ColorStyleTokens> = {
   },
 };
 
+const DYNAMIC_PROJECT_PALETTE: ColorStyleTokens[] = [
+  PROJECT_COLORS['Core Platform'],
+  PROJECT_COLORS['Client Portal'],
+  PROJECT_COLORS['Analytics Engine'],
+  PROJECT_COLORS['Tax & Close'],
+  PROJECT_COLORS['Audit & Assurance'],
+  PROJECT_COLORS['Internal Ops'],
+];
+
+export function getProjectColorTokens(projectName: string): ColorStyleTokens {
+  if (PROJECT_COLORS[projectName]) {
+    return PROJECT_COLORS[projectName];
+  }
+  const normalized = (projectName || '').trim().toLowerCase();
+  if (!normalized) return DYNAMIC_PROJECT_PALETTE[0];
+  let hash = 0;
+  for (let i = 0; i < normalized.length; i += 1) {
+    hash = (hash * 31 + normalized.charCodeAt(i)) >>> 0;
+  }
+  return DYNAMIC_PROJECT_PALETTE[hash % DYNAMIC_PROJECT_PALETTE.length];
+}
+
 export const TRACKED_APPS: { name: string; category: AppCategory }[] = [
   { name: 'Google Chrome', category: 'browser' },
   { name: 'Microsoft Excel', category: 'docs' },

@@ -183,6 +183,7 @@ export interface IdleAlertState {
   activeTaskTitle: string;
   startMinuteOfDay: number;
   endMinuteOfDay: number;
+  segmentId?: string;
 }
 
 export interface WorkspacePreferences {

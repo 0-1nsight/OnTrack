@@ -8,15 +8,27 @@ export function timingSafeEqualStrings(a: string, b: string): boolean {
   return crypto.timingSafeEqual(hashA, hashB);
 }
 
-export function isAllowedBridgeOrigin(originHeader: string | undefined): boolean {
+export function isAllowedBridgeOrigin(
+  originHeader: string | undefined,
+  allowedOrigins: string[] = []
+): boolean {
   if (!originHeader) return true;
-  return /^(chrome-extension|moz-extension|safari-web-extension):\/\/|^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(
-    originHeader
+  if (
+    /^(chrome-extension|moz-extension|safari-web-extension):\/\/|^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(
+      originHeader
+    )
+  ) {
+    return true;
+  }
+  const normalizedHeader = originHeader.trim().toLowerCase().replace(/\/+$/, '');
+  return allowedOrigins.some(
+    (allowed) => allowed.trim().toLowerCase().replace(/\/+$/, '') === normalizedHeader
   );
 }
 
 export interface BridgeHandlerDeps {
   getSecret: () => string;
+  getAllowedOrigins?: () => string[];
   getConfigInfo: () => {
     excludedDomains: string[];
     idleThresholdSeconds: number;
@@ -65,7 +77,8 @@ export function createBridgeRequestHandler(
   return (req, res) => {
     const originHeader =
       typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
-    if (!isAllowedBridgeOrigin(originHeader)) {
+    const extraOrigins = deps.getAllowedOrigins ? deps.getAllowedOrigins() : [];
+    if (!isAllowedBridgeOrigin(originHeader, extraOrigins)) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Forbidden local bridge origin' }));
       return;

@@ -267,7 +267,8 @@ export type AttributionStatus =
   | 'detected'
   | 'suggested'
   | 'confirmed'
-  | 'review_tray';
+  | 'review_tray'
+  | 'dismissed';
 
 export interface AttributionRecord {
   id: string;

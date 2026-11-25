@@ -1,7 +1,7 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createBridgeRequestHandler } from '../packages/desktop-agent/src/bridge.ts';
+import { createBridgeRequestHandler, isAllowedBridgeOrigin } from '../packages/desktop-agent/src/bridge.ts';
 import { CaptureRuntime } from '../packages/desktop-agent/src/captureRuntime.ts';
 import type { CapturedEvent, CaptureSample } from '../packages/desktop-agent/src/capture/captureSampler.ts';
 
@@ -101,25 +101,54 @@ describe('loopback bridge controls', () => {
     for (const s of servers.splice(0)) s.close();
   });
 
-  async function start() {
+  async function start(allowedOrigins: string[] = ['https://app.firm.example']) {
     const h = makeRuntime();
+    const browserEvents: Record<string, unknown>[] = [];
     const server = http.createServer(
       createBridgeRequestHandler({
         getSecret: () => 'secret',
         getConfigInfo: () => ({ excludedDomains: [], idleThresholdSeconds: 180, deviceId: 'd' }),
-        getHealthInfo: () => ({}),
-        onBrowserEvent: () => true,
+        getHealthInfo: () => ({
+          localStore: { engine: 'sqlite', pendingCount: 1, syncedPendingPurgeCount: 0, dbBytes: 8192, lastCleanupAtMs: T0 },
+        }),
+        getAllowedOrigins: () => allowedOrigins,
+        onBrowserEvent: (payload) => {
+          if (!h.runtime.getControls().allowedNow) return false;
+          browserEvents.push(payload);
+          return true;
+        },
         getControls: () => h.runtime.getControls(),
         applyControl: (m) => h.runtime.applyControl(m),
-        getCaptureHealth: () => ({ ...h.runtime.getHealth(true) }),
+        getCaptureHealth: () => ({
+          ...h.runtime.getHealth(true),
+          localStore: { engine: 'sqlite', pendingCount: 1, syncedPendingPurgeCount: 0, dbBytes: 8192, lastCleanupAtMs: T0 },
+        }),
         getRecentEvents: (n) => h.runtime.getRecentEvents(n) as unknown as Record<string, unknown>[],
       })
     );
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     servers.push(server);
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    return { base, h };
+    return { base, h, browserEvents };
   }
+
+  it('validates allowed CORS origins including configured serverUrl and rejects untrusted origins', async () => {
+    expect(isAllowedBridgeOrigin('http://localhost:3000')).toBe(true);
+    expect(isAllowedBridgeOrigin('https://app.firm.example', ['https://app.firm.example'])).toBe(true);
+    expect(isAllowedBridgeOrigin('https://evil.example', ['https://app.firm.example'])).toBe(false);
+
+    const { base } = await start(['https://app.firm.example']);
+    const allowedRes = await fetch(`${base}/health`, {
+      headers: { Origin: 'https://app.firm.example' },
+    });
+    expect(allowedRes.status).toBe(200);
+    expect(allowedRes.headers.get('access-control-allow-origin')).toBe('https://app.firm.example');
+
+    const blockedRes = await fetch(`${base}/controls`, {
+      headers: { Origin: 'https://evil.example', 'X-OnTrack-Bridge-Secret': 'secret' },
+    });
+    expect(blockedRes.status).toBe(403);
+  });
 
   it('rejects control requests without the bridge secret', async () => {
     const { base, h } = await start();
@@ -128,9 +157,20 @@ describe('loopback bridge controls', () => {
     expect(h.runtime.getControls().offTheRecord).toBe(false);
   });
 
-  it('applies controls and serves health and the recorded-events log with the secret', async () => {
-    const { base, h } = await start();
-    const headers = { 'X-OnTrack-Bridge-Secret': 'secret' };
+  it('applies controls, blocks browser events while paused, and serves health + SQLite telemetry', async () => {
+    const { base, h, browserEvents } = await start();
+    const headers = {
+      'X-OnTrack-Bridge-Secret': 'secret',
+      'Content-Type': 'application/json',
+    };
+
+    const allowedBrowser = await fetch(`${base}/browser-event`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ domain: 'tax.acme.com', title: 'Acme Q3', url: 'https://tax.acme.com' }),
+    });
+    expect(allowedBrowser.status).toBe(200);
+    expect(browserEvents).toHaveLength(1);
 
     h.runtime.recordQueued('activity.window', T0, { app: 'Excel' });
     const recent = await (await fetch(`${base}/recent-events?limit=5`, { headers })).json();
@@ -144,10 +184,21 @@ describe('loopback bridge controls', () => {
     expect(paused.status).toBe(200);
     expect((await paused.json()).controls.blockedReason).toBe('paused');
 
+    const suppressedBrowser = await fetch(`${base}/browser-event`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ domain: 'tax.acme.com', title: 'Blocked While Paused', url: 'https://tax.acme.com' }),
+    });
+    expect(suppressedBrowser.status).toBe(200);
+    expect((await suppressedBrowser.json()).accepted).toBe(false);
+    expect(browserEvents).toHaveLength(1);
+
     const bad = await fetch(`${base}/controls`, { method: 'POST', headers, body: JSON.stringify({ action: 'nope' }) });
     expect(bad.status).toBe(400);
 
     const health = await (await fetch(`${base}/capture-health`, { headers })).json();
     expect(health.level).toBe('stopped');
+    expect(health.localStore?.engine).toBe('sqlite');
+    expect(health.localStore?.pendingCount).toBe(1);
   });
 });

@@ -82,15 +82,60 @@ export interface AcceptanceReport {
   replay: ReplayMetricsResult;
 }
 
+export interface BridgeLocalStoreStats {
+  engine: 'sqlite';
+  pendingCount: number;
+  syncedPendingPurgeCount: number;
+  dbBytes: number;
+  lastCleanupAtMs: number | null;
+}
+
+export interface AgentScheduleWindow {
+  days: number[];
+  start: string;
+  end: string;
+}
+
+export interface AgentTrackingControls {
+  offTheRecord: boolean;
+  pausedUntilMs: number | null;
+  schedule: AgentScheduleWindow[];
+  allowedNow: boolean;
+  blockedReason: 'off_the_record' | 'paused' | 'outside_schedule' | null;
+  resumesAtMs: number | null;
+}
+
+export interface AgentCaptureHealthIssue {
+  code: string;
+  severity: 'info' | 'warning' | 'error';
+  message: string;
+}
+
+export interface AgentCaptureHealth {
+  level: 'good' | 'degraded' | 'poor' | 'stopped';
+  score: number;
+  collectorMode: 'native_events' | 'polling' | 'fallback' | 'none';
+  issues: AgentCaptureHealthIssue[];
+  localStore?: BridgeLocalStoreStats;
+}
+
+export interface AgentRecordedEvent {
+  type: string;
+  timeUtc: string;
+  payload: Record<string, unknown>;
+}
+
 export interface LocalAgentHealth {
   online: boolean;
   deviceId?: string;
+  seq?: number;
   wsConnected?: boolean;
   extensionConnected?: boolean;
   clockSkewMs?: number;
+  localStore?: BridgeLocalStoreStats;
   latestSample?: {
     app: string;
-    windowTitle: string;
+    windowTitle?: string;
     idleSeconds: number;
     osPlatform: string;
   } | null;
@@ -99,6 +144,54 @@ export interface LocalAgentHealth {
 const QUEUE_KEY = 'ontrack_engine_queue_v1';
 const SEQ_KEY = 'ontrack_engine_seq_v1';
 const DEVICE_KEY = 'ontrack_engine_device_v1';
+const BRIDGE_URL_KEY = 'ontrack_bridge_url_v1';
+const BRIDGE_SECRET_KEY = 'ontrack_bridge_secret_v1';
+const DEFAULT_BRIDGE_ORIGIN = 'http://127.0.0.1:47621';
+
+function normalizeBridgeBaseUrl(rawUrl?: string): string {
+  const candidate = (rawUrl || '').trim();
+  if (!candidate) return DEFAULT_BRIDGE_ORIGIN;
+  try {
+    return new URL(candidate).origin;
+  } catch {
+    return DEFAULT_BRIDGE_ORIGIN;
+  }
+}
+
+export function getSavedBridgeConfig(): { bridgeUrl: string; bridgeSecret: string } {
+  try {
+    return {
+      bridgeUrl: normalizeBridgeBaseUrl(localStorage.getItem(BRIDGE_URL_KEY) || ''),
+      bridgeSecret: (localStorage.getItem(BRIDGE_SECRET_KEY) || '').trim(),
+    };
+  } catch {
+    return { bridgeUrl: DEFAULT_BRIDGE_ORIGIN, bridgeSecret: '' };
+  }
+}
+
+export function saveBridgeConfig(params: {
+  bridgeUrl?: string;
+  bridgeSecret?: string;
+}): { bridgeUrl: string; bridgeSecret: string } {
+  const prev = getSavedBridgeConfig();
+  const next = {
+    bridgeUrl:
+      params.bridgeUrl !== undefined ? normalizeBridgeBaseUrl(params.bridgeUrl) : prev.bridgeUrl,
+    bridgeSecret:
+      params.bridgeSecret !== undefined ? params.bridgeSecret.trim() : prev.bridgeSecret,
+  };
+  try {
+    localStorage.setItem(BRIDGE_URL_KEY, next.bridgeUrl);
+    if (next.bridgeSecret) {
+      localStorage.setItem(BRIDGE_SECRET_KEY, next.bridgeSecret);
+    } else {
+      localStorage.removeItem(BRIDGE_SECRET_KEY);
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+  return next;
+}
 
 function buildAuthHeaders(extra: Record<string, string> = {}): Record<string, string> {
   return { ...extra };
@@ -202,26 +295,178 @@ export function filterAndEnqueueEvent(
   return { allowed: true, dropReason: null, queueLength: q.length };
 }
 
-export async function probeLocalDesktopAgentBridge(): Promise<LocalAgentHealth> {
+async function bridgeFetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 1200
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 900);
-    const res = await fetch('http://127.0.0.1:47621/health', {
-      signal: controller.signal,
-    });
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
     window.clearTimeout(timer);
+  }
+}
+
+export async function probeLocalDesktopAgentBridge(
+  bridgeUrlOverride?: string
+): Promise<LocalAgentHealth> {
+  const origin = normalizeBridgeBaseUrl(bridgeUrlOverride || getSavedBridgeConfig().bridgeUrl);
+  try {
+    const res = await bridgeFetchWithTimeout(`${origin}/health`, {}, 900);
     if (!res.ok) return { online: false };
     const data = await res.json();
     return {
       online: Boolean(data.ok),
       deviceId: data.deviceId,
+      seq: typeof data.seq === 'number' ? data.seq : undefined,
       wsConnected: Boolean(data.wsConnected),
       extensionConnected: Boolean(data.extensionConnected),
       clockSkewMs: Number(data.clockSkewMs || 0),
+      localStore: data.localStore || undefined,
       latestSample: data.latestSample || null,
     };
   } catch {
     return { online: false };
+  }
+}
+
+export async function fetchAgentControls(
+  secretOverride?: string,
+  bridgeUrlOverride?: string
+): Promise<{
+  ok: boolean;
+  unauthorized?: boolean;
+  missingSecret?: boolean;
+  offline?: boolean;
+  controls?: AgentTrackingControls;
+}> {
+  const saved = getSavedBridgeConfig();
+  const secret = (secretOverride ?? saved.bridgeSecret).trim();
+  if (!secret) return { ok: false, missingSecret: true };
+  const origin = normalizeBridgeBaseUrl(bridgeUrlOverride || saved.bridgeUrl);
+  try {
+    const res = await bridgeFetchWithTimeout(`${origin}/controls`, {
+      headers: { 'X-OnTrack-Bridge-Secret': secret },
+    });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, unauthorized: true };
+    }
+    if (!res.ok) return { ok: false, offline: true };
+    const controls = (await res.json()) as AgentTrackingControls;
+    return { ok: true, controls };
+  } catch {
+    return { ok: false, offline: true };
+  }
+}
+
+export async function applyAgentControl(
+  payload:
+    | { action: 'pause'; minutes: number }
+    | { action: 'offTheRecord'; enabled: boolean }
+    | { action: 'resume' }
+    | { action: 'setSchedule'; schedule: AgentScheduleWindow[] },
+  secretOverride?: string,
+  bridgeUrlOverride?: string
+): Promise<{
+  ok: boolean;
+  unauthorized?: boolean;
+  offline?: boolean;
+  error?: string;
+  controls?: AgentTrackingControls;
+}> {
+  const saved = getSavedBridgeConfig();
+  const secret = (secretOverride ?? saved.bridgeSecret).trim();
+  if (!secret) {
+    return { ok: false, error: 'Bridge secret is required to control the local Desktop Agent.' };
+  }
+  const origin = normalizeBridgeBaseUrl(bridgeUrlOverride || saved.bridgeUrl);
+  try {
+    const res = await bridgeFetchWithTimeout(`${origin}/controls`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-OnTrack-Bridge-Secret': secret,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (res.status === 401 || res.status === 403) {
+      return {
+        ok: false,
+        unauthorized: true,
+        error: 'Bridge secret rejected by Desktop Agent (HTTP 401).',
+      };
+    }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.ok === false) {
+      return { ok: false, error: body.error || `Bridge returned HTTP ${res.status}` };
+    }
+    return { ok: true, controls: body.controls as AgentTrackingControls };
+  } catch {
+    return { ok: false, offline: true, error: 'Local Desktop Agent is offline or unreachable.' };
+  }
+}
+
+export async function fetchAgentCaptureHealth(
+  secretOverride?: string,
+  bridgeUrlOverride?: string
+): Promise<{
+  ok: boolean;
+  unauthorized?: boolean;
+  missingSecret?: boolean;
+  offline?: boolean;
+  health?: AgentCaptureHealth;
+}> {
+  const saved = getSavedBridgeConfig();
+  const secret = (secretOverride ?? saved.bridgeSecret).trim();
+  if (!secret) return { ok: false, missingSecret: true };
+  const origin = normalizeBridgeBaseUrl(bridgeUrlOverride || saved.bridgeUrl);
+  try {
+    const res = await bridgeFetchWithTimeout(`${origin}/capture-health`, {
+      headers: { 'X-OnTrack-Bridge-Secret': secret },
+    });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, unauthorized: true };
+    }
+    if (!res.ok) return { ok: false, offline: true };
+    const health = (await res.json()) as AgentCaptureHealth;
+    return { ok: true, health };
+  } catch {
+    return { ok: false, offline: true };
+  }
+}
+
+export async function fetchAgentRecentEvents(
+  limit = 100,
+  secretOverride?: string,
+  bridgeUrlOverride?: string
+): Promise<{
+  ok: boolean;
+  unauthorized?: boolean;
+  missingSecret?: boolean;
+  offline?: boolean;
+  events: AgentRecordedEvent[];
+}> {
+  const saved = getSavedBridgeConfig();
+  const secret = (secretOverride ?? saved.bridgeSecret).trim();
+  if (!secret) return { ok: false, missingSecret: true, events: [] };
+  const origin = normalizeBridgeBaseUrl(bridgeUrlOverride || saved.bridgeUrl);
+  try {
+    const res = await bridgeFetchWithTimeout(
+      `${origin}/recent-events?limit=${Math.max(1, Math.min(limit, 500))}`,
+      {
+        headers: { 'X-OnTrack-Bridge-Secret': secret },
+      }
+    );
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, unauthorized: true, events: [] };
+    }
+    if (!res.ok) return { ok: false, offline: true, events: [] };
+    const body = (await res.json()) as { events?: AgentRecordedEvent[] };
+    return { ok: true, events: Array.isArray(body.events) ? body.events : [] };
+  } catch {
+    return { ok: false, offline: true, events: [] };
   }
 }
 

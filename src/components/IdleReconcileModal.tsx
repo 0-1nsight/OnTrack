@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Clock, Scissors, CheckCircle2, Users, X } from 'lucide-react';
-import { IdleAlertState, WorkCategory } from '../types';
+import { ClientDictionaryEntry } from '../engine/types';
+import { IdleAlertState, Task, WorkCategory } from '../types';
+import { deriveDynamicWorkstreams } from '../utils/analyticsMetrics';
 import {
   PROJECTS,
   formatMinutesToHHMM,
@@ -9,6 +11,8 @@ import {
 
 interface IdleReconcileModalProps {
   idleAlert: IdleAlertState;
+  clients?: ClientDictionaryEntry[];
+  tasks?: Task[];
   onDiscardIdle: () => void;
   onKeepAsActive: () => void;
   onReassignIdle: (payload: {
@@ -22,15 +26,27 @@ interface IdleReconcileModalProps {
 
 export const IdleReconcileModal: React.FC<IdleReconcileModalProps> = ({
   idleAlert,
+  clients = [],
+  tasks = [],
   onDiscardIdle,
   onKeepAsActive,
   onReassignIdle,
   onClose,
 }) => {
-  const [reassignTitle, setReassignTitle] = useState(
-    'Ad-hoc Stakeholder Sync / Offline Discussion'
+  const projectOptions = useMemo(
+    () =>
+      deriveDynamicWorkstreams({
+        clients,
+        tasks,
+        timeBlocks: [],
+        fallbackDefaults: PROJECTS,
+      }),
+    [clients, tasks]
   );
-  const [reassignProject, setReassignProject] = useState<string>('Internal Ops');
+  const [reassignTitle, setReassignTitle] = useState(
+    'Ad-hoc Client Sync / Offline Discussion'
+  );
+  const [reassignProject, setReassignProject] = useState<string>('Internal Firm');
   const [reassignCategory, setReassignCategory] =
     useState<WorkCategory>('collaborative');
   const [reassignNotes, setReassignNotes] = useState(
@@ -173,15 +189,22 @@ export const IdleReconcileModal: React.FC<IdleReconcileModalProps> = ({
                   Project
                 </label>
                 <select
-                  value={reassignProject}
+                  value={
+                    projectOptions.includes(reassignProject)
+                      ? reassignProject
+                      : projectOptions[0] || 'Internal Firm'
+                  }
                   onChange={(e) => setReassignProject(e.target.value)}
                   className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
                 >
-                  {PROJECTS.map((p) => (
+                  {projectOptions.map((p) => (
                     <option key={p} value={p}>
                       {p}
                     </option>
                   ))}
+                  {!projectOptions.includes('Internal Firm') && (
+                    <option value="Internal Firm">Internal Firm</option>
+                  )}
                 </select>
               </div>
               <div>

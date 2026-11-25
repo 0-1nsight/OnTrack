@@ -56,6 +56,7 @@ import {
   filterAndEnqueueEvent,
   flushQueuedEventsOverHttp,
   getOrCreateLocalDeviceId,
+  getSavedBridgeConfig,
   importClientsRawApi,
   importStaffCsvApi,
   loadLocalQueue,
@@ -71,6 +72,7 @@ import {
   revokeDeviceTokenApi,
   runAcceptanceApi,
   runReplayApi,
+  saveBridgeConfig,
   saveChecklistItemApi,
   saveManualClientApi,
   togglePrivacyRuleApi,
@@ -270,9 +272,13 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
   const [customFilePath, setCustomFilePath] = useState<string>('Clients/Acme_Ltd/Oct2026_Bank.xlsx');
   const [newDeviceLabel, setNewDeviceLabel] = useState<string>('Workstation Laptop');
   const [newPairedRawToken, setNewPairedRawToken] = useState<string | null>(null);
-  const [pairingBridgeSecret, setPairingBridgeSecret] = useState<string>(() =>
-    generatePairingBridgeSecret()
-  );
+  const [pairingBridgeSecret, setPairingBridgeSecret] = useState<string>(() => {
+    const saved = getSavedBridgeConfig().bridgeSecret;
+    if (saved) return saved;
+    const generated = generatePairingBridgeSecret();
+    saveBridgeConfig({ bridgeSecret: generated });
+    return generated;
+  });
   const [downloadingPkg, setDownloadingPkg] = useState<
     | 'desktop-agent'
     | 'browser-extension'
@@ -3073,7 +3079,9 @@ export const AutoTrackView: React.FC<AutoTrackViewProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  setPairingBridgeSecret(generatePairingBridgeSecret());
+                  const next = generatePairingBridgeSecret();
+                  setPairingBridgeSecret(next);
+                  saveBridgeConfig({ bridgeSecret: next });
                   onNotify('Generated fresh pairing secret for next download');
                 }}
                 className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"

@@ -399,6 +399,13 @@ function enqueueCaptured(events: CapturedEvent[]) {
 const bridgeServer = http.createServer(
   createBridgeRequestHandler({
     getSecret: () => config.bridgeSecret,
+    getAllowedOrigins: () => {
+      try {
+        return config.serverUrl ? [new URL(config.serverUrl).origin] : [];
+      } catch {
+        return [];
+      }
+    },
     getConfigInfo: () => ({
       excludedDomains: config.exclusions.domains,
       idleThresholdSeconds: config.idleThresholdSeconds,
@@ -428,10 +435,26 @@ const bridgeServer = http.createServer(
     },
     getControls: () => runtime.getControls(),
     applyControl: (msg) => runtime.applyControl(msg),
-    getCaptureHealth: () => ({ ...runtime.getHealth(Date.now() - lastBrowserPingMs < 45000) }),
+    getCaptureHealth: () => {
+      const storeStats = localStore.getStats();
+      return {
+        ...runtime.getHealth(Date.now() - lastBrowserPingMs < 45000),
+        localStore: {
+          engine: 'sqlite',
+          pendingCount: storeStats.pendingCount,
+          syncedPendingPurgeCount: storeStats.syncedPendingPurgeCount,
+          dbBytes: storeStats.dbBytes,
+          lastCleanupAtMs: storeStats.lastCleanupAtMs,
+        },
+      };
+    },
     getRecentEvents: (limit) => runtime.getRecentEvents(limit) as unknown as Record<string, unknown>[],
     onBrowserEvent: (msg) => {
       lastBrowserPingMs = Date.now();
+      const controls = runtime.getControls();
+      if (!controls.allowedNow) {
+        return false;
+      }
       return enqueueEvent('activity.browser', 'activity', {
         app: msg.browser || 'Google Chrome',
         window_title: msg.pageTitle || 'Browser Tab',

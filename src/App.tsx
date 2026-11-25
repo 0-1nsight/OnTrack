@@ -33,6 +33,7 @@ import {
 } from './types';
 import {
   AttributionRecord,
+  ClientDictionaryEntry,
   DeviceFreshnessRecord,
   EngineTask,
   PrivacyRule,
@@ -52,6 +53,7 @@ import {
   getOrCreateLocalDeviceId,
   inviteTaskCollaboratorApi,
   removeTaskCollaboratorApi,
+  resolveAttributionApi,
   respondTaskInviteApi,
   updateEngineTaskApi,
 } from './services/engineClient';
@@ -309,6 +311,9 @@ export default function App() {
   const [staffUsers, setStaffUsers] = useState<ShiftUser[]>([]);
   const [taskInvites, setTaskInvites] = useState<TaskCollaborationInvite[]>([]);
   const [engineDevices, setEngineDevices] = useState<DeviceFreshnessRecord[]>([]);
+  const [engineSessions, setEngineSessions] = useState<WorkSession[]>([]);
+  const [engineAttributions, setEngineAttributions] = useState<AttributionRecord[]>([]);
+  const [engineClients, setEngineClients] = useState<ClientDictionaryEntry[]>([]);
   const [engineTaskVersions, setEngineTaskVersions] = useState<Record<string, number>>({});
   const [engineSyncStatus, setEngineSyncStatus] = useState<'idle' | 'syncing' | 'error'>('idle');
   const demoSeedAppliedRef = useRef(false);
@@ -347,6 +352,9 @@ export default function App() {
     setStaffUsers([]);
     setTaskInvites([]);
     setEngineDevices([]);
+    setEngineSessions([]);
+    setEngineAttributions([]);
+    setEngineClients([]);
     setEngineTaskVersions({});
     setEngineSyncStatus('idle');
     demoSeedAppliedRef.current = false;
@@ -526,6 +534,9 @@ export default function App() {
         setStaffUsers(snapshot.staffUsers || []);
         setTaskInvites(snapshot.taskInvites || []);
         setEngineDevices(snapshot.devices || []);
+        setEngineSessions(snapshot.sessions || []);
+        setEngineAttributions(snapshot.attributions || []);
+        setEngineClients(snapshot.clients || []);
         const versionMap: Record<string, number> = {};
         for (const t of snapshot.tasks) {
           versionMap[t.id] = t.version;
@@ -1353,8 +1364,28 @@ export default function App() {
   };
 
   // Idle Reconciliation Actions
+  const resolveIdleSegmentOverride = (
+    segmentId: string | undefined,
+    status: 'confirmed' | 'dismissed',
+    reason: string
+  ) => {
+    if (!user || activeRole === 'client' || !segmentId?.startsWith('seg-eng-sync-')) {
+      return;
+    }
+    const sessionId = segmentId.slice('seg-eng-sync-'.length);
+    void resolveAttributionApi({
+      tenantId: user.tenantId,
+      userId: user.userId,
+      sessionId,
+      taskId: null,
+      status,
+      customReason: reason,
+    }).catch(() => undefined);
+  };
+
   const handleDiscardIdle = () => {
     const deductSec = idleAlert.idleDurationSeconds;
+    const segmentId = idleAlert.segmentId;
     if (timer.isRunning) {
       setTimer((prev) => ({
         ...prev,
@@ -1373,27 +1404,33 @@ export default function App() {
     };
     setActivitySegments((prev) => [
       ...prev.map((s) =>
-        s.date === selectedDate && !s.reconciled ? { ...s, reconciled: true } : s
+        (segmentId && s.id === segmentId) || (s.date === selectedDate && !s.reconciled)
+          ? { ...s, state: 'away' as const, reconciled: true }
+          : s
       ),
       newSeg,
     ]);
     lastActivityMsRef.current = Date.now();
-    setIdleAlert((prev) => ({ ...prev, isOpen: false }));
-    void persistTrackingEvent({
-      type: 'activity.idle',
-      priority: 'activity',
-      eventTimeUtc: buildTimeBlockStartTimestampUtc(selectedDate, idleAlert.startMinuteOfDay),
-      payload: {
-        app: 'Workstation',
-        window_title: 'Trimmed Idle Time (Marked Away)',
-        idle: true,
-        duration_ms: Math.max(15, idleAlert.endMinuteOfDay - idleAlert.startMinuteOfDay) * 60 * 1000,
-      },
-    });
+    setIdleAlert((prev) => ({ ...prev, isOpen: false, segmentId: undefined }));
+    resolveIdleSegmentOverride(segmentId, 'dismissed', 'Trimmed Idle Time (Marked Away)');
+    if (!segmentId?.startsWith('seg-eng-sync-')) {
+      void persistTrackingEvent({
+        type: 'activity.idle',
+        priority: 'activity',
+        eventTimeUtc: buildTimeBlockStartTimestampUtc(selectedDate, idleAlert.startMinuteOfDay),
+        payload: {
+          app: 'Workstation',
+          window_title: 'Trimmed Idle Time (Marked Away)',
+          idle: true,
+          duration_ms: Math.max(15, idleAlert.endMinuteOfDay - idleAlert.startMinuteOfDay) * 60 * 1000,
+        },
+      });
+    }
     showToast('Idle interval trimmed and marked as Away on Track 1.');
   };
 
   const handleKeepIdleAsActive = () => {
+    const segmentId = idleAlert.segmentId;
     const newSeg: ActivitySegment = {
       id: `seg-${Date.now()}`,
       date: selectedDate,
@@ -1405,12 +1442,15 @@ export default function App() {
     };
     setActivitySegments((prev) => [
       ...prev.map((s) =>
-        s.date === selectedDate && !s.reconciled ? { ...s, reconciled: true } : s
+        (segmentId && s.id === segmentId) || (s.date === selectedDate && !s.reconciled)
+          ? { ...s, state: 'active' as const, reconciled: true }
+          : s
       ),
       newSeg,
     ]);
     lastActivityMsRef.current = Date.now();
-    setIdleAlert((prev) => ({ ...prev, isOpen: false }));
+    setIdleAlert((prev) => ({ ...prev, isOpen: false, segmentId: undefined }));
+    resolveIdleSegmentOverride(segmentId, 'confirmed', 'Confirmed Active Desk Session');
     void persistTrackingEvent({
       type: 'activity.window',
       priority: 'activity',
@@ -1421,6 +1461,10 @@ export default function App() {
         idle: false,
         duration_ms: Math.max(15, idleAlert.endMinuteOfDay - idleAlert.startMinuteOfDay) * 60 * 1000,
         active_task_id: timer.taskId,
+        entry_source: 'reconciled',
+        entry_project: timer.project || 'Accounting',
+        entry_category: timer.category || 'billable',
+        entry_title: idleAlert.activeTaskTitle || 'Confirmed Active Desk Session',
       },
     });
     showToast('Idle interval confirmed as active work time.');
@@ -1432,6 +1476,7 @@ export default function App() {
     category: WorkCategory;
     notes: string;
   }) => {
+    const segmentId = idleAlert.segmentId;
     const durationMinutes = Math.max(
       15,
       idleAlert.endMinuteOfDay - idleAlert.startMinuteOfDay
@@ -1455,13 +1500,14 @@ export default function App() {
     setTimeBlocks((prev) => [...prev, reconciledBlock]);
     setActivitySegments((prev) =>
       prev.map((s) =>
-        s.date === selectedDate && !s.reconciled
+        (segmentId && s.id === segmentId) || (s.date === selectedDate && !s.reconciled)
           ? { ...s, state: 'active', reconciled: true, label: payload.title }
           : s
       )
     );
     lastActivityMsRef.current = Date.now();
-    setIdleAlert((prev) => ({ ...prev, isOpen: false }));
+    setIdleAlert((prev) => ({ ...prev, isOpen: false, segmentId: undefined }));
+    resolveIdleSegmentOverride(segmentId, 'confirmed', `Reconciled as "${payload.title}"`);
     void persistTrackingEvent({
       type: 'activity.window',
       priority: 'activity',
@@ -1480,6 +1526,46 @@ export default function App() {
     showToast(`Reconciled away interval into "${payload.title}".`);
   };
 
+  const persistEditedEngineBlock = async (
+    oldBlockId: string,
+    blockData: Omit<TimeBlock, 'id'>
+  ) => {
+    if (user && activeRole !== 'client' && oldBlockId.startsWith('blk-eng-sync-')) {
+      const oldSessionId = oldBlockId.slice('blk-eng-sync-'.length);
+      await resolveAttributionApi({
+        tenantId: user.tenantId,
+        userId: user.userId,
+        sessionId: oldSessionId,
+        taskId: blockData.taskId,
+        status: 'dismissed',
+        customReason: `Replaced by edited timeline block "${blockData.title}"`,
+      }).catch(() => undefined);
+    }
+    await persistTrackingEvent({
+      type: 'activity.window',
+      priority: 'activity',
+      eventTimeUtc: buildTimeBlockStartTimestampUtc(blockData.date, blockData.startTime),
+      payload: {
+        app: blockData.appName || 'OnTrack Manual',
+        window_title: blockData.documentTitle || blockData.title,
+        duration_ms: blockData.durationMinutes * 60 * 1000,
+        active_task_id: blockData.taskId,
+        entry_source:
+          blockData.source === 'timer'
+            ? 'timer'
+            : blockData.source === 'reconciled'
+            ? 'reconciled'
+            : 'manual',
+        entry_project: blockData.project,
+        entry_category: blockData.category,
+        entry_title: blockData.title,
+      },
+    });
+    if (user && activeRole !== 'client') {
+      await hydrateFromEngine(user, activeRole);
+    }
+  };
+
   // Save or Update Timeline Block from QuickLogModal
   const handleSaveTimeBlock = (
     blockData: Omit<TimeBlock, 'id'>,
@@ -1490,21 +1576,7 @@ export default function App() {
       setTimeBlocks((prev) =>
         prev.map((b) => (b.id === existingId ? updatedBlock : b))
       );
-      void persistTrackingEvent({
-        type: 'activity.window',
-        priority: 'activity',
-        eventTimeUtc: buildTimeBlockStartTimestampUtc(blockData.date, blockData.startTime),
-        payload: {
-          app: blockData.appName || 'OnTrack Manual',
-          window_title: blockData.documentTitle || blockData.title,
-          duration_ms: blockData.durationMinutes * 60 * 1000,
-          active_task_id: blockData.taskId,
-          entry_source: blockData.source === 'timer' ? 'timer' : 'manual',
-          entry_project: blockData.project,
-          entry_category: blockData.category,
-          entry_title: blockData.title,
-        },
-      });
+      void persistEditedEngineBlock(existingId, blockData);
       showToast(`Updated timeline block "${blockData.title}".`);
     } else {
       const created: TimeBlock = {
@@ -1532,9 +1604,56 @@ export default function App() {
     }
   };
 
+  const handleQuickUpdateTimeBlock = (updatedBlock: TimeBlock) => {
+    setTimeBlocks((prev) =>
+      prev.map((b) => (b.id === updatedBlock.id ? updatedBlock : b))
+    );
+    const { id, ...rest } = updatedBlock;
+    void persistEditedEngineBlock(id, rest);
+    showToast(`Adjusted "${updatedBlock.title}" (${updatedBlock.durationMinutes}m).`);
+  };
+
   const handleDeleteTimeBlock = (blockId: string) => {
     setTimeBlocks((prev) => prev.filter((b) => b.id !== blockId));
+    if (user && activeRole !== 'client' && blockId.startsWith('blk-eng-sync-')) {
+      const sessionId = blockId.slice('blk-eng-sync-'.length);
+      void resolveAttributionApi({
+        tenantId: user.tenantId,
+        userId: user.userId,
+        sessionId,
+        taskId: null,
+        status: 'dismissed',
+        customReason: 'Deleted from Day Timeline',
+      })
+        .then(() => hydrateFromEngine(user, activeRole))
+        .catch(() => undefined);
+    }
     showToast('Timeline block removed.');
+  };
+
+  const handleResolveTimelineAttribution = async (params: {
+    sessionId: string;
+    taskId: string | null;
+    status: 'confirmed' | 'dismissed';
+  }) => {
+    if (!user || activeRole === 'client') return;
+    try {
+      await resolveAttributionApi({
+        tenantId: user.tenantId,
+        userId: user.userId,
+        sessionId: params.sessionId,
+        taskId: params.taskId,
+        status: params.status,
+      });
+      await hydrateFromEngine(user, activeRole);
+      showToast(
+        params.status === 'confirmed'
+          ? 'Session confirmed and added to Track 4 Timeline.'
+          : 'Auto-tracked suggestion dismissed.'
+      );
+    } catch (err: any) {
+      showToast(err?.message || 'Unable to update session attribution.');
+    }
   };
 
   // Task CRUD Handlers (Optimistic UI + Engine DB Sync)
@@ -1996,6 +2115,7 @@ export default function App() {
             lastActivityMsRef={lastActivityMsRef}
             isIdleModalOpen={idleAlert.isOpen}
             tasks={tasks}
+            clients={engineClients}
             selectedDate={selectedDate}
             weekDates={weekDates}
             preferences={preferences}
@@ -2155,6 +2275,9 @@ export default function App() {
               appSegments={appSegments}
               documentSegments={documentSegments}
               tasks={tasks}
+              clients={engineClients}
+              engineSessions={engineSessions}
+              engineAttributions={engineAttributions}
               workstationDevices={
                 user
                   ? engineDevices.filter((d) => d.userId === user.userId)
@@ -2183,6 +2306,7 @@ export default function App() {
                 setInitialAppDoc(null);
                 setQuickLogOpen(true);
               }}
+              onQuickUpdateTimeBlock={handleQuickUpdateTimeBlock}
               onDeleteTimeBlock={handleDeleteTimeBlock}
               onStartTimerForTask={(taskId) => handleStartTimer(taskId)}
               onReconcileSegment={(segment) => {
@@ -2194,7 +2318,19 @@ export default function App() {
                   activeTaskTitle: segment.label,
                   startMinuteOfDay: segment.startTime,
                   endMinuteOfDay: segment.endTime,
+                  segmentId: segment.id,
                 });
+              }}
+              onResolveTimelineAttribution={handleResolveTimelineAttribution}
+              onNotify={showToast}
+              onOpenInstallers={() => {
+                setAutoTrackNav((prev) => ({
+                  key: prev.key + 1,
+                  subTab: 'packages',
+                  targetUserId: undefined,
+                  drilldown: false,
+                }));
+                navigateTab('autotrack');
               }}
             />
           )}
@@ -2347,6 +2483,7 @@ export default function App() {
               activitySegments={activitySegments}
               appSegments={appSegments}
               documentSegments={documentSegments}
+              clients={engineClients}
               activeRole={activeRole}
               currentUser={user}
               onSelectDateAndGoToTimeline={(date) => {
@@ -2419,10 +2556,14 @@ export default function App() {
         {/* Modals */}
         <IdleReconcileModal
           idleAlert={idleAlert}
+          clients={engineClients}
+          tasks={tasks}
           onDiscardIdle={handleDiscardIdle}
           onKeepAsActive={handleKeepIdleAsActive}
           onReassignIdle={handleReassignIdle}
-          onClose={() => setIdleAlert((prev) => ({ ...prev, isOpen: false }))}
+          onClose={() =>
+            setIdleAlert((prev) => ({ ...prev, isOpen: false, segmentId: undefined }))
+          }
         />
 
         {quickLogOpen && (
@@ -2432,6 +2573,7 @@ export default function App() {
             selectedDate={selectedDate}
             weekDates={weekDates}
             tasks={tasks}
+            clients={engineClients}
             initialBlock={editingBlock}
             initialRange={quickLogRange}
             initialTask={quickLogTask}

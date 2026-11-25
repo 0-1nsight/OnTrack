@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { X, Clock } from 'lucide-react';
+import { ClientDictionaryEntry } from '../engine/types';
 import { Task, TimeBlock, WorkCategory } from '../types';
 import {
   PROJECTS,
@@ -15,6 +16,7 @@ interface QuickLogModalProps {
   selectedDate: string;
   weekDates: string[];
   tasks: Task[];
+  clients?: ClientDictionaryEntry[];
   initialBlock: TimeBlock | null;
   initialRange: { startTime: number; endTime: number } | null;
   initialTask: Task | null;
@@ -36,12 +38,14 @@ interface QuickLogModalProps {
 function buildInitialQuickLog(params: {
   selectedDate: string;
   tasks: Task[];
+  clients: ClientDictionaryEntry[];
   initialBlock: TimeBlock | null;
   initialRange: { startTime: number; endTime: number } | null;
   initialTask: Task | null;
   initialAppDoc?: QuickLogModalProps['initialAppDoc'];
 }) {
-  const { selectedDate, tasks, initialBlock, initialRange, initialTask, initialAppDoc } = params;
+  const { selectedDate, tasks, clients, initialBlock, initialRange, initialTask, initialAppDoc } = params;
+  const fallbackProject = clients[0]?.legalName || tasks[0]?.project || 'Internal Firm';
   if (initialBlock) {
     return {
       taskId: initialBlock.taskId || '',
@@ -54,7 +58,7 @@ function buildInitialQuickLog(params: {
       tagsText: initialBlock.tags.join(', '),
       isBillable: initialBlock.isBillable,
       notes: initialBlock.notes,
-      appName: initialBlock.appName || 'VS Code',
+      appName: initialBlock.appName || 'Microsoft Excel',
       documentTitle: initialBlock.documentTitle || '',
     };
   }
@@ -65,13 +69,13 @@ function buildInitialQuickLog(params: {
     return {
       taskId: linked ? linked.id : '',
       title: linked ? linked.title : initialAppDoc.documentTitle,
-      project: linked ? linked.project : 'Core Platform',
-      category: linked ? linked.category : ('deep_work' as WorkCategory),
+      project: linked ? linked.project : fallbackProject,
+      category: linked ? linked.category : ('billable' as WorkCategory),
       date: selectedDate,
       startHHMM: formatMinutesToHHMM(initialAppDoc.startTime),
       endHHMM: formatMinutesToHHMM(initialAppDoc.endTime),
       tagsText: linked ? linked.tags.join(', ') : 'captured-window',
-      isBillable: linked ? linked.category === 'billable' : false,
+      isBillable: linked ? linked.category === 'billable' : true,
       notes: `Captured from ${initialAppDoc.appName}: ${initialAppDoc.documentTitle}`,
       appName: initialAppDoc.appName,
       documentTitle: initialAppDoc.documentTitle,
@@ -89,7 +93,7 @@ function buildInitialQuickLog(params: {
       tagsText: initialTask.tags.join(', '),
       isBillable: initialTask.category === 'billable',
       notes: '',
-      appName: 'VS Code',
+      appName: 'Microsoft Excel',
       documentTitle: '',
     };
   }
@@ -98,15 +102,15 @@ function buildInitialQuickLog(params: {
   return {
     taskId: '',
     title: '',
-    project: 'Core Platform',
-    category: 'deep_work' as WorkCategory,
+    project: fallbackProject,
+    category: 'billable' as WorkCategory,
     date: selectedDate,
     startHHMM: formatMinutesToHHMM(sMin),
     endHHMM: formatMinutesToHHMM(eMin),
-    tagsText: 'focus',
-    isBillable: false,
+    tagsText: 'client-work',
+    isBillable: true,
     notes: '',
-    appName: 'VS Code',
+    appName: 'Microsoft Excel',
     documentTitle: '',
   };
 }
@@ -116,6 +120,7 @@ export const QuickLogModal: React.FC<QuickLogModalProps> = ({
   selectedDate,
   weekDates: _weekDates,
   tasks,
+  clients = [],
   initialBlock,
   initialRange,
   initialTask,
@@ -128,6 +133,7 @@ export const QuickLogModal: React.FC<QuickLogModalProps> = ({
     buildInitialQuickLog({
       selectedDate,
       tasks,
+      clients,
       initialBlock,
       initialRange,
       initialTask,
@@ -146,6 +152,29 @@ export const QuickLogModal: React.FC<QuickLogModalProps> = ({
   const [notes, setNotes] = useState<string>(init.notes);
   const [appName, setAppName] = useState<string>(init.appName);
   const [documentTitle, setDocumentTitle] = useState<string>(init.documentTitle);
+
+  const projectOptions = useMemo(() => {
+    const set = new Set<string>();
+    if (project) set.add(project);
+    for (const c of clients) {
+      if (c.legalName) set.add(c.legalName);
+    }
+    for (const t of tasks) {
+      if (t.project) set.add(t.project);
+    }
+    if (clients.length === 0 && tasks.length === 0) {
+      for (const p of PROJECTS) set.add(p);
+    } else {
+      set.add('Internal Firm');
+    }
+    return Array.from(set);
+  }, [clients, tasks, project]);
+
+  const appOptions = useMemo(() => {
+    const names = new Set<string>(TRACKED_APPS.map((a) => a.name));
+    if (appName) names.add(appName);
+    return Array.from(names);
+  }, [appName]);
 
   if (!isOpen) return null;
 
@@ -258,7 +287,7 @@ export const QuickLogModal: React.FC<QuickLogModalProps> = ({
               required
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g., Implement OAuth2 token rotation"
+              placeholder="e.g., Acme Corp Q3 Bank Reconciliation"
               className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
             />
           </div>
@@ -303,14 +332,14 @@ export const QuickLogModal: React.FC<QuickLogModalProps> = ({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Project
+                Client / Engagement
               </label>
               <select
                 value={project}
                 onChange={(e) => setProject(e.target.value)}
                 className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
               >
-                {PROJECTS.map((p) => (
+                {projectOptions.map((p) => (
                   <option key={p} value={p}>
                     {p}
                   </option>
@@ -349,7 +378,7 @@ export const QuickLogModal: React.FC<QuickLogModalProps> = ({
                 type="text"
                 value={tagsText}
                 onChange={(e) => setTagsText(e.target.value)}
-                placeholder="architecture, sprint-4"
+                placeholder="close, reconciliation"
                 className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
               />
             </div>
@@ -379,9 +408,9 @@ export const QuickLogModal: React.FC<QuickLogModalProps> = ({
                 onChange={(e) => setAppName(e.target.value)}
                 className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
               >
-                {TRACKED_APPS.map((a) => (
-                  <option key={a.name} value={a.name}>
-                    {a.name}
+                {appOptions.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
                   </option>
                 ))}
               </select>
@@ -394,7 +423,7 @@ export const QuickLogModal: React.FC<QuickLogModalProps> = ({
                 type="text"
                 value={documentTitle}
                 onChange={(e) => setDocumentTitle(e.target.value)}
-                placeholder="e.g., src/engine/intervalTree.ts"
+                placeholder="e.g., Acme_Q3_Bank_Rec.xlsx"
                 className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
               />
             </div>

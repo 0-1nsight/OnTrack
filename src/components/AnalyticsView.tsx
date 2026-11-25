@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Clock, Target, Layers, AppWindow, FileText } from 'lucide-react';
-import { UserRole } from '../engine/types';
+import { Clock, Target, Layers, AppWindow, FileText, Search, X } from 'lucide-react';
+import { ClientDictionaryEntry, UserRole } from '../engine/types';
 import { AuthUser } from '../services/authClient';
 import { fetchRoleOverviewApi, RoleOverviewData } from '../services/portalClient';
 import {
@@ -11,8 +11,15 @@ import {
   TimeBlock,
 } from '../types';
 import {
+  buildDailyFocusSeries,
+  buildPresenceStats,
+  buildProjectComparison,
+  buildWeeklyAppSummary,
+  buildWeeklyDocSummary,
+  deriveDynamicWorkstreams,
+} from '../utils/analyticsMetrics';
+import {
   APP_COLORS,
-  PROJECTS,
   formatDuration,
 } from '../utils/workspaceConstants';
 
@@ -23,6 +30,7 @@ interface AnalyticsViewProps {
   activitySegments: ActivitySegment[];
   appSegments: ApplicationUsageSegment[];
   documentSegments: DocumentUsageSegment[];
+  clients?: ClientDictionaryEntry[];
   activeRole?: UserRole;
   currentUser?: AuthUser | null;
   onSelectDateAndGoToTimeline: (date: string) => void;
@@ -35,6 +43,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   activitySegments,
   appSegments,
   documentSegments,
+  clients = [],
   activeRole = 'accountant',
   currentUser = null,
   onSelectDateAndGoToTimeline,
@@ -46,6 +55,9 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     activeRole === 'team_lead';
   const tenantId = currentUser?.tenantId || 'firm_demo';
   const [execOverview, setExecOverview] = useState<RoleOverviewData | null>(null);
+  const [selectedWorkstream, setSelectedWorkstream] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [matrixScope, setMatrixScope] = useState<'week' | 'all'>('week');
 
   useEffect(() => {
     if (!isOverviewRole) return;
@@ -66,153 +78,138 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       active = false;
     };
   }, [isOverviewRole, activeRole, tenantId]);
-  // Daily breakdown across the 7-day window
-  const dailySeries = useMemo(() => {
-    return weekDates.map((date) => {
-      const blocks = timeBlocks.filter((b) => b.date === date);
-      const totalMins = blocks.reduce((s, b) => s + b.durationMinutes, 0);
-      const deepMins = blocks
-        .filter((b) => b.category === 'deep_work')
-        .reduce((s, b) => s + b.durationMinutes, 0);
-      const billableMins = blocks
-        .filter((b) => b.isBillable || b.category === 'billable')
-        .reduce((s, b) => s + b.durationMinutes, 0);
-      const collabMins = blocks
-        .filter((b) => b.category === 'collaborative')
-        .reduce((s, b) => s + b.durationMinutes, 0);
-      const adminMins = blocks
-        .filter((b) => b.category === 'admin')
-        .reduce((s, b) => s + b.durationMinutes, 0);
 
-      return {
-        date,
-        shortDay: date.slice(5), // MM-DD
-        totalMins,
-        deepMins,
-        billableMins,
-        collabMins,
-        adminMins,
-      };
+  const workstreamOptions = useMemo(
+    () =>
+      deriveDynamicWorkstreams({
+        clients,
+        tasks,
+        timeBlocks,
+      }),
+    [clients, tasks, timeBlocks]
+  );
+
+  const effectiveSelectedWorkstream = useMemo(() => {
+    if (selectedWorkstream === 'all') return 'all';
+    const match = workstreamOptions.find(
+      (w) => w.toLowerCase() === selectedWorkstream.toLowerCase()
+    );
+    return match || 'all';
+  }, [selectedWorkstream, workstreamOptions]);
+
+  const filteredTasks = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return tasks.filter((t) => {
+      if (
+        effectiveSelectedWorkstream !== 'all' &&
+        t.project.trim().toLowerCase() !== effectiveSelectedWorkstream.toLowerCase()
+      ) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        t.title.toLowerCase().includes(q) ||
+        t.project.toLowerCase().includes(q) ||
+        t.tags.some((tag) => tag.toLowerCase().includes(q))
+      );
     });
-  }, [weekDates, timeBlocks]);
+  }, [tasks, effectiveSelectedWorkstream, searchQuery]);
+
+  const filteredTimeBlocks = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return timeBlocks.filter((b) => {
+      if (
+        effectiveSelectedWorkstream !== 'all' &&
+        b.project.trim().toLowerCase() !== effectiveSelectedWorkstream.toLowerCase()
+      ) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        b.title.toLowerCase().includes(q) ||
+        b.project.toLowerCase().includes(q) ||
+        (b.appName || '').toLowerCase().includes(q) ||
+        (b.documentTitle || '').toLowerCase().includes(q)
+      );
+    });
+  }, [timeBlocks, effectiveSelectedWorkstream, searchQuery]);
+
+  const dailySeries = useMemo(
+    () =>
+      buildDailyFocusSeries({
+        weekDates,
+        timeBlocks: filteredTimeBlocks,
+      }),
+    [weekDates, filteredTimeBlocks]
+  );
 
   const maxDayMins = useMemo(
     () => Math.max(240, ...dailySeries.map((d) => d.totalMins)),
     [dailySeries]
   );
 
-  // Planned vs Actual by Project
   const projectComparison = useMemo(() => {
-    return PROJECTS.map((proj) => {
-      const projTasks = tasks.filter((t) => t.project === proj);
-      const plannedMins = projTasks.reduce(
-        (s, t) => s + t.estimatedMinutes,
-        0
-      );
-      const actualMins = timeBlocks
-        .filter((b) => b.project === proj)
-        .reduce((s, b) => s + b.durationMinutes, 0);
-      const completedTasks = projTasks.filter(
-        (t) => t.status === 'completed'
-      ).length;
-
-      return {
-        project: proj,
-        plannedMins,
-        actualMins,
-        taskCount: projTasks.length,
-        completedTasks,
-      };
+    const rows = buildProjectComparison({
+      clients,
+      tasks,
+      timeBlocks,
+      weekDates: matrixScope === 'week' ? weekDates : undefined,
+      searchQuery,
     });
-  }, [tasks, timeBlocks]);
+    if (effectiveSelectedWorkstream === 'all') return rows;
+    return rows.filter(
+      (r) => r.project.toLowerCase() === effectiveSelectedWorkstream.toLowerCase()
+    );
+  }, [
+    clients,
+    tasks,
+    timeBlocks,
+    matrixScope,
+    weekDates,
+    searchQuery,
+    effectiveSelectedWorkstream,
+  ]);
 
-  // Presence & Idle telemetry summary
-  const presenceStats = useMemo(() => {
-    const activeMins = activitySegments
-      .filter((s) => s.state === 'active')
-      .reduce((s, seg) => s + (seg.endTime - seg.startTime), 0);
-    const idleMins = activitySegments
-      .filter((s) => s.state === 'idle')
-      .reduce((s, seg) => s + (seg.endTime - seg.startTime), 0);
-    const awayMins = activitySegments
-      .filter((s) => s.state === 'away')
-      .reduce((s, seg) => s + (seg.endTime - seg.startTime), 0);
-    const totalObserved = activeMins + idleMins + awayMins;
-    const focusEfficiency =
-      totalObserved > 0 ? Math.round((activeMins / totalObserved) * 100) : 0;
+  const presenceStats = useMemo(
+    () => buildPresenceStats(activitySegments, weekDates),
+    [activitySegments, weekDates]
+  );
 
-    return {
-      activeMins,
-      idleMins,
-      awayMins,
-      focusEfficiency,
-    };
-  }, [activitySegments]);
+  const weeklyAppSummary = useMemo(
+    () =>
+      buildWeeklyAppSummary({
+        appSegments,
+        weekDates,
+        searchQuery,
+      }),
+    [appSegments, weekDates, searchQuery]
+  );
 
-  const weeklyAppSummary = useMemo(() => {
-    const dateSet = new Set(weekDates);
-    const map = new Map<string, number>();
-    let total = 0;
-    appSegments
-      .filter((seg) => dateSet.has(seg.date))
-      .forEach((seg) => {
-        const mins = Math.max(0, seg.endTime - seg.startTime);
-        total += mins;
-        map.set(seg.appName, (map.get(seg.appName) || 0) + mins);
-      });
-    return Array.from(map.entries())
-      .map(([appName, mins]) => ({
-        appName,
-        mins,
-        sharePct: total > 0 ? Math.round((mins / total) * 100) : 0,
-      }))
-      .sort((a, b) => b.mins - a.mins);
-  }, [appSegments, weekDates]);
-
-  const weeklyDocSummary = useMemo(() => {
-    const dateSet = new Set(weekDates);
-    const map = new Map<
-      string,
-      {
-        documentTitle: string;
-        appName: string;
-        domainOrPath: string;
-        mins: number;
-      }
-    >();
-    documentSegments
-      .filter((seg) => dateSet.has(seg.date))
-      .forEach((seg) => {
-        const mins = Math.max(0, seg.endTime - seg.startTime);
-        const key = `${seg.appName}::${seg.documentTitle}`;
-        const existing = map.get(key);
-        if (existing) {
-          existing.mins += mins;
-        } else {
-          map.set(key, {
-            documentTitle: seg.documentTitle,
-            appName: seg.appName,
-            domainOrPath: seg.domainOrPath,
-            mins,
-          });
-        }
-      });
-    return Array.from(map.values())
-      .sort((a, b) => b.mins - a.mins)
-      .slice(0, 8);
-  }, [documentSegments, weekDates]);
+  const weeklyDocSummary = useMemo(
+    () =>
+      buildWeeklyDocSummary({
+        documentSegments,
+        weekDates,
+        searchQuery,
+      }),
+    [documentSegments, weekDates, searchQuery]
+  );
 
   if (isExecutiveScope && execOverview) {
     const fs = execOverview.freshnessSummary;
-    const totalEstimatedHrs = execOverview.clientProfitability.reduce(
+    const q = searchQuery.trim().toLowerCase();
+    const visibleClients = execOverview.clientProfitability.filter(
+      (c) => !q || c.clientName.toLowerCase().includes(q)
+    );
+    const totalEstimatedHrs = visibleClients.reduce(
       (s, c) => s + c.estimatedHours,
       0
     );
-    const totalTrackedHrs = execOverview.clientProfitability.reduce(
+    const totalTrackedHrs = visibleClients.reduce(
       (s, c) => s + c.trackedHours,
       0
     );
-    const totalFeeUsd = execOverview.clientProfitability.reduce(
+    const totalFeeUsd = visibleClients.reduce(
       (s, c) => s + c.estimatedFeeUsd,
       0
     );
@@ -246,6 +243,33 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           </div>
         </div>
 
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="relative flex-1 min-w-[220px] max-w-sm">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Filter client engagements..."
+              aria-label="Filter client engagements"
+              className="w-full pl-8 pr-8 py-2 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                aria-label="Clear search"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+          <div className="text-xs text-slate-500 font-mono tabular-nums">
+            Showing {visibleClients.length} of {execOverview.clientProfitability.length} engagements
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl">
             <div className="text-xs font-medium text-slate-500">Firm Utilization</div>
@@ -273,7 +297,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               ${totalFeeUsd.toLocaleString()}
             </div>
             <div className="mt-1 text-xs text-slate-500">
-              Across {execOverview.clientProfitability.length} visible client engagements
+              Across {visibleClients.length} visible client engagements
             </div>
           </div>
         </div>
@@ -284,44 +308,59 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               Client Engagement Realization &amp; Profitability
             </h2>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-slate-200 dark:border-slate-800 text-[11px] font-semibold text-slate-500 bg-slate-50/70 dark:bg-slate-800/40">
-                  <th className="py-2.5 px-5">Client Engagement</th>
-                  <th className="py-2.5 px-5 text-right">Completed / Total</th>
-                  <th className="py-2.5 px-5 text-right">Estimated Hours</th>
-                  <th className="py-2.5 px-5 text-right">Tracked Hours</th>
-                  <th className="py-2.5 px-5 text-right">Est. Fee</th>
-                  <th className="py-2.5 px-5 text-right">Realization</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-xs">
-                {execOverview.clientProfitability.map((row) => (
-                  <tr key={row.clientId}>
-                    <td className="py-3.5 px-5 font-semibold text-slate-900 dark:text-white">
-                      {row.clientName}
-                    </td>
-                    <td className="py-3.5 px-5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
-                      {row.completedCount} / {row.taskCount}
-                    </td>
-                    <td className="py-3.5 px-5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
-                      {row.estimatedHours}h
-                    </td>
-                    <td className="py-3.5 px-5 text-right font-mono font-semibold tabular-nums text-slate-900 dark:text-white">
-                      {row.trackedHours}h
-                    </td>
-                    <td className="py-3.5 px-5 text-right font-mono tabular-nums text-slate-900 dark:text-white">
-                      ${row.estimatedFeeUsd.toLocaleString()}
-                    </td>
-                    <td className="py-3.5 px-5 text-right font-mono tabular-nums font-semibold text-emerald-600 dark:text-emerald-400">
-                      {row.realizationPercent}%
-                    </td>
+          {visibleClients.length === 0 ? (
+            <div className="p-8 text-center text-xs text-slate-500 space-y-2">
+              <p>No client engagements match the current filter.</p>
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="px-3 py-1.5 font-semibold text-indigo-600 dark:text-indigo-400 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                >
+                  Clear Filter
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-200 dark:border-slate-800 text-[11px] font-semibold text-slate-500 bg-slate-50/70 dark:bg-slate-800/40">
+                    <th className="py-2.5 px-5">Client Engagement</th>
+                    <th className="py-2.5 px-5 text-right">Completed / Total</th>
+                    <th className="py-2.5 px-5 text-right">Estimated Hours</th>
+                    <th className="py-2.5 px-5 text-right">Tracked Hours</th>
+                    <th className="py-2.5 px-5 text-right">Est. Fee</th>
+                    <th className="py-2.5 px-5 text-right">Realization</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-xs">
+                  {visibleClients.map((row) => (
+                    <tr key={row.clientId}>
+                      <td className="py-3.5 px-5 font-semibold text-slate-900 dark:text-white">
+                        {row.clientName}
+                      </td>
+                      <td className="py-3.5 px-5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                        {row.completedCount} / {row.taskCount}
+                      </td>
+                      <td className="py-3.5 px-5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                        {row.estimatedHours}h
+                      </td>
+                      <td className="py-3.5 px-5 text-right font-mono font-semibold tabular-nums text-slate-900 dark:text-white">
+                        {row.trackedHours}h
+                      </td>
+                      <td className="py-3.5 px-5 text-right font-mono tabular-nums text-slate-900 dark:text-white">
+                        ${row.estimatedFeeUsd.toLocaleString()}
+                      </td>
+                      <td className="py-3.5 px-5 text-right font-mono tabular-nums font-semibold text-emerald-600 dark:text-emerald-400">
+                        {row.realizationPercent}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -331,17 +370,28 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     tasks.length === 0 &&
     timeBlocks.length === 0 &&
     appSegments.length === 0 &&
-    activitySegments.length === 0;
+    activitySegments.length === 0 &&
+    clients.length === 0;
+
+  const weekDateSet = new Set(weekDates);
+  const weekFilteredBlocks = filteredTimeBlocks.filter((b) => weekDateSet.has(b.date));
+  const activeLoggedDays = dailySeries.filter((d) => d.totalMins > 0).length;
+  const avgDailyMins = Math.round(
+    weekFilteredBlocks.reduce((s, b) => s + b.durationMinutes, 0) /
+      Math.max(1, activeLoggedDays)
+  );
+  const hasActiveFilter =
+    effectiveSelectedWorkstream !== 'all' || searchQuery.trim().length > 0;
 
   return (
     <div className="space-y-6">
       <div className="pb-2 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="font-display text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
-            Productivity & Estimation Analytics
+            Productivity &amp; Estimation Analytics
           </h1>
           <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5">
-            7-day focus rhythm, project estimation accuracy, and workstation presence telemetry
+            7-day focus rhythm, tenant client estimation accuracy, and workstation presence telemetry
           </p>
         </div>
         {execOverview && (
@@ -358,6 +408,90 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         )}
       </div>
 
+      {/* Interactive Filter & Scope Toolbar */}
+      <div
+        data-testid="analytics-filter-bar"
+        className="flex flex-wrap items-center justify-between gap-3"
+      >
+        <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-0">
+          <div className="relative min-w-[220px] flex-1 max-w-xs">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search client, task, app, or file..."
+              aria-label="Search analytics data"
+              className="w-full pl-8 pr-8 py-2 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                aria-label="Clear search query"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          <select
+            aria-label="Filter by client or workstream"
+            value={effectiveSelectedWorkstream}
+            onChange={(e) => setSelectedWorkstream(e.target.value)}
+            className="px-3 py-2 text-xs font-medium bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 max-w-[240px]"
+          >
+            <option value="all">
+              All Clients &amp; Workstreams ({workstreamOptions.length})
+            </option>
+            {workstreamOptions.map((ws) => (
+              <option key={ws} value={ws}>
+                {ws}
+              </option>
+            ))}
+          </select>
+
+          {hasActiveFilter && (
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedWorkstream('all');
+                setSearchQuery('');
+              }}
+              className="px-3 py-2 text-xs font-semibold text-indigo-600 dark:text-indigo-400 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              Clear Filter
+            </button>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shrink-0">
+          <button
+            type="button"
+            onClick={() => setMatrixScope('week')}
+            className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              matrixScope === 'week'
+                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+            }`}
+          >
+            7-Day Window
+          </button>
+          <button
+            type="button"
+            onClick={() => setMatrixScope('all')}
+            className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              matrixScope === 'all'
+                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+            }`}
+          >
+            All Recorded
+          </button>
+        </div>
+      </div>
+
       {isEmptyWorkspace && (
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="space-y-1">
@@ -371,7 +505,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           <button
             type="button"
             onClick={() => onSelectDateAndGoToTimeline(weekDates[weekDates.length - 1])}
-            className="px-3.5 py-2 text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg shrink-0 cursor-pointer"
+            className="px-3.5 py-2 text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg shrink-0 cursor-pointer whitespace-nowrap"
           >
             Go to Today&apos;s Timeline
           </button>
@@ -398,15 +532,19 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         <div className="p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl">
           <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
             <Target className="w-4 h-4 text-emerald-600" />
-            <span>Weekly Scoped Deliverables</span>
+            <span>
+              {effectiveSelectedWorkstream === 'all'
+                ? 'Scoped Deliverables'
+                : `${effectiveSelectedWorkstream} Deliverables`}
+            </span>
           </div>
           <div className="mt-2 font-mono text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
-            {tasks.filter((t) => t.status === 'completed').length} /{' '}
-            {tasks.length} Shipped
+            {filteredTasks.filter((t) => t.status === 'completed').length} /{' '}
+            {filteredTasks.length} Shipped
           </div>
           <div className="mt-1 text-xs text-slate-500">
-            {tasks.filter((t) => t.status === 'blocked').length} blocked task
-            currently awaiting external action
+            {filteredTasks.filter((t) => t.status === 'blocked').length} blocked task
+            {filteredTasks.filter((t) => t.status === 'blocked').length === 1 ? '' : 's'} currently awaiting external action
           </div>
         </div>
 
@@ -416,20 +554,10 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             <span>Average Daily Tracked Output</span>
           </div>
           <div className="mt-2 font-mono text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
-            {formatDuration(
-              Math.round(
-                timeBlocks.reduce((s, b) => s + b.durationMinutes, 0) /
-                  Math.max(
-                    1,
-                    dailySeries.filter((d) => d.totalMins > 0).length
-                  )
-              )
-            )}{' '}
-            / active day
+            {formatDuration(avgDailyMins)} / active day
           </div>
           <div className="mt-1 text-xs text-slate-500">
-            Across {dailySeries.filter((d) => d.totalMins > 0).length} active
-            logged days this week
+            Across {activeLoggedDays} active logged day{activeLoggedDays === 1 ? '' : 's'} this week
           </div>
         </div>
       </div>
@@ -513,69 +641,124 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         </div>
       </div>
 
-      {/* Project Planned vs Actual Matrix */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800">
-          <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
-            Project Estimation Accuracy & Delivery Matrix
-          </h2>
-          <p className="text-xs text-slate-500">
-            Compares practice task estimates against OnTrack-logged blocks per project
-          </p>
+      {/* Dynamic Client & Workstream Planned vs Actual Matrix */}
+      <div
+        data-testid="analytics-project-matrix"
+        className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden"
+      >
+        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
+              Client &amp; Workstream Estimation Accuracy Matrix
+            </h2>
+            <p className="text-xs text-slate-500">
+              Live comparison of tenant client task estimates against OnTrack-logged blocks ({matrixScope === 'week' ? '7-day window' : 'all recorded time'}) · Click any row to filter
+            </p>
+          </div>
+          <div className="font-mono text-xs tabular-nums text-slate-500">
+            {projectComparison.length} workstream{projectComparison.length === 1 ? '' : 's'}
+          </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-slate-200 dark:border-slate-800 text-[11px] font-semibold text-slate-500 bg-slate-50/70 dark:bg-slate-800/40">
-                <th className="py-2.5 px-5">Project Workstream</th>
-                <th className="py-2.5 px-5 text-right">Scoped Tasks</th>
-                <th className="py-2.5 px-5 text-right">Completed</th>
-                <th className="py-2.5 px-5 text-right">Planned Estimate</th>
-                <th className="py-2.5 px-5 text-right">Actual Logged</th>
-                <th className="py-2.5 px-5 text-right">Utilization Ratio</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-xs">
-              {projectComparison.map((row) => {
-                const ratio =
-                  row.plannedMins > 0
-                    ? Math.round((row.actualMins / row.plannedMins) * 100)
-                    : 0;
-                return (
-                  <tr key={row.project}>
-                    <td className="py-3.5 px-5 font-semibold text-slate-900 dark:text-white">
-                      {row.project}
-                    </td>
-                    <td className="py-3.5 px-5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
-                      {row.taskCount}
-                    </td>
-                    <td className="py-3.5 px-5 text-right font-mono tabular-nums text-emerald-600 font-semibold">
-                      {row.completedTasks}
-                    </td>
-                    <td className="py-3.5 px-5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
-                      {formatDuration(row.plannedMins)}
-                    </td>
-                    <td className="py-3.5 px-5 text-right font-mono font-semibold tabular-nums text-slate-900 dark:text-white">
-                      {formatDuration(row.actualMins)}
-                    </td>
-                    <td className="py-3.5 px-5 text-right font-mono tabular-nums">
-                      <span
-                        className={
-                          ratio > 110
-                            ? 'text-amber-600 font-semibold'
-                            : 'text-slate-700 dark:text-slate-300'
-                        }
-                      >
-                        {ratio}%
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        {projectComparison.length === 0 ? (
+          <div className="p-8 text-center text-xs text-slate-500 space-y-2">
+            <p>
+              {hasActiveFilter
+                ? 'No tenant clients or workstreams match the active filter.'
+                : 'No client engagements or task workstreams recorded yet.'}
+            </p>
+            {hasActiveFilter && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedWorkstream('all');
+                  setSearchQuery('');
+                }}
+                className="px-3 py-1.5 font-semibold text-indigo-600 dark:text-indigo-400 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                Reset Filter
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-slate-800 text-[11px] font-semibold text-slate-500 bg-slate-50/70 dark:bg-slate-800/40">
+                  <th className="py-2.5 px-5">Client / Workstream</th>
+                  <th className="py-2.5 px-5 text-right">Scoped Tasks</th>
+                  <th className="py-2.5 px-5 text-right">Completed</th>
+                  <th className="py-2.5 px-5 text-right">Planned Estimate</th>
+                  <th className="py-2.5 px-5 text-right">Actual Logged</th>
+                  <th className="py-2.5 px-5 text-right">Billable</th>
+                  <th className="py-2.5 px-5 text-right">Utilization Ratio</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-xs">
+                {projectComparison.map((row) => {
+                  const isRowSelected =
+                    effectiveSelectedWorkstream !== 'all' &&
+                    effectiveSelectedWorkstream.toLowerCase() === row.project.toLowerCase();
+                  return (
+                    <tr
+                      key={row.project}
+                      onClick={() =>
+                        setSelectedWorkstream(isRowSelected ? 'all' : row.project)
+                      }
+                      className={`transition-colors cursor-pointer ${
+                        isRowSelected
+                          ? 'bg-indigo-50/70 dark:bg-indigo-950/30'
+                          : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
+                      }`}
+                    >
+                      <td className="py-3.5 px-5">
+                        <div className="font-semibold text-slate-900 dark:text-white">
+                          {row.project}
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {row.isConfiguredClient ? 'Tenant Client Engagement' : 'Firm Workstream'}
+                          {row.blockedTasks > 0 ? ` · ${row.blockedTasks} blocked` : ''}
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                        {row.taskCount}
+                      </td>
+                      <td className="py-3.5 px-5 text-right font-mono tabular-nums text-emerald-600 font-semibold">
+                        {row.completedTasks}
+                      </td>
+                      <td className="py-3.5 px-5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                        {formatDuration(row.plannedMins)}
+                      </td>
+                      <td className="py-3.5 px-5 text-right font-mono font-semibold tabular-nums text-slate-900 dark:text-white">
+                        {formatDuration(row.actualMins)}
+                      </td>
+                      <td className="py-3.5 px-5 text-right font-mono tabular-nums text-emerald-700 dark:text-emerald-400">
+                        {formatDuration(row.billableMins)}
+                      </td>
+                      <td className="py-3.5 px-5 text-right font-mono tabular-nums">
+                        {row.utilizationPercent === null ? (
+                          <span className="text-slate-400">
+                            {row.actualMins > 0 ? 'Unestimated' : '—'}
+                          </span>
+                        ) : (
+                          <span
+                            className={
+                              row.utilizationPercent > 110
+                                ? 'text-amber-600 font-semibold'
+                                : 'text-slate-700 dark:text-slate-300'
+                            }
+                          >
+                            {row.utilizationPercent}%
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* 7-Day Applications Used & Most Referenced Documents */}
@@ -595,7 +778,9 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
 
           {weeklyAppSummary.length === 0 ? (
             <p className="text-xs text-slate-400 py-4">
-              No application telemetry recorded in this 7-day window.
+              {searchQuery
+                ? 'No applications match the active search query.'
+                : 'No application telemetry recorded in this 7-day window.'}
             </p>
           ) : (
             <div className="space-y-3 pt-1">
@@ -629,16 +814,18 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           <div>
             <h2 className="font-display text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <FileText className="w-4 h-4 text-indigo-600" />
-              <span>Most Referenced Documents & Files</span>
+              <span>Most Referenced Documents &amp; Files</span>
             </h2>
             <p className="text-xs text-slate-500">
-              Top active files, browser tabs, and design specs tracked this week
+              Top active files, browser tabs, and workpapers tracked this week
             </p>
           </div>
 
           {weeklyDocSummary.length === 0 ? (
             <p className="text-xs text-slate-400 py-4">
-              No document or window focus sessions recorded yet.
+              {searchQuery
+                ? 'No recorded documents match the active search query.'
+                : 'No document or window focus sessions recorded yet.'}
             </p>
           ) : (
             <div className="divide-y divide-slate-100 dark:divide-slate-800">
