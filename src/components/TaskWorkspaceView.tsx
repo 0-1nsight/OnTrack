@@ -634,6 +634,10 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
     const resolvedAssignee = internalStaff.find(
       (u) => u.userId === resolvedAssigneeId
     );
+    if (taskScope === 'shared' || taskScope === 'invites') {
+      setTaskScope('mine');
+    }
+    const todayStr = selectedDate || new Date().toISOString().slice(0, 10);
     onCreateTask({
       title: cleanTitle,
       description: 'Created from OnTrack task workspace.',
@@ -641,14 +645,15 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
       boardId: primaryBoard.id,
       sectionId: chosenSection?.id,
       status: chosenSection?.mappedStatus || 'todo',
+      completedAt:
+        chosenSection?.mappedStatus === 'completed' ? todayStr : undefined,
       priority: newPriority,
       category: newCategory,
       tags: parsedTags.length > 0 ? parsedTags : ['work'],
       estimatedMinutes: Math.max(5, Number(newEstimate) || 60),
       subtasks: [],
-      startDate: selectedDate || new Date().toISOString().slice(0, 10),
-      dueDate:
-        newDueDate || selectedDate || new Date().toISOString().slice(0, 10),
+      startDate: todayStr,
+      dueDate: newDueDate || todayStr,
       assignedUserId: resolvedAssigneeId,
       assignedUserName: resolvedAssignee?.name,
       assignedUserRole: resolvedAssignee?.role,
@@ -680,12 +685,21 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
     ) {
       setSearchQuery('');
     }
+    if (taskScope === 'shared' || taskScope === 'invites') {
+      setTaskScope('mine');
+    }
     if (
       (selection.kind === 'space' || selection.kind === 'folder') &&
       scopedBoards.length === 0
     ) {
       setSelection({ kind: 'board', boardId: board.id });
     }
+
+    const resolvedAssigneeId = currentUserId || undefined;
+    const resolvedAssignee = internalStaff.find(
+      (u) => u.userId === resolvedAssigneeId
+    );
+    const todayStr = selectedDate || new Date().toISOString().slice(0, 10);
 
     onCreateTask({
       title: cleanTitle,
@@ -694,13 +708,17 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
       boardId: board.id,
       sectionId: sec.id,
       status: sec.mappedStatus,
+      completedAt: sec.mappedStatus === 'completed' ? todayStr : undefined,
       priority: 'medium',
       category: targetCategory,
       tags: ['board'],
       estimatedMinutes: 60,
       subtasks: [],
-      startDate: selectedDate || new Date().toISOString().slice(0, 10),
-      dueDate: selectedDate || new Date().toISOString().slice(0, 10),
+      startDate: todayStr,
+      dueDate: todayStr,
+      assignedUserId: resolvedAssigneeId,
+      assignedUserName: resolvedAssignee?.name,
+      assignedUserRole: resolvedAssignee?.role,
     });
     setSectionTaskDraftTitle('');
     setSectionTaskDraftId(null);
@@ -2033,12 +2051,16 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
                           <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white">
                             {section.name} ({groupTasks.length})
                           </h2>
-                          <span className="text-slate-300 dark:text-slate-700">
-                            ·
-                          </span>
-                          <span className="text-xs text-slate-500 dark:text-slate-400">
-                            {section.description}
-                          </span>
+                          {section.description && (
+                            <>
+                              <span className="text-slate-300 dark:text-slate-700">
+                                ·
+                              </span>
+                              <span className="text-xs text-slate-500 dark:text-slate-400">
+                                {section.description}
+                              </span>
+                            </>
+                          )}
                           <button
                             type="button"
                             onClick={() => startEditingSection(section)}
@@ -2085,6 +2107,7 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
 
                   {sectionTaskDraftId === section.id && targetBoard && (
                     <form
+                      key={`list-draft-${targetBoard.id}-${section.id}`}
                       onSubmit={(e) =>
                         handleCreateTaskInSection(e, targetBoard, section)
                       }
@@ -2380,18 +2403,88 @@ export const TaskWorkspaceView: React.FC<TaskWorkspaceViewProps> = ({
             })}
 
             {primaryBoard && (
-              <div className="flex items-center justify-end">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setViewMode('board');
-                    setAddingSectionOpen(true);
-                  }}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 rounded-lg cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Add Section on {primaryBoard.name}</span>
-                </button>
+              <div className="flex flex-col items-end">
+                {addingSectionOpen ? (
+                  <form
+                    onSubmit={handleAddSection}
+                    className="w-full max-w-2xl bg-white dark:bg-slate-900 border border-indigo-400 dark:border-indigo-700 rounded-xl p-4 space-y-2.5 text-xs"
+                  >
+                    <div className="font-semibold text-slate-900 dark:text-white">
+                      New Section on {primaryBoard.name}
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <input
+                        type="text"
+                        required
+                        autoFocus
+                        value={newSectionName}
+                        onChange={(e) => setNewSectionName(e.target.value)}
+                        placeholder="Section title (e.g., Partner Review)"
+                        className="px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                      />
+                      <input
+                        type="text"
+                        value={newSectionDesc}
+                        onChange={(e) => setNewSectionDesc(e.target.value)}
+                        placeholder="Short description..."
+                        className="px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-300"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <select
+                        aria-label="New section color"
+                        value={newSectionColor}
+                        onChange={(e) =>
+                          setNewSectionColor(e.target.value as BoardSectionColor)
+                        }
+                        className="px-2 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-200"
+                      >
+                        {COLOR_OPTIONS.map((c) => (
+                          <option key={c} value={c}>
+                            {SECTION_COLOR_META[c].label}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        aria-label="New section mapped status"
+                        value={newSectionStatus}
+                        onChange={(e) =>
+                          setNewSectionStatus(e.target.value as TaskStatus)
+                        }
+                        className="px-2 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-200"
+                      >
+                        <option value="todo">Status: Todo</option>
+                        <option value="in_progress">Status: In Progress</option>
+                        <option value="blocked">Status: Blocked</option>
+                        <option value="completed">Status: Completed</option>
+                      </select>
+                    </div>
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setAddingSectionOpen(false)}
+                        className="px-2.5 py-1.5 text-slate-500 hover:text-slate-800 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="px-3 py-1.5 font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg cursor-pointer"
+                      >
+                        Create Section
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setAddingSectionOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 rounded-lg cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Section on {primaryBoard.name}</span>
+                  </button>
+                )}
               </div>
             )}
           </div>

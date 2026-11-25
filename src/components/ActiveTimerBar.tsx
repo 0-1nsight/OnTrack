@@ -118,71 +118,74 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
         {/* Primary Row: Stopwatch, Task Selector, Presence Sensor, Date & Prefs */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           {/* Left: Live Task Timer & Task Binding */}
-          <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-0">
-            {/* Stopwatch Digital Readout */}
-            <div
-              className={`flex items-center gap-2.5 px-3.5 py-2 min-w-[116px] shrink-0 rounded-lg border transition-colors ${
-                timer.isRunning && !timer.isPaused
-                  ? 'bg-indigo-600 text-white border-indigo-700'
-                  : timer.isPaused
-                  ? 'bg-amber-500/10 text-amber-800 dark:text-amber-300 border-amber-500/40'
-                  : 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 border-slate-200 dark:border-slate-700'
-              }`}
-            >
-              <Clock className="w-4 h-4 shrink-0" />
-              <span className="font-mono text-base font-semibold tabular-nums tracking-tight">
-                {formatSecondsToStopwatch(elapsedSeconds)}
-              </span>
-            </div>
+          <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-[min(100%,520px)]">
+            {/* Stopwatch & Controls Group */}
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Stopwatch Digital Readout */}
+              <div
+                className={`flex items-center gap-2.5 px-3.5 py-2 min-w-[116px] shrink-0 rounded-lg border transition-colors ${
+                  timer.isRunning && !timer.isPaused
+                    ? 'bg-indigo-600 text-white border-indigo-700'
+                    : timer.isPaused
+                    ? 'bg-amber-500/10 text-amber-800 dark:text-amber-300 border-amber-500/40'
+                    : 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 border-slate-200 dark:border-slate-700'
+                }`}
+              >
+                <Clock className="w-4 h-4 shrink-0" />
+                <span className="font-mono text-base font-semibold tabular-nums tracking-tight">
+                  {formatSecondsToStopwatch(elapsedSeconds)}
+                </span>
+              </div>
 
-            {/* Play / Pause / Stop Controls */}
-            <div className="flex items-center gap-1.5 shrink-0">
-              {!timer.isRunning ? (
-                <button
-                  type="button"
-                  onClick={() => onStartTimer(timer.taskId)}
-                  className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                  title="Start active task stopwatch"
-                >
-                  <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>Start Timer</span>
-                </button>
-              ) : (
-                <>
-                  {timer.isPaused ? (
-                    <button
-                      type="button"
-                      onClick={onResumeTimer}
-                      className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <Play className="w-3.5 h-3.5 fill-current" />
-                      <span>Resume</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={onPauseTimer}
-                      className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-amber-900 bg-amber-100 hover:bg-amber-200 dark:bg-amber-500/20 dark:text-amber-200 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <Pause className="w-3.5 h-3.5" />
-                      <span>Pause</span>
-                    </button>
-                  )}
+              {/* Play / Pause / Stop Controls */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                {!timer.isRunning ? (
                   <button
                     type="button"
-                    onClick={onStopAndSaveTimer}
-                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                    title="Stop timer and log block to timeline"
+                    onClick={() => onStartTimer(timer.taskId)}
+                    className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    title="Start active task stopwatch"
                   >
-                    <Square className="w-3.5 h-3.5 fill-current" />
-                    <span>Log Block</span>
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span>Start Timer</span>
                   </button>
-                </>
-              )}
+                ) : (
+                  <>
+                    {timer.isPaused ? (
+                      <button
+                        type="button"
+                        onClick={onResumeTimer}
+                        className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-current" />
+                        <span>Resume</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={onPauseTimer}
+                        className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-amber-900 bg-amber-100 hover:bg-amber-200 dark:bg-amber-500/20 dark:text-amber-200 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        <Pause className="w-3.5 h-3.5" />
+                        <span>Pause</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={onStopAndSaveTimer}
+                      className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-500 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                      title="Stop timer and log block to timeline"
+                    >
+                      <Square className="w-3.5 h-3.5 fill-current" />
+                      <span>Log Block</span>
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
             {/* Task Selector or Custom Activity Input */}
-            <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[220px] max-w-full">
+            <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[min(100%,280px)]">
               <select
                 aria-label="Select task to track"
                 value={timer.taskId || ''}
@@ -204,7 +207,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
                     });
                   }
                 }}
-                className="px-3 py-2 text-xs font-medium bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full sm:w-auto sm:max-w-[230px] min-w-0 truncate"
+                className="px-3 py-2 text-xs font-medium bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full sm:w-auto sm:max-w-[220px] min-w-0 truncate shrink-0"
               >
                 <option value="">Ad-hoc Activity / Custom Session</option>
                 {activeTasks.map((t) => {
@@ -234,7 +237,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
                     onUpdateTimerMeta({ customTitle: e.target.value })
                   }
                   placeholder="What are you working on right now?"
-                  className="px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 flex-1 min-w-[170px] max-w-full"
+                  className="px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 flex-1 min-w-[170px] w-full sm:w-auto"
                 />
               )}
 
@@ -242,7 +245,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
                 aria-label="Project selection"
                 value={timer.project}
                 onChange={(e) => onUpdateTimerMeta({ project: e.target.value })}
-                className="hidden xl:block px-2.5 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-300 max-w-[150px] shrink-0"
+                className="px-2.5 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-300 max-w-[145px] shrink-0"
               >
                 {projectOptions.map((proj) => (
                   <option key={proj} value={proj}>
@@ -260,7 +263,7 @@ export const ActiveTimerBar: React.FC<ActiveTimerBarProps> = ({
                     isBillable: e.target.value === 'billable',
                   })
                 }
-                className="hidden lg:block px-2.5 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-300 max-w-[140px] shrink-0"
+                className="px-2.5 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-300 max-w-[135px] shrink-0"
               >
                 {(Object.keys(CATEGORY_LABELS) as WorkCategory[]).map((cat) => (
                   <option key={cat} value={cat}>

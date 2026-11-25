@@ -39,6 +39,7 @@ describe('Component 2: Dynamic Tenant Analytics & Workstream Aggregations', () =
       knownDomains: ['acme.example'],
       restrictedUserIds: [],
       source: 'manual',
+      updatedAtUtc: '2026-11-25T00:00:00Z',
     },
     {
       id: 'cli-beacon',
@@ -50,6 +51,7 @@ describe('Component 2: Dynamic Tenant Analytics & Workstream Aggregations', () =
       knownDomains: ['beacon.example'],
       restrictedUserIds: [],
       source: 'manual',
+      updatedAtUtc: '2026-11-25T00:00:00Z',
     },
   ];
 
@@ -57,6 +59,7 @@ describe('Component 2: Dynamic Tenant Analytics & Workstream Aggregations', () =
     {
       id: 't1',
       title: 'Q3 Bank Reconciliation',
+      description: '',
       project: 'Acme Corp',
       category: 'billable',
       tags: ['close', 'q3'],
@@ -64,11 +67,13 @@ describe('Component 2: Dynamic Tenant Analytics & Workstream Aggregations', () =
       priority: 'high',
       estimatedMinutes: 120,
       dueDate: '2026-11-25',
+      subtasks: [],
       createdAt: '2026-11-20',
     },
     {
       id: 't2',
       title: '1099 Vendor Review',
+      description: '',
       project: 'Acme Corp',
       category: 'billable',
       tags: ['tax'],
@@ -76,11 +81,13 @@ describe('Component 2: Dynamic Tenant Analytics & Workstream Aggregations', () =
       priority: 'medium',
       estimatedMinutes: 60,
       dueDate: '2026-11-26',
+      subtasks: [],
       createdAt: '2026-11-21',
     },
     {
       id: 't3',
       title: 'Payroll Compliance Memo',
+      description: '',
       project: 'Beacon Health',
       category: 'deep_work',
       tags: ['audit'],
@@ -88,11 +95,13 @@ describe('Component 2: Dynamic Tenant Analytics & Workstream Aggregations', () =
       priority: 'urgent',
       estimatedMinutes: 90,
       dueDate: '2026-11-25',
+      subtasks: [],
       createdAt: '2026-11-22',
     },
     {
       id: 't4',
       title: 'CPE Ethics Training',
+      description: '',
       project: 'Internal Firm',
       category: 'admin',
       tags: ['training'],
@@ -100,6 +109,7 @@ describe('Component 2: Dynamic Tenant Analytics & Workstream Aggregations', () =
       priority: 'low',
       estimatedMinutes: 60,
       dueDate: '2026-11-28',
+      subtasks: [],
       createdAt: '2026-11-23',
     },
   ];
@@ -222,9 +232,9 @@ describe('Component 2: Dynamic Tenant Analytics & Workstream Aggregations', () =
     expect(daily.find((d) => d.date === '2026-11-25')?.deepMins).toBe(60);
 
     const activity: ActivitySegment[] = [
-      { id: 'a1', date: '2026-11-25', startTime: 540, endTime: 630, state: 'active', label: 'Active' },
-      { id: 'a2', date: '2026-11-25', startTime: 630, endTime: 640, state: 'idle', label: 'Idle' },
-      { id: 'a3', date: '2026-11-25', startTime: 640, endTime: 660, state: 'away', label: 'Away' },
+      { id: 'a1', date: '2026-11-25', startTime: 540, endTime: 630, state: 'active', label: 'Active', reconciled: true },
+      { id: 'a2', date: '2026-11-25', startTime: 630, endTime: 640, state: 'idle', label: 'Idle', reconciled: true },
+      { id: 'a3', date: '2026-11-25', startTime: 640, endTime: 660, state: 'away', label: 'Away', reconciled: true },
     ];
     expect(buildPresenceStats(activity, weekDates)).toEqual({
       activeMins: 90,

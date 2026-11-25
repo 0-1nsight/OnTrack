@@ -76,7 +76,22 @@ echo "Desktop Agent started (PID $(cat "${INSTALL_ROOT}/agent.pid"))."
 echo "Browser Extension (pre-paired) staged at: ${EXT_DIR}"
 echo "Open chrome://extensions -> Developer mode -> Load unpacked -> select ${EXT_DIR}"
 
-SIGNIN_URL="${SERVER_URL}/?signin=key"
+USER_EMAIL=""
+for cred_file in "${SCRIPT_DIR}"/OnTrack-Credentials*.txt; do
+  if [[ -f "$cred_file" ]]; then
+    USER_EMAIL="$(grep -iE '^Account Email[[:space:]]*:' "$cred_file" | head -n 1 | sed -E 's/^[^:]+:[[:space:]]*//' | tr -d '[:space:]' || true)"
+    if [[ -n "$USER_EMAIL" ]]; then
+      break
+    fi
+  fi
+done
+
+if [[ -n "$USER_EMAIL" ]]; then
+  ENCODED_EMAIL="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$USER_EMAIL")"
+  SIGNIN_URL="${SERVER_URL}/?signin=key&email=${ENCODED_EMAIL}"
+else
+  SIGNIN_URL="${SERVER_URL}/?signin=key"
+fi
 echo "Opening OnTrack Sign-In: ${SIGNIN_URL}"
 if command -v open >/dev/null 2>&1; then
   open "$SIGNIN_URL" >/dev/null 2>&1 || true

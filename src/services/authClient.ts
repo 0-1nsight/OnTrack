@@ -254,6 +254,19 @@ export async function confirmMfaEnrollment(code: string): Promise<{
   return parseJsonOrThrow(res);
 }
 
+export async function verifyMfaSessionCode(payload: {
+  totpCode?: string;
+  backupCode?: string;
+}): Promise<{ ok: boolean; user: AuthUser | null }> {
+  const res = await fetch('/api/auth/mfa/verify', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow(res);
+}
+
 export async function listActiveSessions(): Promise<{ sessions: SessionInfo[] }> {
   const res = await fetch('/api/auth/sessions', {
     credentials: 'include',

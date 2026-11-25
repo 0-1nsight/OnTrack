@@ -551,8 +551,11 @@ export default function App() {
         });
 
         for (const st of snapshot.tasks) {
-          const sig = `${st.title.trim().toLowerCase()}::${st.clientName.trim().toLowerCase()}`;
-          const matchingTempId = pendingTaskTempBySigRef.current.get(sig);
+          const exactSig = `${st.title.trim().toLowerCase()}::${st.clientName.trim().toLowerCase()}`;
+          const titleStatusSig = `${st.title.trim().toLowerCase()}::status:${st.status}`;
+          const matchingTempId =
+            pendingTaskTempBySigRef.current.get(exactSig) ||
+            pendingTaskTempBySigRef.current.get(titleStatusSig);
           if (matchingTempId && !enrichedExisting.some((t) => t.id === st.id)) {
             const pendingMeta = pendingTaskMetaRef.current.get(matchingTempId);
             if (pendingMeta) {
@@ -652,7 +655,8 @@ export default function App() {
     [user, activeRole, enginePrivacyRules, showToast]
   );
 
-  const refreshAuthSession = useCallback(async () => {
+  const refreshAuthSession = useCallback(async (): Promise<AuthUser | null> => {
+    let refreshedUser: AuthUser | null = null;
     try {
       const [status, session] = await Promise.all([
         fetchBootstrapStatus().catch(() => ({
@@ -674,6 +678,7 @@ export default function App() {
         setDemoAccounts([]);
       }
       if (session.authenticated && session.user) {
+        refreshedUser = session.user;
         if (!session.user.isDemoSandbox) {
           setReports((prev) => prev.filter((r) => !r.id.startsWith('demo-rep-')));
         }
@@ -695,6 +700,7 @@ export default function App() {
     } finally {
       setAuthReady(true);
     }
+    return refreshedUser;
   }, []);
 
   useEffect(() => {
@@ -1663,12 +1669,17 @@ export default function App() {
     const created: Task = {
       ...newTaskData,
       project: safeProject,
+      completedAt:
+        newTaskData.completedAt ??
+        (newTaskData.status === 'completed' ? todayDate : undefined),
       id: tempId,
       createdAt: todayDate,
     };
     const sig = `${created.title.trim().toLowerCase()}::${safeProject.toLowerCase()}`;
+    const titleStatusSig = `${created.title.trim().toLowerCase()}::status:${created.status}`;
     pendingTaskMetaRef.current.set(tempId, created);
     pendingTaskTempBySigRef.current.set(sig, tempId);
+    pendingTaskTempBySigRef.current.set(titleStatusSig, tempId);
     setTasks((prev) => [created, ...prev]);
 
     if (user && activeRole !== 'client') {
@@ -1694,6 +1705,7 @@ export default function App() {
           );
           pendingTaskMetaRef.current.delete(tempId);
           pendingTaskTempBySigRef.current.delete(sig);
+          pendingTaskTempBySigRef.current.delete(titleStatusSig);
           pendingTaskMetaRef.current.set(serverTask.id, mapped);
           setEngineTaskVersions((prev) => ({ ...prev, [serverTask.id]: serverTask.version }));
           setTasks((prev) => {
@@ -1710,6 +1722,7 @@ export default function App() {
         .catch((err: any) => {
           pendingTaskMetaRef.current.delete(tempId);
           pendingTaskTempBySigRef.current.delete(sig);
+          pendingTaskTempBySigRef.current.delete(titleStatusSig);
           setTasks((prev) => prev.filter((t) => t.id !== tempId));
           showToast(err?.message || 'Unable to save task on server.');
         });
@@ -2615,13 +2628,23 @@ export default function App() {
             onSignOut={handleSignOut}
             onSaveProfile={handleSaveProfile}
             onRefreshSession={refreshAuthSession}
-            onOnboardingComplete={() => {
+            onOnboardingComplete={(freshUser) => {
+              const resolvedUser = freshUser ?? user;
+              const resolvedRole = resolvedUser?.role ?? activeRole;
+              const policy = getRolePolicy(resolvedRole);
+              const landingTab = policy.allowedTabs.some((t) => t.id === 'timeline')
+                ? 'timeline'
+                : policy.defaultTab;
               setAccountModalOpen(false);
-              setActiveTab('timeline');
-              if (user) {
-                void hydrateFromEngine(user, activeRole);
+              setActiveTab(landingTab);
+              if (resolvedUser) {
+                void hydrateFromEngine(resolvedUser, resolvedRole);
               }
-              showToast('Account activated! Workstation capture status is running on your Timeline.');
+              showToast(
+                landingTab === 'timeline'
+                  ? 'Account activated! Workstation capture status is running on your Timeline.'
+                  : 'Account activated and MFA verified.'
+              );
             }}
             onExportJson={handleExportJson}
             onOpenPreferences={() => setPrefsModalOpen(true)}

@@ -1266,6 +1266,15 @@ export class AuthStore {
     await this.db.withTenantTransaction(
       { tenantId: params.tenantId, userId: params.userId },
       async (tx) => {
+        const userRow = await tx.get<{ role: string }>(
+          'SELECT role FROM shift_users WHERE tenant_id = ? AND user_id = ?',
+          params.tenantId,
+          params.userId
+        );
+        if (!userRow) {
+          throw new HttpError(404, 'USER_NOT_FOUND', 'User not found.');
+        }
+
         const res = await tx.run(
           `UPDATE shift_users
            SET password_hash = ?, must_set_password = 0, onboarding_key_hash = NULL, onboarding_key_expires_utc = NULL
@@ -1280,10 +1289,11 @@ export class AuthStore {
 
         await tx.run(
           `INSERT INTO audit_logs (id, tenant_id, actor_user_id, actor_role, target_user_id, action, details, created_at_utc)
-           VALUES (?, ?, ?, 'accountant', ?, 'user.onboarding_password_set', ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, 'user.onboarding_password_set', ?, ?)`,
           `aud-${crypto.randomBytes(6).toString('hex')}`,
           params.tenantId,
           params.userId,
+          userRow.role,
           params.userId,
           'Completed onboarding password setup and consumed single-use access key',
           nowIso

@@ -565,7 +565,7 @@ namespace OnTrackInstaller
 
             if (openBrowserExtensions)
             {
-                LaunchAppSignInBrowser(meta.ServerUrl);
+                LaunchAppSignInBrowser(meta.ServerUrl, TryFindSiblingCredentialsEmail());
             }
 
             string summary = healthy
@@ -838,16 +838,55 @@ namespace OnTrackInstaller
             return "";
         }
 
-        private static string BuildAppSignInUrl(string serverUrl)
+        public static string TryFindSiblingCredentialsEmail()
         {
-            string baseUrl = string.IsNullOrWhiteSpace(serverUrl) ? "http://localhost:3000" : serverUrl.Trim().TrimEnd('/');
-            if (baseUrl.IndexOf("signin=", StringComparison.OrdinalIgnoreCase) >= 0) return baseUrl;
-            return baseUrl + (baseUrl.IndexOf('?') >= 0 ? "&signin=key" : "/?signin=key");
+            var dirs = new List<string>();
+            try
+            {
+                string exeDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+                if (!string.IsNullOrEmpty(exeDir)) dirs.Add(exeDir);
+            }
+            catch { }
+            try
+            {
+                if (!string.IsNullOrEmpty(Environment.CurrentDirectory)) dirs.Add(Environment.CurrentDirectory);
+            }
+            catch { }
+
+            foreach (string dir in dirs)
+            {
+                try
+                {
+                    if (!Directory.Exists(dir)) continue;
+                    string[] files = Directory.GetFiles(dir, "OnTrack-Credentials*.txt");
+                    foreach (string f in files)
+                    {
+                        string content = File.ReadAllText(f, Encoding.UTF8);
+                        Match m = Regex.Match(content, "Account Email\\s*:\\s*([^\\s\\r\\n]+@[^\\s\\r\\n]+)", RegexOptions.IgnoreCase);
+                        if (m.Success) return m.Groups[1].Value.Trim();
+                    }
+                }
+                catch { }
+            }
+            return "";
         }
 
-        private static void LaunchAppSignInBrowser(string serverUrl)
+        private static string BuildAppSignInUrl(string serverUrl, string email)
         {
-            string targetUrl = BuildAppSignInUrl(serverUrl);
+            string baseUrl = string.IsNullOrWhiteSpace(serverUrl) ? "http://localhost:3000" : serverUrl.Trim().TrimEnd('/');
+            string target = baseUrl.IndexOf("signin=", StringComparison.OrdinalIgnoreCase) >= 0
+                ? baseUrl
+                : baseUrl + (baseUrl.IndexOf('?') >= 0 ? "&signin=key" : "/?signin=key");
+            if (!string.IsNullOrWhiteSpace(email) && target.IndexOf("email=", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                target += "&email=" + Uri.EscapeDataString(email.Trim());
+            }
+            return target;
+        }
+
+        private static void LaunchAppSignInBrowser(string serverUrl, string email)
+        {
+            string targetUrl = BuildAppSignInUrl(serverUrl, email);
             try
             {
                 Process.Start(new ProcessStartInfo(targetUrl) { UseShellExecute = true });

@@ -99,6 +99,109 @@ const PackageBuildBodySchema = z.object({
   credentialsFilename: z.string().trim().max(120).optional(),
 });
 
+const SyncEventItemSchema = z.object({
+  event_id: z.string().trim().min(1).max(160),
+  schema_version: z.literal(1).optional().default(1),
+  tenant_id: z.string().trim().optional(),
+  user_id: z.string().trim().optional(),
+  device_id: z.string().trim().optional(),
+  seq: z.number().int().min(0),
+  type: z.enum([
+    'activity.window',
+    'activity.app',
+    'activity.browser',
+    'activity.file',
+    'activity.idle',
+    'activity.meeting',
+    'activity.heartbeat',
+    'state.task_status',
+    'state.step_confirmed',
+    'state.milestone_confirmed',
+    'state.session_attributed',
+  ]),
+  priority: z.enum(['state', 'activity']),
+  event_time_utc: z.string().trim().min(10).max(64),
+  received_at: z.string().nullable().optional().default(null),
+  payload: z.record(z.string(), z.unknown()),
+});
+
+const SyncBatchSchema = z.object({
+  deviceId: z.string().trim().min(1).max(160).optional().default('dev-web-client'),
+  userId: z.string().trim().min(1).max(120).optional(),
+  events: z.array(SyncEventItemSchema).max(500),
+});
+
+const RawCsvImportSchema = z.object({
+  rawText: z.string().trim().min(1, 'CSV content is empty.').max(500_000),
+});
+
+const ClientImportSchema = z.object({
+  rawText: z.string().trim().min(1, 'Import file content is empty.').max(500_000),
+  source: z.enum(['csv', 'file_upload']).optional().default('csv'),
+});
+
+const DevicePairSchema = z.object({
+  userId: z.string().trim().min(1).max(120).optional(),
+  deviceId: z.string().trim().min(1).max(120).optional(),
+  label: z.string().trim().min(1).max(120).optional(),
+});
+
+const ActivityRuleCreateSchema = z.object({
+  keyword: z.string().trim().min(1).max(120),
+  activityType: z.string().trim().min(1).max(120),
+  workCategory: z
+    .enum(['deep_work', 'collaborative', 'billable', 'admin'])
+    .optional()
+    .default('billable'),
+  weight: z.number().finite().min(1).max(100).optional().default(8),
+});
+
+const PrivacyRuleCreateSchema = z.object({
+  kind: z.enum(['app', 'domain', 'path']).optional().default('domain'),
+  pattern: z.string().trim().min(1).max(200),
+  reason: z.string().trim().min(1).max(240).optional().default('Custom Exclusion'),
+});
+
+const PrivacyRuleToggleSchema = z.object({
+  enabled: z.boolean(),
+});
+
+const TenantConfigPatchSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  aiReportsEnabled: z.boolean().optional(),
+  focusFactor: z.number().finite().min(0.5).max(1).optional(),
+  heartbeatIntervalSeconds: z.number().int().min(5).max(300).optional(),
+  delayedThresholdSeconds: z.number().int().min(30).max(3600).optional(),
+  retentionDays: z.number().int().min(7).max(365).optional(),
+  monitoringPolicy: z.enum(['mandatory', 'opt_in']).optional(),
+  serverUrl: z.string().trim().url().optional(),
+  confidenceThresholds: z
+    .object({
+      detected: z.number().finite().min(0.1).max(1).optional(),
+      suggested: z.number().finite().min(0.1).max(1).optional(),
+    })
+    .optional(),
+  sessionizer: z
+    .object({
+      maxInterruptionSeconds: z.number().int().min(5).max(600).optional(),
+      idleCloseSeconds: z.number().int().min(30).max(3600).optional(),
+    })
+    .optional(),
+});
+
+const TaskCreateSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  clientId: z.string().trim().max(120).optional(),
+  project: z.string().trim().max(160).optional(),
+  clientName: z.string().trim().max(160).optional(),
+  templateId: z.string().trim().max(120).optional(),
+  period: z.string().trim().max(64).optional(),
+  status: z.enum(['todo', 'in_progress', 'blocked', 'completed']).optional().default('todo'),
+  dueDateUtc: z.string().trim().max(64).optional(),
+  assignedUserId: z.string().trim().max(120).optional(),
+  estimatedMinutes: z.coerce.number().int().min(5).max(10000).optional().default(120),
+});
+
 export function createEngineRouter(deps: {
   authStore: AuthStore;
   engineStore: EngineSQLStore;
@@ -204,25 +307,22 @@ export function createEngineRouter(deps: {
     '/sync',
     asyncHandler(async (req, res) => {
       const authCtx = await requireStaff(req);
-      const { deviceId = 'dev-web-client', events = [] } = req.body || {};
-
-      if (!Array.isArray(events)) {
-        throw new HttpError(400, 'INVALID_EVENTS', 'events array is required.');
-      }
+      const parsed = SyncBatchSchema.parse(req.body || {});
+      const { deviceId, events } = parsed;
 
       const targetUserId =
         authCtx.mode === 'device'
           ? authCtx.userId
-          : authCtx.isDemoSandbox && typeof req.body?.userId === 'string'
-          ? String(req.body.userId)
+          : authCtx.isDemoSandbox && parsed.userId
+          ? parsed.userId
           : authCtx.userId;
 
       const t0 = performance.now();
       const result = await deps.engineStore.ingestEventBatch({
         tenantId: authCtx.tenantId,
         userId: targetUserId,
-        deviceId: authCtx.deviceId || String(deviceId),
-        events,
+        deviceId: authCtx.deviceId || deviceId,
+        events: events as any,
       });
       deps.engineStore.recordBroadcastLatency(performance.now() - t0);
 
@@ -274,10 +374,7 @@ export function createEngineRouter(deps: {
       if (authCtx.role !== 'admin_it') {
         throw new HttpError(403, 'FORBIDDEN', 'Only Admin/IT can import staff roster CSV.');
       }
-      const rawText = String(req.body?.rawText || '');
-      if (!rawText.trim()) {
-        throw new HttpError(400, 'EMPTY_CSV', 'CSV content is empty.');
-      }
+      const { rawText } = RawCsvImportSchema.parse(req.body || {});
       const staff = await deps.engineStore.importStaffFromCsv(authCtx.tenantId, rawText);
       await deps.engineStore.recordAuditLog({
         tenantId: authCtx.tenantId,
@@ -347,13 +444,13 @@ export function createEngineRouter(deps: {
     '/devices/pair',
     asyncHandler(async (req, res) => {
       const authCtx = await requireStaff(req);
-      const requestedUserId = String(req.body?.userId || authCtx.userId);
+      const parsed = DevicePairSchema.parse(req.body || {});
+      const requestedUserId = parsed.userId || authCtx.userId;
       const targetUserId =
         authCtx.role === 'admin_it' ? requestedUserId : authCtx.userId;
       const deviceId =
-        String(req.body?.deviceId || '').trim() ||
-        `dev-${targetUserId}-${Date.now().toString(36)}`;
-      const label = String(req.body?.label || 'Workstation Agent').trim();
+        parsed.deviceId || `dev-${targetUserId}-${Date.now().toString(36)}`;
+      const label = parsed.label || 'Workstation Agent';
 
       const created = await deps.engineStore.createDeviceToken({
         tenantId: authCtx.tenantId,
@@ -433,14 +530,11 @@ export function createEngineRouter(deps: {
     '/clients/import',
     asyncHandler(async (req, res) => {
       const authCtx = await requireStaff(req);
-      const { rawText = '', source = 'csv' } = req.body || {};
-      if (typeof rawText !== 'string' || !rawText.trim()) {
-        throw new HttpError(400, 'EMPTY_IMPORT', 'Import file content is empty.');
-      }
+      const { rawText, source } = ClientImportSchema.parse(req.body || {});
       const imported = await deps.engineStore.importClientsFromRaw(
         authCtx.tenantId,
         rawText,
-        source === 'file_upload' ? 'file_upload' : 'csv'
+        source
       );
       await deps.wsGateway.publish({
         tenantId: authCtx.tenantId,
@@ -472,21 +566,13 @@ export function createEngineRouter(deps: {
     '/activity-rules',
     asyncHandler(async (req, res) => {
       const authCtx = await requireStaff(req);
-      const {
-        keyword,
-        activityType,
-        workCategory = 'billable',
-        weight = 8,
-      } = req.body || {};
-      if (!keyword || !activityType) {
-        throw new HttpError(400, 'MISSING_FIELDS', 'keyword and activityType are required.');
-      }
+      const parsed = ActivityRuleCreateSchema.parse(req.body || {});
       const created = await deps.engineStore.addActivityRule({
         tenantId: authCtx.tenantId,
-        keyword: String(keyword),
-        activityType: String(activityType),
-        workCategory,
-        weight: Number(weight) || 8,
+        keyword: parsed.keyword,
+        activityType: parsed.activityType,
+        workCategory: parsed.workCategory,
+        weight: parsed.weight,
       });
       await deps.wsGateway.publish({
         tenantId: authCtx.tenantId,
@@ -513,15 +599,12 @@ export function createEngineRouter(deps: {
       if (authCtx.role !== 'admin_it' && !authCtx.isDemoSandbox) {
         throw new HttpError(403, 'FORBIDDEN', 'Only Admin/IT can add privacy rules.');
       }
-      const { kind = 'domain', pattern, reason = 'Custom Exclusion' } = req.body || {};
-      if (!pattern) {
-        throw new HttpError(400, 'MISSING_PATTERN', 'pattern is required.');
-      }
+      const parsed = PrivacyRuleCreateSchema.parse(req.body || {});
       const rule = await deps.engineStore.addPrivacyRule({
         tenantId: authCtx.tenantId,
-        kind,
-        pattern: String(pattern),
-        reason: String(reason),
+        kind: parsed.kind,
+        pattern: parsed.pattern,
+        reason: parsed.reason,
         enabled: true,
       });
       await deps.wsGateway.publish({
@@ -540,10 +623,11 @@ export function createEngineRouter(deps: {
       if (authCtx.role !== 'admin_it' && !authCtx.isDemoSandbox) {
         throw new HttpError(403, 'FORBIDDEN', 'Only Admin/IT can toggle privacy rules.');
       }
+      const { enabled } = PrivacyRuleToggleSchema.parse(req.body || {});
       await deps.engineStore.togglePrivacyRule(
         authCtx.tenantId,
         req.params.id,
-        Boolean(req.body?.enabled)
+        enabled
       );
       await deps.wsGateway.publish({
         tenantId: authCtx.tenantId,
@@ -578,9 +662,10 @@ export function createEngineRouter(deps: {
       if (authCtx.role !== 'admin_it') {
         throw new HttpError(403, 'FORBIDDEN', 'Only Admin/IT can update tenant settings.');
       }
+      const parsed = TenantConfigPatchSchema.parse(req.body || {});
       const updated = await deps.engineStore.updateTenantConfig(
         authCtx.tenantId,
-        req.body || {}
+        parsed as any
       );
       await deps.engineStore.recordAuditLog({
         tenantId: authCtx.tenantId,
@@ -700,13 +785,10 @@ export function createEngineRouter(deps: {
     '/tasks',
     asyncHandler(async (req, res) => {
       const authCtx = await requireStaff(req);
-      const b = req.body || {};
-      const title = typeof b.title === 'string' ? b.title.trim() : '';
-      const rawClientId = typeof b.clientId === 'string' ? b.clientId.trim() : '';
-      const rawProject = typeof b.project === 'string' ? b.project.trim() : '';
-      if (!title) {
-        throw new HttpError(400, 'MISSING_FIELDS', 'title is required.');
-      }
+      const b = TaskCreateSchema.parse(req.body || {});
+      const title = b.title;
+      const rawClientId = b.clientId || '';
+      const rawProject = b.project || '';
       const slug = (rawClientId || rawProject)
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '-')
@@ -714,10 +796,7 @@ export function createEngineRouter(deps: {
       const clientId = rawClientId || `cli-${slug}`;
       const clientName = String(b.clientName || rawProject || 'Internal Firm');
 
-      const requestedAssigneeId =
-        typeof b.assignedUserId === 'string' && b.assignedUserId.trim()
-          ? b.assignedUserId.trim()
-          : authCtx.userId;
+      const requestedAssigneeId = b.assignedUserId || authCtx.userId;
 
       const [staff, clients] = await Promise.all([
         deps.engineStore.listShiftUsers(authCtx.tenantId),
@@ -762,10 +841,10 @@ export function createEngineRouter(deps: {
           `${authCtx.tenantId === 'firm_demo' ? 'demo_' : ''}tpl-monthly-close`,
         title,
         period: String(b.period || 'Oct 2026'),
-        status: b.status || 'todo',
+        status: b.status,
         dueDateUtc: b.dueDateUtc || new Date().toISOString(),
         assignedUserId: requestedAssigneeId,
-        estimatedMinutes: Math.max(5, Number(b.estimatedMinutes) || 120),
+        estimatedMinutes: b.estimatedMinutes,
       });
 
       if (created.assignedUserId !== authCtx.userId) {
