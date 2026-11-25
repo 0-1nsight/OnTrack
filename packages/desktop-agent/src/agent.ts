@@ -509,7 +509,7 @@ function toCaptureSample(
     filePath: sample.filePath,
     idleSeconds: sample.idleSeconds,
     sessionLocked: sample.sessionLocked,
-    systemSleeping: false,
+    systemSleeping: sample.systemSleeping ?? false,
     meetingActive: sample.meetingActive,
     mediaInUse: sample.mediaInUse,
     osPlatform: sample.osPlatform,

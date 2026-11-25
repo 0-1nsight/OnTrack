@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { UserRole } from '../engine/types';
 import { AuthUser } from '../services/authClient';
+import { updateEngineConfigApi } from '../services/engineClient';
 import { fetchRoleOverviewApi, RoleOverviewData } from '../services/portalClient';
 import {
   ApplicationUsageSegment,
@@ -57,8 +58,40 @@ export const WeeklyReportView: React.FC<WeeklyReportViewProps> = ({
   const [execOverview, setExecOverview] = useState<RoleOverviewData | null>(null);
   const [selectedTone, setSelectedTone] = useState<ReportTone>('executive');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isTogglingAi, setIsTogglingAi] = useState(false);
   const [copiedMarkdown, setCopiedMarkdown] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [aiStatus, setAiStatus] = useState<{
+    aiReportsEnabled: boolean;
+    aiProviderReady: boolean;
+    model: string;
+    canToggle: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const loadAiStatus = async () => {
+      try {
+        const res = await fetch('/api/reports/status', { credentials: 'include' });
+        if (!res.ok) return;
+        const json = await res.json();
+        if (active) {
+          setAiStatus({
+            aiReportsEnabled: Boolean(json.aiReportsEnabled),
+            aiProviderReady: Boolean(json.aiProviderReady),
+            model: String(json.model || 'gemini-4-hydrogen'),
+            canToggle: Boolean(json.canToggle) || activeRole === 'admin_it',
+          });
+        }
+      } catch {
+        // ignore in local-only mode
+      }
+    };
+    void loadAiStatus();
+    return () => {
+      active = false;
+    };
+  }, [tenantId, activeRole]);
 
   useEffect(() => {
     if (!isExecutiveScope) return;
@@ -401,8 +434,27 @@ export const WeeklyReportView: React.FC<WeeklyReportViewProps> = ({
           ? nextWeekFocus
           : ['Scope new sprint backlog deliverables.'],
       metricsSnapshot: liveMetrics,
-      isAiGenerated: true,
+      isAiGenerated: false,
     };
+  };
+
+  const handleToggleAiReports = async () => {
+    if (!aiStatus) return;
+    setIsTogglingAi(true);
+    try {
+      const nextEnabled = !aiStatus.aiReportsEnabled;
+      await updateEngineConfigApi(tenantId, { aiReportsEnabled: nextEnabled });
+      setAiStatus((prev) => (prev ? { ...prev, aiReportsEnabled: nextEnabled } : prev));
+      setStatusMessage(
+        nextEnabled
+          ? `Opt-in AI Weekly Reports enabled (${aiStatus.model}, aggregate numeric KPIs only).`
+          : 'AI Weekly Reports disabled. Reports will generate deterministically on-server/locally.'
+      );
+    } catch (err: any) {
+      setStatusMessage(err?.message || 'Only Admin/IT can change the firm AI Weekly Reports setting.');
+    } finally {
+      setIsTogglingAi(false);
+    }
   };
 
   const handleGenerateReport = async () => {
@@ -430,11 +482,20 @@ export const WeeklyReportView: React.FC<WeeklyReportViewProps> = ({
       });
 
       if (!res.ok) {
+        const errPayload = await res.json().catch(() => ({}));
         const synthesized = buildLocalSynthesizedReport(selectedTone);
         onSaveReport(synthesized);
-        setStatusMessage(
-          'Generated fresh weekly report from live timeline & task telemetry.'
-        );
+        if (errPayload?.code === 'AI_REPORTS_DISABLED') {
+          setStatusMessage(
+            'Generated deterministic weekly report (AI Weekly Reports is currently OFF for this firm).'
+          );
+        } else if (errPayload?.error) {
+          setStatusMessage(`${errPayload.error} Generated deterministic local report.`);
+        } else {
+          setStatusMessage(
+            'Generated fresh weekly report from live timeline & task telemetry.'
+          );
+        }
         return;
       }
 
@@ -455,7 +516,9 @@ export const WeeklyReportView: React.FC<WeeklyReportViewProps> = ({
           isAiGenerated: true,
         };
         onSaveReport(newReport);
-        setStatusMessage('Aggregate weekly report generated via opt-in tenant AI.');
+        setStatusMessage(
+          `Aggregate weekly report synthesized via opt-in Gemini AI (${data.model || 'gemini-4-hydrogen'}).`
+        );
       }
     } catch {
       const synthesized = buildLocalSynthesizedReport(selectedTone);
@@ -590,11 +653,37 @@ ${currentReport.nextWeekFocus.map((n) => `- ${n}`).join('\n')}
           <h1 className="font-display text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
             Automated Weekly Progress Report
           </h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5">
-            Review period:{' '}
-            <span className="font-mono font-semibold text-slate-900 dark:text-slate-200 tabular-nums">
-              {weekStartDate} to {weekEndDate}
+          <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5 flex flex-wrap items-center gap-2">
+            <span>
+              Review period:{' '}
+              <span className="font-mono font-semibold text-slate-900 dark:text-slate-200 tabular-nums">
+                {weekStartDate} to {weekEndDate}
+              </span>
             </span>
+            {aiStatus && (
+              <span className="inline-flex items-center gap-2 text-xs">
+                <span className="text-slate-300 dark:text-slate-700">|</span>
+                <span
+                  className={`font-mono px-2 py-0.5 rounded border ${
+                    aiStatus.aiReportsEnabled
+                      ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                  }`}
+                >
+                  AI Synthesis: {aiStatus.aiReportsEnabled ? 'ON' : 'OFF'}
+                </span>
+                {aiStatus.canToggle && (
+                  <button
+                    type="button"
+                    disabled={isTogglingAi}
+                    onClick={() => void handleToggleAiReports()}
+                    className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer disabled:opacity-50"
+                  >
+                    {aiStatus.aiReportsEnabled ? 'Turn Off' : 'Turn On'}
+                  </button>
+                )}
+              </span>
+            )}
           </p>
         </div>
 

@@ -124,11 +124,22 @@ export class EngineWsGateway {
   }
 
   private async initPgListenNotify() {
-    if (this.engineStore.db.dialect !== 'postgres' || !appConfig.databaseUrl) {
+    if (this.engineStore.db.dialect !== 'postgres') {
+      return;
+    }
+    const sqlConn = appConfig.sqlConnection;
+    if (!sqlConn && !appConfig.databaseUrl) {
       return;
     }
     try {
-      const client = new PgClient({ connectionString: appConfig.databaseUrl });
+      const client = sqlConn
+        ? new PgClient({
+            host: sqlConn.host,
+            user: sqlConn.user,
+            password: sqlConn.password,
+            database: sqlConn.database,
+          })
+        : new PgClient({ connectionString: appConfig.databaseUrl });
       await client.connect();
       await client.query(`LISTEN ${PG_NOTIFY_CHANNEL}`);
       client.on('notification', (n) => {

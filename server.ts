@@ -59,10 +59,11 @@ export async function createOnTrackServer(options?: CreateServerOptions) {
               fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
               imgSrc: ["'self'", 'data:', 'blob:'],
               connectSrc: ["'self'", 'ws:', 'wss:'],
-              frameAncestors: ["'self'"],
+              frameAncestors: ["'self'", 'https://aistudio.google.com', 'https://*.google.com'],
             },
           }
         : false,
+      xFrameOptions: false,
       crossOriginEmbedderPolicy: false,
     })
   );

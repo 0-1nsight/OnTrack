@@ -8,6 +8,7 @@ dotenv.config();
 
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  VITEST: z.string().optional(),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   APP_URL: z.string().trim().default('http://localhost:3000'),
   SESSION_SECRET: z.string().optional(),
@@ -15,6 +16,12 @@ const EnvSchema = z.object({
   COOKIE_SECURE: z.enum(['auto', 'true', 'false']).default('auto'),
   DEMO_MODE: z.string().optional(),
   DATABASE_URL: z.string().optional(),
+  SQL_HOST: z.string().optional(),
+  SQL_USER: z.string().optional(),
+  SQL_PASSWORD: z.string().optional(),
+  SQL_DB_NAME: z.string().optional(),
+  SQL_ADMIN_USER: z.string().optional(),
+  SQL_ADMIN_PASSWORD: z.string().optional(),
   DATA_DIR: z.string().optional(),
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
@@ -30,6 +37,15 @@ const EnvSchema = z.object({
   BOOTSTRAP_TENANT_NAME: z.string().default('Apex Chartered Accountants'),
 });
 
+export interface SqlConnectionConfig {
+  host: string;
+  user: string;
+  password: string;
+  database: string;
+  adminUser: string | null;
+  adminPassword: string | null;
+}
+
 export interface AppConfig {
   nodeEnv: 'development' | 'test' | 'production';
   isProduction: boolean;
@@ -39,6 +55,7 @@ export interface AppConfig {
   projectRoot: string;
   dataDir: string;
   databaseUrl: string;
+  sqlConnection: SqlConnectionConfig | null;
   sessionSecret: string;
   encryptionKeyBytes: Buffer;
   cookieSecure: 'auto' | 'true' | 'false';
@@ -96,7 +113,7 @@ export function loadAppConfig(overrides?: Partial<Record<string, string>>): AppC
   const env = parsed.data;
   const projectRoot = resolveProjectRoot();
   const isProduction = env.NODE_ENV === 'production';
-  const isTest = env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+  const isTest = env.NODE_ENV === 'test' || (env.VITEST ?? process.env.VITEST) === 'true';
 
   const dataDir = env.DATA_DIR
     ? path.resolve(projectRoot, env.DATA_DIR)
@@ -120,8 +137,10 @@ export function loadAppConfig(overrides?: Partial<Record<string, string>>): AppC
     .update(rawEncKey, 'utf8')
     .digest();
 
-  // Never allow unauthenticated demo sandbox in production
-  const demoModeEnabled = !isProduction && env.DEMO_MODE === 'true';
+  // Never allow unauthenticated demo sandbox in production; in local/preview dev enable demo accounts unless explicitly set to 'false'
+  const demoModeEnabled =
+    !isProduction &&
+    (env.DEMO_MODE === 'true' || (!isTest && (env.DEMO_MODE === undefined || env.DEMO_MODE.trim() === '')));
 
   const corsOrigins = (env.CORS_ORIGINS || '')
     .split(',')
@@ -133,6 +152,26 @@ export function loadAppConfig(overrides?: Partial<Record<string, string>>): AppC
       ? env.GEMINI_API_KEY.trim()
       : null;
 
+  const aiReportsGlobalAllow =
+    env.AI_REPORTS_GLOBAL_ALLOW === 'false'
+      ? false
+      : env.AI_REPORTS_GLOBAL_ALLOW === 'true' || Boolean(geminiApiKey);
+
+  const sqlHost = (env.SQL_HOST || '').trim();
+  const sqlUser = (env.SQL_USER || '').trim();
+  const sqlDbName = (env.SQL_DB_NAME || '').trim();
+  const sqlConnection: SqlConnectionConfig | null =
+    sqlHost && sqlUser && sqlDbName
+      ? {
+          host: sqlHost,
+          user: sqlUser,
+          password: env.SQL_PASSWORD || '',
+          database: sqlDbName,
+          adminUser: (env.SQL_ADMIN_USER || '').trim() || null,
+          adminPassword: env.SQL_ADMIN_PASSWORD || null,
+        }
+      : null;
+
   return {
     nodeEnv: env.NODE_ENV,
     isProduction,
@@ -142,6 +181,7 @@ export function loadAppConfig(overrides?: Partial<Record<string, string>>): AppC
     projectRoot,
     dataDir,
     databaseUrl: (env.DATABASE_URL || '').trim(),
+    sqlConnection,
     sessionSecret,
     encryptionKeyBytes,
     cookieSecure: env.COOKIE_SECURE,
@@ -156,7 +196,7 @@ export function loadAppConfig(overrides?: Partial<Record<string, string>>): AppC
       pass: (env.SMTP_PASS || '').trim(),
       from: env.SMTP_FROM,
     },
-    aiReportsGlobalAllow: env.AI_REPORTS_GLOBAL_ALLOW === 'true',
+    aiReportsGlobalAllow,
     geminiApiKey,
     bootstrapAdminEmail: env.BOOTSTRAP_ADMIN_EMAIL?.trim() || null,
     bootstrapAdminPassword: env.BOOTSTRAP_ADMIN_PASSWORD || null,

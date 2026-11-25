@@ -5,7 +5,9 @@ import { PortableSqlAdapter } from '../sqlAdapter.ts';
 
 async function main() {
   const direction = (process.argv[2] || 'up').toLowerCase();
-  const db = new PortableSqlAdapter({ databaseUrl: appConfig.databaseUrl });
+  const db = new PortableSqlAdapter({
+    databaseUrl: appConfig.databaseUrl || undefined,
+  });
   try {
     if (direction === 'down') {
       const res = await rollbackLastMigration(db);

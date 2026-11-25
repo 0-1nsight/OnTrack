@@ -34,11 +34,33 @@ const AggregateReportRequestSchema = z
   })
   .strict();
 
+const FREE_TIER_REPORT_MODEL = 'gemini-4-hydrogen';
+
 export function createReportsRouter(deps: {
   authStore: AuthStore;
   engineStore: EngineSQLStore;
 }) {
   const router = Router();
+
+  router.get(
+    '/status',
+    asyncHandler(async (req, res) => {
+      const authCtx = await resolveHttpAuthContext(req, deps);
+      if (authCtx.role === 'client') {
+        throw new HttpError(403, 'FORBIDDEN', 'Client portal users cannot view firm report settings.');
+      }
+
+      const tenantCfg = await deps.engineStore.getTenantConfig(authCtx.tenantId);
+      const hasApiKey = Boolean(appConfig.geminiApiKey);
+      return res.json({
+        aiReportsEnabled: tenantCfg.aiReportsEnabled,
+        aiProviderReady: appConfig.aiReportsGlobalAllow && hasApiKey,
+        model: FREE_TIER_REPORT_MODEL,
+        canToggle: authCtx.role === 'admin_it',
+        aggregateOnly: true,
+      });
+    })
+  );
 
   router.post(
     '/generate',
@@ -53,7 +75,7 @@ export function createReportsRouter(deps: {
         throw new HttpError(
           403,
           'AI_REPORTS_DISABLED',
-          'AI Weekly Reports are disabled by default for this firm. An Admin/IT user may opt in under Tenant Privacy & AI Settings (aggregate numbers only).'
+          'AI Weekly Reports are disabled by default for this firm. An Admin/IT user may turn them on (aggregate numbers only).'
         );
       }
 
@@ -62,7 +84,7 @@ export function createReportsRouter(deps: {
       if (!appConfig.aiReportsGlobalAllow || !appConfig.geminiApiKey) {
         return res.status(503).json({
           error:
-            'AI narrative synthesis is not configured on this server (GEMINI_API_KEY or AI_REPORTS_GLOBAL_ALLOW unset). Use local deterministic report generation.',
+            'AI narrative synthesis requires GEMINI_API_KEY in Settings > Secrets. Use deterministic local report generation in the meantime.',
           code: 'AI_PROVIDER_NOT_CONFIGURED',
           fallbackRecommended: true,
         });
@@ -72,7 +94,7 @@ export function createReportsRouter(deps: {
         apiKey: appConfig.geminiApiKey,
         httpOptions: {
           headers: {
-            'User-Agent': 'ontrack-aggregate-reporter',
+            'User-Agent': 'aistudio-build',
           },
         },
       });
@@ -103,59 +125,85 @@ Aggregate Quantitative Metrics:
 
 Produce structured operational guidance strictly referencing only the numbers provided above.`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: {
-          systemInstruction:
-            'You are an accounting practice operations analyst summarizing strictly anonymized numeric KPIs for OnTrack. Never invent client names, project names, or software names.',
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              executiveSummary: {
-                type: Type.STRING,
-                description:
-                  'A 2-3 sentence quantitative summary highlighting aggregate hours, billable share, and completion rate.',
+      try {
+        const response = await ai.models.generateContent({
+          model: FREE_TIER_REPORT_MODEL,
+          contents: prompt,
+          config: {
+            systemInstruction:
+              'You are an accounting practice operations analyst summarizing strictly anonymized numeric KPIs for OnTrack. Never invent client names, project names, or software names.',
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                executiveSummary: {
+                  type: Type.STRING,
+                  description:
+                    'A 2-3 sentence quantitative summary highlighting aggregate hours, billable share, and completion rate.',
+                },
+                accomplishments: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                  description:
+                    '3 concise bullet points summarizing numeric throughput and capacity metrics.',
+                },
+                blockersAndRisks: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                  description:
+                    '2 to 3 numeric capacity, backlog, or variance risks derived strictly from the aggregate ratios.',
+                },
+                velocityInsights: {
+                  type: Type.STRING,
+                  description:
+                    'Comparison of planned vs logged hours and deep-work share.',
+                },
+                nextWeekFocus: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                  description:
+                    '3 recommended operational adjustments for the coming week.',
+                },
               },
-              accomplishments: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description:
-                  '3 concise bullet points summarizing numeric throughput and capacity metrics.',
-              },
-              blockersAndRisks: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description:
-                  '2 to 3 numeric capacity, backlog, or variance risks derived strictly from the aggregate ratios.',
-              },
-              velocityInsights: {
-                type: Type.STRING,
-                description:
-                  'Comparison of planned vs logged hours and deep-work share.',
-              },
-              nextWeekFocus: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description:
-                  '3 recommended operational adjustments for the coming week.',
-              },
+              required: [
+                'executiveSummary',
+                'accomplishments',
+                'blockersAndRisks',
+                'velocityInsights',
+                'nextWeekFocus',
+              ],
             },
-            required: [
-              'executiveSummary',
-              'accomplishments',
-              'blockersAndRisks',
-              'velocityInsights',
-              'nextWeekFocus',
-            ],
           },
-        },
-      });
+        });
 
-      const rawText = response.text || '{}';
-      const parsed = JSON.parse(rawText.trim());
-      return res.json({ report: parsed, aggregateOnly: true });
+        const rawText = response.text || '{}';
+        const parsed = JSON.parse(rawText.trim());
+        return res.json({ report: parsed, aggregateOnly: true, model: FREE_TIER_REPORT_MODEL });
+      } catch (err: any) {
+        const msg = String(err?.message || 'AI synthesis request failed');
+        const status = Number(err?.status || err?.code) || 502;
+        if (status === 429 || msg.includes('RESOURCE_EXHAUSTED')) {
+          return res.status(429).json({
+            error:
+              'Free-tier Gemini rate limit reached. Try again shortly or use the deterministic local report.',
+            code: 'AI_RATE_LIMITED',
+            fallbackRecommended: true,
+          });
+        }
+        if (status === 403 || status === 400 || msg.includes('API_KEY_INVALID') || msg.includes('PERMISSION_DENIED')) {
+          return res.status(503).json({
+            error:
+              'Check your GEMINI_API_KEY in Settings > Secrets. Falling back to deterministic local report.',
+            code: 'AI_KEY_INVALID',
+            fallbackRecommended: true,
+          });
+        }
+        return res.status(502).json({
+          error: 'AI report generation temporarily unavailable. Falling back to deterministic local report.',
+          code: 'AI_UPSTREAM_ERROR',
+          fallbackRecommended: true,
+        });
+      }
     })
   );
 

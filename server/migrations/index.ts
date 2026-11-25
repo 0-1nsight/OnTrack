@@ -25,62 +25,101 @@ async function ensureMigrationsTable(db: PortableSqlAdapter) {
   `);
 }
 
+async function withMigrationAdapter<T>(
+  db: PortableSqlAdapter,
+  fn: (migDb: PortableSqlAdapter) => Promise<T>
+): Promise<T> {
+  const hasAdminCreds =
+    db.dialect === 'postgres' &&
+    Boolean(process.env.SQL_HOST && process.env.SQL_DB_NAME && process.env.SQL_ADMIN_USER && process.env.SQL_ADMIN_PASSWORD);
+
+  if (!hasAdminCreds) {
+    return fn(db);
+  }
+
+  const adminDb = new PortableSqlAdapter({ useAdminUser: true });
+  try {
+    return await fn(adminDb);
+  } finally {
+    await adminDb.close();
+  }
+}
+
+async function ensureAppUserDmlGrants(migDb: PortableSqlAdapter) {
+  if (migDb.dialect !== 'postgres') return;
+  const appUser = (process.env.SQL_USER || '').trim();
+  const adminUser = (process.env.SQL_ADMIN_USER || '').trim();
+  if (!appUser || !adminUser || appUser === adminUser) return;
+  const safeUser = `"${appUser.replace(/"/g, '""')}"`;
+  await migDb.exec(`
+    GRANT USAGE ON SCHEMA public TO ${safeUser};
+    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${safeUser};
+    GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${safeUser};
+  `);
+}
+
 export async function runMigrationsUp(
   db: PortableSqlAdapter
 ): Promise<{ applied: string[]; currentVersion: string | null }> {
-  await ensureMigrationsTable(db);
-  const rows = await db.all<{ version: string }>(
-    'SELECT version FROM schema_migrations ORDER BY version ASC'
-  );
-  const existing = new Set(rows.map((r) => r.version));
-  const applied: string[] = [];
+  return withMigrationAdapter(db, async (migDb) => {
+    await ensureMigrationsTable(migDb);
+    const rows = await migDb.all<{ version: string }>(
+      'SELECT version FROM schema_migrations ORDER BY version ASC'
+    );
+    const existing = new Set(rows.map((r) => r.version));
+    const applied: string[] = [];
 
-  for (const mig of MIGRATIONS) {
-    if (existing.has(mig.version)) continue;
-    await db.withTenantTransaction({ tenantId: '__system__', bypassRls: true }, async (tx) => {
-      await mig.up(tx);
-      await tx.run(
-        'INSERT INTO schema_migrations (version, name, applied_at_utc) VALUES (?, ?, ?)',
-        mig.version,
-        mig.name,
-        new Date().toISOString()
-      );
-    });
-    applied.push(`${mig.version}_${mig.name}`);
-  }
+    for (const mig of MIGRATIONS) {
+      if (existing.has(mig.version)) continue;
+      await migDb.withTenantTransaction({ tenantId: '__system__', bypassRls: true }, async (tx) => {
+        await mig.up(tx);
+        await tx.run(
+          'INSERT INTO schema_migrations (version, name, applied_at_utc) VALUES (?, ?, ?)',
+          mig.version,
+          mig.name,
+          new Date().toISOString()
+        );
+      });
+      applied.push(`${mig.version}_${mig.name}`);
+    }
 
-  const latest = await db.get<{ version: string }>(
-    'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1'
-  );
-  return { applied, currentVersion: latest?.version || null };
+    await ensureAppUserDmlGrants(migDb);
+
+    const latest = await migDb.get<{ version: string }>(
+      'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1'
+    );
+    return { applied, currentVersion: latest?.version || null };
+  });
 }
 
 export async function rollbackLastMigration(
   db: PortableSqlAdapter
 ): Promise<{ rolledBack: string | null; currentVersion: string | null }> {
-  await ensureMigrationsTable(db);
-  const latest = await db.get<{ version: string; name: string }>(
-    'SELECT version, name FROM schema_migrations ORDER BY version DESC LIMIT 1'
-  );
-  if (!latest) {
-    return { rolledBack: null, currentVersion: null };
-  }
+  return withMigrationAdapter(db, async (migDb) => {
+    await ensureMigrationsTable(migDb);
+    const latest = await migDb.get<{ version: string; name: string }>(
+      'SELECT version, name FROM schema_migrations ORDER BY version DESC LIMIT 1'
+    );
+    if (!latest) {
+      return { rolledBack: null, currentVersion: null };
+    }
 
-  const mig = MIGRATIONS.find((m) => m.version === latest.version);
-  if (!mig) {
-    throw new Error(`Migration ${latest.version} (${latest.name}) definition not found`);
-  }
+    const mig = MIGRATIONS.find((m) => m.version === latest.version);
+    if (!mig) {
+      throw new Error(`Migration ${latest.version} (${latest.name}) definition not found`);
+    }
 
-  await db.withTenantTransaction({ tenantId: '__system__', bypassRls: true }, async (tx) => {
-    await mig.down(tx);
-    await tx.run('DELETE FROM schema_migrations WHERE version = ?', mig.version);
+    await migDb.withTenantTransaction({ tenantId: '__system__', bypassRls: true }, async (tx) => {
+      await mig.down(tx);
+      await tx.run('DELETE FROM schema_migrations WHERE version = ?', mig.version);
+    });
+
+    const nextLatest = await migDb.get<{ version: string }>(
+      'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1'
+    );
+    return {
+      rolledBack: `${mig.version}_${mig.name}`,
+      currentVersion: nextLatest?.version || null,
+    };
   });
-
-  const nextLatest = await db.get<{ version: string }>(
-    'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1'
-  );
-  return {
-    rolledBack: `${mig.version}_${mig.name}`,
-    currentVersion: nextLatest?.version || null,
-  };
 }
