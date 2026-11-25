@@ -26,6 +26,7 @@ interface LandingPageProps {
     email: string;
     password: string;
     totpCode?: string;
+    backupCode?: string;
     isClientPortal?: boolean;
   }) => Promise<void>;
   onKeyLogin?: (payload: {
@@ -39,6 +40,7 @@ interface LandingPageProps {
     email: string;
     password: string;
   }) => Promise<void>;
+  onClearAuthError?: () => void;
   onContinueLocal: () => void;
 }
 
@@ -54,6 +56,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   onKeyLogin,
   onDemoLogin,
   onBootstrapFirm,
+  onClearAuthError,
   onContinueLocal,
 }) => {
   const initialQuery =
@@ -99,13 +102,19 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           accessKey: accessKey.trim(),
         });
       } else {
+        const trimmedMfa = totpCode.trim();
+        const compactMfa = trimmedMfa.replace(/\s+/g, '');
+        const isTotpDigits = /^\d{6}$/.test(compactMfa);
         await onLogin({
           email: email.trim(),
           password,
-          totpCode: totpCode.trim() || undefined,
+          totpCode: isTotpDigits ? compactMfa : undefined,
+          backupCode: trimmedMfa && !isTotpDigits ? trimmedMfa : undefined,
           isClientPortal,
         });
       }
+    } catch {
+      // authError state is populated by the parent handler and rendered in the banner above.
     } finally {
       setIsSubmitting(false);
     }
@@ -307,7 +316,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       {needsInitialSetup && (
                         <button
                           type="button"
-                          onClick={() => setMode(mode === 'setup' ? 'login' : 'setup')}
+                          onClick={() => {
+                            onClearAuthError?.();
+                            setMode(mode === 'setup' ? 'login' : 'setup');
+                          }}
                           className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline shrink-0 cursor-pointer"
                         >
                           {mode === 'setup' ? 'Sign In' : 'First-Run Setup'}
@@ -326,7 +338,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 text-xs">
                         <button
                           type="button"
-                          onClick={() => setLoginMethod('password')}
+                          onClick={() => {
+                            onClearAuthError?.();
+                            setLoginMethod('password');
+                          }}
                           className={`py-1.5 rounded-md font-semibold transition-colors cursor-pointer ${
                             loginMethod === 'password'
                               ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
@@ -337,7 +352,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={() => setLoginMethod('key')}
+                          onClick={() => {
+                            onClearAuthError?.();
+                            setLoginMethod('key');
+                          }}
                           className={`py-1.5 rounded-md font-semibold transition-colors cursor-pointer ${
                             loginMethod === 'key'
                               ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
@@ -389,9 +407,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                         </label>
                         <input
                           type="email"
+                          name="email"
+                          autoComplete="email"
                           required
                           value={email}
-                          onChange={(e) => setEmail(e.target.value)}
+                          onChange={(e) => {
+                            if (authError) onClearAuthError?.();
+                            setEmail(e.target.value);
+                          }}
                           placeholder="name@firm.example"
                           className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
                         />
@@ -404,10 +427,15 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                           </label>
                           <input
                             type="text"
+                            name="accessKey"
+                            autoComplete="off"
                             required
                             minLength={12}
                             value={accessKey}
-                            onChange={(e) => setAccessKey(e.target.value)}
+                            onChange={(e) => {
+                              if (authError) onClearAuthError?.();
+                              setAccessKey(e.target.value);
+                            }}
                             placeholder="ontrack_key_..."
                             className="w-full px-3 py-2 font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
                           />
@@ -422,10 +450,15 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                           </label>
                           <input
                             type="password"
+                            name="password"
+                            autoComplete={mode === 'setup' ? 'new-password' : 'current-password'}
                             required
                             minLength={mode === 'setup' ? 10 : 1}
                             value={password}
-                            onChange={(e) => setPassword(e.target.value)}
+                            onChange={(e) => {
+                              if (authError) onClearAuthError?.();
+                              setPassword(e.target.value);
+                            }}
                             placeholder={mode === 'setup' ? 'Minimum 10 characters' : '••••••••••••'}
                             className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
                           />
@@ -433,15 +466,25 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       )}
 
                       {mode === 'login' && loginMethod === 'password' && (
-                        <div className="grid grid-cols-2 gap-2 items-center">
-                          <input
-                            type="text"
-                            value={totpCode}
-                            onChange={(e) => setTotpCode(e.target.value)}
-                            placeholder="MFA code (if enabled)"
-                            className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white font-mono"
-                          />
-                          <label className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400 cursor-pointer">
+                        <div className="grid grid-cols-2 gap-2 items-end">
+                          <div>
+                            <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
+                              2FA / Backup Code
+                            </label>
+                            <input
+                              type="text"
+                              name="totpCode"
+                              autoComplete="one-time-code"
+                              value={totpCode}
+                              onChange={(e) => {
+                                if (authError) onClearAuthError?.();
+                                setTotpCode(e.target.value);
+                              }}
+                              placeholder="6-digit code (if enabled)"
+                              className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white font-mono"
+                            />
+                          </div>
+                          <label className="flex items-center gap-1.5 pb-2 text-[11px] text-slate-600 dark:text-slate-400 cursor-pointer">
                             <input
                               type="checkbox"
                               checked={isClientPortal}
@@ -511,6 +554,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                                   setIsSubmitting(true);
                                   try {
                                     await onDemoLogin(acc.userId);
+                                  } catch {
+                                    // error banner handled by parent
                                   } finally {
                                     setIsSubmitting(false);
                                   }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   X,
   LogIn,
@@ -40,6 +40,7 @@ interface AccountModalProps {
     email: string;
     password: string;
     totpCode?: string;
+    backupCode?: string;
     isClientPortal?: boolean;
   }) => Promise<void>;
   onKeyLogin?: (payload: {
@@ -144,6 +145,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   const [mfaVerifyCode, setMfaVerifyCode] = useState('');
   const [isVerifyingMfa, setIsVerifyingMfa] = useState(false);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const mfaConfirmedRef = useRef(false);
 
   useEffect(() => {
     if (!isOpen || !user) return;
@@ -168,7 +170,9 @@ export const AccountModal: React.FC<AccountModalProps> = ({
       user.mustSetPassword ||
       user.mfaVerified ||
       user.totpEnabled ||
-      mfaEnrollment
+      mfaEnrollment ||
+      isVerifyingMfa ||
+      mfaConfirmedRef.current
     ) {
       return;
     }
@@ -183,7 +187,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
     return () => {
       active = false;
     };
-  }, [isOpen, user, mfaEnrollment]);
+  }, [isOpen, user, mfaEnrollment, isVerifyingMfa]);
 
   if (!isOpen) return null;
 
@@ -208,10 +212,14 @@ export const AccountModal: React.FC<AccountModalProps> = ({
         });
         setFeedback('Access key verified.');
       } else {
+        const trimmedMfa = totpCode.trim();
+        const compactMfa = trimmedMfa.replace(/\s+/g, '');
+        const isTotpDigits = /^\d{6}$/.test(compactMfa);
         await onLogin({
           email: email.trim(),
           password,
-          totpCode: totpCode.trim() || undefined,
+          totpCode: isTotpDigits ? compactMfa : undefined,
+          backupCode: trimmedMfa && !isTotpDigits ? trimmedMfa : undefined,
           isClientPortal,
         });
         setFeedback('Signed in to OnTrack.');
@@ -278,19 +286,24 @@ export const AccountModal: React.FC<AccountModalProps> = ({
 
   const handleConfirmMfa = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isVerifyingMfa) return;
     setLocalError(null);
+    setIsVerifyingMfa(true);
     const wasOnboarding = Boolean(user && !user.mfaVerified);
     try {
       const res = await confirmMfaEnrollment(mfaConfirmCode.trim());
+      mfaConfirmedRef.current = true;
+      const freshUser = (await onRefreshSession()) ?? res.user ?? null;
       setMfaEnrollment(null);
       setMfaConfirmCode('');
-      const freshUser = (await onRefreshSession()) ?? res.user ?? null;
       setFeedback('Two-factor authentication verified and enabled.');
       if (wasOnboarding && onOnboardingComplete) {
         onOnboardingComplete(freshUser);
       }
     } catch (err: any) {
       setLocalError(err?.message || 'Invalid TOTP verification code.');
+    } finally {
+      setIsVerifyingMfa(false);
     }
   };
 
@@ -476,6 +489,8 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                 </label>
                 <input
                   type="email"
+                  name="email"
+                  autoComplete="email"
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -491,6 +506,8 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                   </label>
                   <input
                     type="text"
+                    name="accessKey"
+                    autoComplete="off"
                     required
                     minLength={12}
                     value={accessKey}
@@ -506,6 +523,8 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                   </label>
                   <input
                     type="password"
+                    name="password"
+                    autoComplete={mode === 'setup' ? 'new-password' : 'current-password'}
                     required
                     minLength={mode === 'setup' ? 10 : 1}
                     value={password}
@@ -517,15 +536,22 @@ export const AccountModal: React.FC<AccountModalProps> = ({
               )}
 
               {mode === 'login' && loginMethod === 'password' && (
-                <div className="grid grid-cols-2 gap-2 items-center">
-                  <input
-                    type="text"
-                    value={totpCode}
-                    onChange={(e) => setTotpCode(e.target.value)}
-                    placeholder="MFA code (optional)"
-                    className="px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white font-mono"
-                  />
-                  <label className="flex items-center gap-1.5 text-slate-600 dark:text-slate-400 cursor-pointer">
+                <div className="grid grid-cols-2 gap-2 items-end">
+                  <div>
+                    <label className="block font-medium text-slate-600 dark:text-slate-400 mb-1">
+                      2FA / Backup Code
+                    </label>
+                    <input
+                      type="text"
+                      name="totpCode"
+                      autoComplete="one-time-code"
+                      value={totpCode}
+                      onChange={(e) => setTotpCode(e.target.value)}
+                      placeholder="6-digit code (if enabled)"
+                      className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white font-mono"
+                    />
+                  </div>
+                  <label className="flex items-center gap-1.5 pb-2 text-slate-600 dark:text-slate-400 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={isClientPortal}
@@ -821,9 +847,10 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                       />
                       <button
                         type="submit"
-                        className="px-3 py-1.5 font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded cursor-pointer"
+                        disabled={isVerifyingMfa}
+                        className="px-3 py-1.5 font-semibold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 rounded cursor-pointer"
                       >
-                        Verify &amp; Activate Account
+                        {isVerifyingMfa ? 'Activating...' : 'Verify & Activate Account'}
                       </button>
                     </div>
                   </form>

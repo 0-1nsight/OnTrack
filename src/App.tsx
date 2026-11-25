@@ -828,11 +828,21 @@ export default function App() {
     email: string;
     password: string;
     totpCode?: string;
+    backupCode?: string;
     isClientPortal?: boolean;
   }) => {
     setAuthError(null);
     try {
-      const res = await loginWithPassword(payload);
+      const trimmedTotp = payload.totpCode?.trim() || '';
+      const compactTotp = trimmedTotp.replace(/\s+/g, '');
+      const hasSixDigitTotp = /^\d{6}$/.test(compactTotp);
+      const res = await loginWithPassword({
+        ...payload,
+        totpCode: hasSixDigitTotp ? compactTotp : undefined,
+        backupCode:
+          payload.backupCode?.trim() ||
+          (trimmedTotp && !hasSixDigitTotp ? trimmedTotp : undefined),
+      });
       if (res.user.userId !== user?.userId || res.user.tenantId !== user?.tenantId) {
         resetWorkspaceState();
       }
@@ -966,6 +976,7 @@ export default function App() {
   const handleSignOut = async () => {
     await logoutSession();
     resetWorkspaceState();
+    setAuthError(null);
     setUser(null);
     setUserProfile(null);
     setPreviewRoleOverride(null);
@@ -2071,6 +2082,7 @@ export default function App() {
         onKeyLogin={handleKeyLogin}
         onDemoLogin={handleDemoLogin}
         onBootstrapFirm={handleBootstrapFirm}
+        onClearAuthError={() => setAuthError(null)}
         onContinueLocal={() => {
           lastActivityMsRef.current = Date.now();
           setShowLanding(false);

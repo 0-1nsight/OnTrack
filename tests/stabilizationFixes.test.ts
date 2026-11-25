@@ -63,16 +63,54 @@ describe('Stabilization Fixes: Validation Gates, Onboarding Audit Role, Tasks Do
       .send({ code: generateTotpToken(adminEnroll.body.secretBase32) });
     expect(adminConfirm.status).toBe(200);
 
+    // Duplicate /mfa/enroll must never overwrite an already-active TOTP secret or backup codes
+    const duplicateEnroll = await request(ctx.app)
+      .post('/api/auth/mfa/enroll')
+      .set('Cookie', adminCookie);
+    expect(duplicateEnroll.status).toBe(409);
+    expect(duplicateEnroll.body.code).toBe('MFA_ALREADY_ENABLED');
+
+    // Sign out and sign back in using password + original TOTP secret, then with a backup code
+    const signOutRes = await request(ctx.app)
+      .post('/api/auth/logout')
+      .set('Cookie', adminCookie);
+    expect(signOutRes.status).toBe(200);
+
+    const reloginTotp = await request(ctx.app)
+      .post('/api/auth/login')
+      .send({
+        email: 'taylor@cedarbrook.example',
+        password: 'CedarAdminPassword!2026',
+        totpCode: generateTotpToken(adminEnroll.body.secretBase32),
+      });
+    expect(reloginTotp.status).toBe(200);
+    expect(reloginTotp.body.user.mfaVerified).toBe(true);
+
+    await request(ctx.app)
+      .post('/api/auth/logout')
+      .set('Cookie', reloginTotp.headers['set-cookie']);
+
+    const reloginBackup = await request(ctx.app)
+      .post('/api/auth/login')
+      .send({
+        email: 'taylor@cedarbrook.example',
+        password: 'CedarAdminPassword!2026',
+        backupCode: adminEnroll.body.backupCodes[0],
+      });
+    expect(reloginBackup.status).toBe(200);
+    expect(reloginBackup.body.user.mfaVerified).toBe(true);
+    const activeAdminCookie = reloginBackup.headers['set-cookie'];
+
     // 2. Malformed /api/engine/sync payloads return 400 (never 500)
     const badSyncMissingEvents = await request(ctx.app)
       .post('/api/engine/sync')
-      .set('Cookie', adminCookie)
+      .set('Cookie', activeAdminCookie)
       .send({ deviceId: 'dev-bad-01' });
     expect(badSyncMissingEvents.status).toBe(400);
 
     const badSyncEventShape = await request(ctx.app)
       .post('/api/engine/sync')
-      .set('Cookie', adminCookie)
+      .set('Cookie', activeAdminCookie)
       .send({
         deviceId: 'dev-bad-01',
         events: [
@@ -92,38 +130,38 @@ describe('Stabilization Fixes: Validation Gates, Onboarding Audit Role, Tasks Do
     // 3. Malformed /tasks, /activity-rules, /privacy-rules, /config return 400 cleanly
     const badTask = await request(ctx.app)
       .post('/api/engine/tasks')
-      .set('Cookie', adminCookie)
+      .set('Cookie', activeAdminCookie)
       .send({ title: '   ', status: 'invalid_status' });
     expect(badTask.status).toBe(400);
 
     const badActivityRule = await request(ctx.app)
       .post('/api/engine/activity-rules')
-      .set('Cookie', adminCookie)
+      .set('Cookie', activeAdminCookie)
       .send({ keyword: '', activityType: 'Audit', weight: 999 });
     expect(badActivityRule.status).toBe(400);
 
     const badPrivacyRule = await request(ctx.app)
       .post('/api/engine/privacy-rules')
-      .set('Cookie', adminCookie)
+      .set('Cookie', activeAdminCookie)
       .send({ kind: 'invalid_kind', pattern: '' });
     expect(badPrivacyRule.status).toBe(400);
 
     const badPrivacyToggle = await request(ctx.app)
       .patch('/api/engine/privacy-rules/priv-missing')
-      .set('Cookie', adminCookie)
+      .set('Cookie', activeAdminCookie)
       .send({ enabled: 'yes' });
     expect(badPrivacyToggle.status).toBe(400);
 
     const badConfigPatch = await request(ctx.app)
       .patch('/api/engine/config')
-      .set('Cookie', adminCookie)
+      .set('Cookie', activeAdminCookie)
       .send({ retentionDays: 2, focusFactor: 5 });
     expect(badConfigPatch.status).toBe(400);
 
     // 4. Provision a Team Lead with Access Key -> verify password setup logs true actorRole 'team_lead'
     const provLead = await request(ctx.app)
       .post('/api/auth/provision-user')
-      .set('Cookie', adminCookie)
+      .set('Cookie', activeAdminCookie)
       .send({
         name: 'Jordan Patel',
         email: 'jordan.patel@cedarbrook.example',
@@ -161,7 +199,7 @@ describe('Stabilization Fixes: Validation Gates, Onboarding Audit Role, Tasks Do
 
     const snap = await request(ctx.app)
       .get('/api/engine/snapshot')
-      .set('Cookie', adminCookie);
+      .set('Cookie', activeAdminCookie);
     expect(snap.status).toBe(200);
     const pwAudit = snap.body.auditLogs.find(
       (a: any) =>

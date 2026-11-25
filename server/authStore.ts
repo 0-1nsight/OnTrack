@@ -404,7 +404,12 @@ export class AuthStore {
 
     if (totpEnabled) {
       if (params.totpCode) {
-        const secretBase32 = decryptSecret(userRow.totp_secret_enc);
+        let secretBase32: string;
+        try {
+          secretBase32 = decryptSecret(userRow.totp_secret_enc);
+        } catch {
+          throw new HttpError(401, 'INVALID_MFA_CODE', 'Invalid verification code.');
+        }
         if (!verifyTotpCode(secretBase32, params.totpCode)) {
           throw new HttpError(401, 'INVALID_MFA_CODE', 'Invalid verification code.');
         }
@@ -636,7 +641,7 @@ export class AuthStore {
   public async beginMfaEnrollment(tenantId: string, userId: string) {
     return this.db.withTenantTransaction({ tenantId, userId }, async (tx) => {
       const u = await tx.get<any>(
-        `SELECT u.email, t.name as tenant_name
+        `SELECT u.email, u.totp_enabled, t.name as tenant_name
          FROM shift_users u
          JOIN tenants t ON t.id = u.tenant_id
          WHERE u.tenant_id = ? AND u.user_id = ?`,
@@ -644,6 +649,13 @@ export class AuthStore {
         userId
       );
       if (!u) throw new HttpError(404, 'USER_NOT_FOUND', 'User not found');
+      if (u.totp_enabled) {
+        throw new HttpError(
+          409,
+          'MFA_ALREADY_ENABLED',
+          'Two-factor authentication is already enabled for this account.'
+        );
+      }
 
       const enrollment = await generateTotpEnrollment(u.email, u.tenant_name || 'OnTrack');
       const secretEnc = encryptSecret(enrollment.secretBase32);
