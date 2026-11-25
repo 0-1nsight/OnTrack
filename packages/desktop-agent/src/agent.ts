@@ -7,6 +7,7 @@ import { captureForegroundMetadata, type WindowSample } from './adapters/osColle
 import { WinFocusWatcher, type WatcherSample } from './adapters/winFocusWatcher.ts';
 import { createBridgeRequestHandler } from './bridge.ts';
 import { CaptureRuntime } from './captureRuntime.ts';
+import { LocalAgentSqliteStore } from './localStore.ts';
 import type { CapturedEvent, CaptureSample } from './capture/captureSampler.ts';
 
 interface AgentConfig {
@@ -20,6 +21,9 @@ interface AgentConfig {
   heartbeatSeconds: number;
   pollSampleMs: number;
   idleThresholdSeconds: number;
+  localCleanupMinutes: number;
+  maxLocalPendingRows: number;
+  maxLocalPendingHours: number;
   exclusions: {
     apps: string[];
     domains: string[];
@@ -38,6 +42,9 @@ const DEFAULT_CONFIG: AgentConfig = {
   heartbeatSeconds: 12,
   pollSampleMs: 2000,
   idleThresholdSeconds: 180,
+  localCleanupMinutes: Number(process.env.ONTRACK_LOCAL_CLEANUP_MINUTES || 5),
+  maxLocalPendingRows: Number(process.env.ONTRACK_MAX_LOCAL_PENDING_ROWS || 10000),
+  maxLocalPendingHours: Number(process.env.ONTRACK_MAX_LOCAL_PENDING_HOURS || 72),
   exclusions: {
     apps: ['1Password', 'Bitwarden', 'KeePass'],
     domains: ['personalbank', 'chase.com', 'health', 'mychart'],
@@ -93,21 +100,21 @@ function loadConfig(): AgentConfig {
 }
 
 const config = loadConfig();
-const CONTROLS_FILE = path.resolve(process.cwd(), '.ontrack-controls.json');
 const AGENT_PLATFORM: 'windows' | 'macos' | 'linux' | 'vdi' =
   os.platform() === 'win32' ? 'windows' : os.platform() === 'darwin' ? 'macos' : 'linux';
+
+const localStore = new LocalAgentSqliteStore({
+  dbPath: process.env.ONTRACK_LOCAL_DB_PATH || path.resolve(process.cwd(), '.ontrack-agent.db'),
+  legacyDir: process.cwd(),
+  maxPendingRows: config.maxLocalPendingRows,
+  maxPendingAgeHours: config.maxLocalPendingHours,
+});
 
 const runtime = new CaptureRuntime({
   platform: AGENT_PLATFORM,
   store: {
-    load: () => {
-      try {
-        return JSON.parse(fs.readFileSync(CONTROLS_FILE, 'utf8'));
-      } catch {
-        return null;
-      }
-    },
-    save: (state) => fs.writeFileSync(CONTROLS_FILE, JSON.stringify(state), 'utf8'),
+    load: () => localStore.loadControls(),
+    save: (state) => localStore.saveControls(state),
   },
   onEvents: (events) => enqueueCaptured(events),
   pipeline: {
@@ -118,22 +125,9 @@ const runtime = new CaptureRuntime({
     },
   },
 });
-const QUEUE_FILE = path.resolve(process.cwd(), '.ontrack-offline-queue.jsonl');
-const SEQ_FILE = path.resolve(process.cwd(), '.ontrack-seq.json');
-
-let seq = 0;
-try {
-  if (fs.existsSync(SEQ_FILE)) {
-    seq = Number(JSON.parse(fs.readFileSync(SEQ_FILE, 'utf8')).seq || 0);
-  }
-} catch {
-  seq = 0;
-}
 
 function nextSeq(): number {
-  seq += 1;
-  fs.writeFileSync(SEQ_FILE, JSON.stringify({ seq }), 'utf8');
-  return seq;
+  return localStore.nextSeq();
 }
 
 let clockSkewMs = 0;
@@ -210,8 +204,7 @@ async function syncBootstrapFromServer() {
 
 function acknowledgeEventIds(ackedIds: Set<string>) {
   if (ackedIds.size === 0) return;
-  const remaining = readOfflineQueue().filter((evt) => !ackedIds.has(String(evt.event_id)));
-  writeOfflineQueue(remaining);
+  localStore.acknowledgeSynced(ackedIds);
 }
 
 function clearPendingWsAck() {
@@ -305,45 +298,14 @@ function isExcluded(payload: Record<string, any>): boolean {
   return false;
 }
 
-function appendOfflineQueue(event: Record<string, any>) {
-  fs.appendFileSync(QUEUE_FILE, `${JSON.stringify(event)}\n`, 'utf8');
-}
-
-function readOfflineQueue(): Record<string, any>[] {
-  if (!fs.existsSync(QUEUE_FILE)) return [];
-  const lines = fs.readFileSync(QUEUE_FILE, 'utf8').split('\n').filter(Boolean);
-  const parsed: Record<string, any>[] = [];
-  for (const line of lines) {
-    try {
-      parsed.push(JSON.parse(line));
-    } catch {
-      // Skip malformed line without losing healthy queued events
-    }
-  }
-  return parsed;
-}
-
-function writeOfflineQueue(events: Record<string, any>[]) {
-  if (events.length === 0) {
-    if (fs.existsSync(QUEUE_FILE)) fs.unlinkSync(QUEUE_FILE);
-    return;
-  }
-  fs.writeFileSync(
-    QUEUE_FILE,
-    events.map((e) => JSON.stringify(e)).join('\n') + '\n',
-    'utf8'
-  );
+function appendOfflineQueue(event: Record<string, any>, eventTimeMs?: number) {
+  localStore.enqueue(event, eventTimeMs);
 }
 
 async function flushQueue() {
   if (!config.tenantId && !config.deviceToken) return;
-  const queued = readOfflineQueue();
-  if (queued.length === 0) return;
-
-  const ordered = [
-    ...queued.filter((e) => e.priority === 'state'),
-    ...queued.filter((e) => e.priority !== 'state'),
-  ];
+  const ordered = localStore.peekPending(250);
+  if (ordered.length === 0) return;
 
   // Prefer active WebSocket stream; await sync:ack before clearing persisted queue
   if (
@@ -389,7 +351,7 @@ async function flushQueue() {
       acknowledgeEventIds(sentIds);
     }
   } catch {
-    // Remain buffered offline until connectivity resumes
+    // Remain buffered in local SQLite until connectivity resumes
   }
 }
 
@@ -417,7 +379,7 @@ function enqueueEvent(
     received_at: null,
     payload,
   };
-  appendOfflineQueue(event);
+  appendOfflineQueue(event, timeMs);
   if (type !== 'activity.heartbeat') {
     runtime.recordQueued(type, timeMs, payload);
   }
@@ -442,18 +404,28 @@ const bridgeServer = http.createServer(
       idleThresholdSeconds: config.idleThresholdSeconds,
       deviceId: config.deviceId,
     }),
-    getHealthInfo: () => ({
-      deviceId: config.deviceId,
-      tenantId: config.tenantId,
-      seq,
-      wsConnected,
-      clockSkewMs,
-      extensionConnected: Date.now() - lastBrowserPingMs < 45000,
-      // The health endpoint needs no secret, so it never includes window titles or file names.
-      latestSample: latestSample
-        ? { app: latestSample.app, idleSeconds: latestSample.idleSeconds, osPlatform: latestSample.osPlatform }
-        : null,
-    }),
+    getHealthInfo: () => {
+      const storeStats = localStore.getStats();
+      return {
+        deviceId: config.deviceId,
+        tenantId: config.tenantId,
+        seq: localStore.getSeq(),
+        wsConnected,
+        clockSkewMs,
+        extensionConnected: Date.now() - lastBrowserPingMs < 45000,
+        localStore: {
+          engine: 'sqlite',
+          pendingCount: storeStats.pendingCount,
+          syncedPendingPurgeCount: storeStats.syncedPendingPurgeCount,
+          dbBytes: storeStats.dbBytes,
+          lastCleanupAtMs: storeStats.lastCleanupAtMs,
+        },
+        // The health endpoint needs no secret, so it never includes window titles or file names.
+        latestSample: latestSample
+          ? { app: latestSample.app, idleSeconds: latestSample.idleSeconds, osPlatform: latestSample.osPlatform }
+          : null,
+      };
+    },
     getControls: () => runtime.getControls(),
     applyControl: (msg) => runtime.applyControl(msg),
     getCaptureHealth: () => ({ ...runtime.getHealth(Date.now() - lastBrowserPingMs < 45000) }),
@@ -604,10 +576,11 @@ function startCollector() {
 
 startCollector();
 
-// Flush the open segment on shutdown so the last stretch of work is not lost.
+// Flush the open segment and compact local SQLite on shutdown so the last stretch of work is not lost.
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     enqueueCaptured(runtime.shutdown());
+    localStore.close();
     process.exit(0);
   });
 }
@@ -635,3 +608,13 @@ setTimeout(() => {
 
 // Heartbeat + Flush Loop (12s)
 setInterval(emitHeartbeat, config.heartbeatSeconds * 1000);
+
+// Periodic local SQLite cleanup & WAL compaction so the agent never bogs down the user's machine
+const cleanupMs = Math.max(1, config.localCleanupMinutes) * 60_000;
+setInterval(() => {
+  try {
+    localStore.runPeriodicCleanup();
+  } catch {
+    // ignore transient cleanup failure
+  }
+}, cleanupMs).unref();

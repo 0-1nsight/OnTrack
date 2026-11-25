@@ -217,9 +217,9 @@ export async function sampleMacOSWithRunner(
     throw new Error('macOS collector returned empty foreground application');
   }
 
-  let titleRaw = '';
+  let titleRaw: string;
   let docRaw = '';
-  let axRaw = 'ok';
+  let axRaw: string;
   if (parts.length >= 4) {
     titleRaw = parts[1] || '';
     docRaw = parts[2] || '';
@@ -232,7 +232,7 @@ export async function sampleMacOSWithRunner(
   const normalizedApp = friendlyAppName(appRaw, 'macOS App');
   const accessibilityGranted = axRaw.trim() !== 'denied';
 
-  let idleSeconds = 0;
+  let idleSeconds: number;
   try {
     const { stdout: ioOut } = await exec(
       'sh',
@@ -244,7 +244,7 @@ export async function sampleMacOSWithRunner(
     idleSeconds = 0;
   }
 
-  let sessionLocked = false;
+  let sessionLocked: boolean;
   try {
     const { stdout: lockOut } = await exec(
       'sh',
@@ -535,7 +535,7 @@ export async function sampleLinuxWithRunner(
     throw new Error(`Linux (${linuxSession}) foreground probe unavailable`);
   }
 
-  let idleSeconds = 0;
+  let idleSeconds: number;
   try {
     const { stdout: idleOut } = await exec(
       'sh',
@@ -555,7 +555,7 @@ export async function sampleLinuxWithRunner(
     idleSeconds = 0;
   }
 
-  let sessionLocked = false;
+  let sessionLocked: boolean;
   try {
     const { stdout: lockOut } = await exec(
       'sh',
@@ -570,7 +570,7 @@ export async function sampleLinuxWithRunner(
     sessionLocked = false;
   }
 
-  let mediaInUse = false;
+  let mediaInUse: boolean;
   try {
     const { stdout: mediaOut } = await exec(
       'sh',

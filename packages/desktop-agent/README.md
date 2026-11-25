@@ -6,8 +6,8 @@ Metadata-only workstation collector for **Windows, macOS, Linux, and VDI/RDP ses
 - Captures foreground application name, window title, open document filename hints, idle state, and meeting app status.
 - Never captures screenshots, keystrokes, clipboard contents, or document contents.
 - Hosts an authenticated local loopback bridge (`http://127.0.0.1:47621`) protected by a per-install `X-OnTrack-Bridge-Secret` header (`POST /browser-event`, `GET /config`) and strict `Origin` checks to merge Browser Extension telemetry by UTC timestamp.
-- Evaluates app/domain/path exclusions and incognito drops **on the device** before buffering to `.ontrack-offline-queue.jsonl`.
-- Maintains monotonic sequence numbers (`seq`), emits 12-second heartbeats, and flushes state changes ahead of activity batches.
+- Evaluates app/domain/path exclusions and incognito drops **on the device** before buffering to an embedded SQLite database (`.ontrack-agent.db`).
+- Maintains monotonic sequence numbers (`seq`), emits 12-second heartbeats, flushes state changes ahead of activity batches, and periodically clears synced/expired rows and compacts the SQLite WAL so the local database stays lightweight.
 
 ## Quick Start
 1. Unzip `ontrack-desktop-agent.zip` and review `agent.config.json` (`serverUrl`, `tenantId`, `userId`, `deviceToken`, `bridgeSecret`).
@@ -32,4 +32,4 @@ Metadata-only workstation collector for **Windows, macOS, Linux, and VDI/RDP ses
 | `GET /controls`, `POST /controls` | `{action: "pause", minutes}`, `{action: "offTheRecord", enabled}`, `{action: "resume"}`, `{action: "setSchedule", schedule}` |
 | `GET /recent-events?limit=N` | What this device recorded, as queued |
 
-Controls persist in `.ontrack-controls.json`. `/health` is unauthenticated and never includes window titles.
+Controls, sequence numbers, and offline sync queues persist in `.ontrack-agent.db` (embedded SQLite, periodically purged and compacted after server sync). `/health` is unauthenticated and never includes window titles.

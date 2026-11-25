@@ -76,17 +76,31 @@ export class PortableSqlAdapter implements SqlExecutor {
         password: sqlPassword,
         database: sqlDbName,
         max: 10,
+        idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 15000,
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 15000,
       });
       this.pgPool.on('error', (err) => {
         console.error('Unexpected error on idle SQL pool client:', err);
       });
     } else if (usePgUrl) {
       this.dialect = 'postgres';
+      const sslMode = (process.env.DATABASE_SSL || '').trim().toLowerCase();
+      const ssl =
+        sslMode === 'true' || sslMode === 'require'
+          ? { rejectUnauthorized: true }
+          : sslMode === 'no-verify' || sslMode === 'allow-self-signed'
+            ? { rejectUnauthorized: false }
+            : undefined;
       this.pgPool = new Pool({
         connectionString: databaseUrl.trim(),
         max: 20,
+        idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 15000,
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 15000,
+        ...(ssl ? { ssl } : {}),
       });
       this.pgPool.on('error', (err) => {
         console.error('Unexpected error on idle SQL pool client:', err);

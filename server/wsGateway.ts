@@ -111,6 +111,10 @@ export class EngineWsGateway {
   private readonly subscribers = new Set<EngineSubscriber>();
   private readonly wss: WebSocketServer;
   private pgNotifyClient: PgClient | null = null;
+  private pgNotifyReady = false;
+  private pgKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  private pgReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private pgReconnectAttempt = 0;
   private closing = false;
 
   constructor(
@@ -123,41 +127,128 @@ export class EngineWsGateway {
     void this.initPgListenNotify();
   }
 
+  private clearPgTimers() {
+    if (this.pgKeepaliveTimer) {
+      clearInterval(this.pgKeepaliveTimer);
+      this.pgKeepaliveTimer = null;
+    }
+    if (this.pgReconnectTimer) {
+      clearTimeout(this.pgReconnectTimer);
+      this.pgReconnectTimer = null;
+    }
+  }
+
+  private schedulePgReconnect() {
+    if (this.closing || this.pgReconnectTimer) return;
+    const delayMs = Math.min(30_000, 2_000 * Math.pow(2, this.pgReconnectAttempt));
+    this.pgReconnectAttempt = Math.min(this.pgReconnectAttempt + 1, 4);
+    this.pgReconnectTimer = setTimeout(() => {
+      this.pgReconnectTimer = null;
+      void this.initPgListenNotify();
+    }, delayMs);
+    this.pgReconnectTimer.unref();
+  }
+
+  private cleanupDeadPgClient(client: PgClient) {
+    if (this.pgNotifyClient === client) {
+      this.pgNotifyClient = null;
+      this.pgNotifyReady = false;
+    }
+    if (this.pgKeepaliveTimer) {
+      clearInterval(this.pgKeepaliveTimer);
+      this.pgKeepaliveTimer = null;
+    }
+    client.removeAllListeners();
+    client.end().catch(() => undefined);
+  }
+
   private async initPgListenNotify() {
-    if (this.engineStore.db.dialect !== 'postgres') {
+    if (this.closing || this.engineStore.db.dialect !== 'postgres') {
       return;
     }
     const sqlConn = appConfig.sqlConnection;
     if (!sqlConn && !appConfig.databaseUrl) {
       return;
     }
+    const sslMode = (process.env.DATABASE_SSL || '').trim().toLowerCase();
+    const ssl =
+      sslMode === 'true' || sslMode === 'require'
+        ? { rejectUnauthorized: true }
+        : sslMode === 'no-verify' || sslMode === 'allow-self-signed'
+          ? { rejectUnauthorized: false }
+          : undefined;
+
+    const client = sqlConn
+      ? new PgClient({
+          host: sqlConn.host,
+          user: sqlConn.user,
+          password: sqlConn.password,
+          database: sqlConn.database,
+          keepAlive: true,
+          keepAliveInitialDelayMillis: 15_000,
+          connectionTimeoutMillis: 15_000,
+        })
+      : new PgClient({
+          connectionString: appConfig.databaseUrl,
+          keepAlive: true,
+          keepAliveInitialDelayMillis: 15_000,
+          connectionTimeoutMillis: 15_000,
+          ...(ssl ? { ssl } : {}),
+        });
+
+    client.on('notification', (n) => {
+      if (n.channel !== PG_NOTIFY_CHANNEL || !n.payload) return;
+      try {
+        const msg = JSON.parse(n.payload) as EngineBroadcastMessage;
+        this.deliverLocally(msg);
+      } catch {
+        // ignore malformed notify payload
+      }
+    });
+
+    client.on('error', (err) => {
+      if (this.closing) return;
+      logger.debug('ws.pg_notify_reconnecting', { message: err.message });
+      this.cleanupDeadPgClient(client);
+      this.schedulePgReconnect();
+    });
+
+    client.on('end', () => {
+      if (this.closing) return;
+      this.cleanupDeadPgClient(client);
+      this.schedulePgReconnect();
+    });
+
     try {
-      const client = sqlConn
-        ? new PgClient({
-            host: sqlConn.host,
-            user: sqlConn.user,
-            password: sqlConn.password,
-            database: sqlConn.database,
-          })
-        : new PgClient({ connectionString: appConfig.databaseUrl });
       await client.connect();
       await client.query(`LISTEN ${PG_NOTIFY_CHANNEL}`);
-      client.on('notification', (n) => {
-        if (n.channel !== PG_NOTIFY_CHANNEL || !n.payload) return;
-        try {
-          const msg = JSON.parse(n.payload) as EngineBroadcastMessage;
-          this.deliverLocally(msg);
-        } catch {
-          // ignore malformed notify payload
-        }
-      });
-      client.on('error', (err) => {
-        logger.warn('ws.pg_notify_error', { message: err.message });
-      });
+      if (this.closing) {
+        await client.end().catch(() => undefined);
+        return;
+      }
       this.pgNotifyClient = client;
+      this.pgNotifyReady = true;
+      this.pgReconnectAttempt = 0;
+
+      this.pgKeepaliveTimer = setInterval(() => {
+        if (this.closing || this.pgNotifyClient !== client) return;
+        void client.query('SELECT 1').catch(() => {
+          if (this.closing) return;
+          this.cleanupDeadPgClient(client);
+          this.schedulePgReconnect();
+        });
+      }, 45_000);
+      this.pgKeepaliveTimer.unref();
+
       logger.info('ws.pg_listen_ready', { channel: PG_NOTIFY_CHANNEL });
     } catch (err: any) {
-      logger.warn('ws.pg_listen_fallback_local', { message: err?.message });
+      this.cleanupDeadPgClient(client);
+      if (this.pgReconnectAttempt >= 2) {
+        logger.warn('ws.pg_listen_fallback_local', { message: err?.message });
+      } else {
+        logger.debug('ws.pg_listen_retry', { message: err?.message });
+      }
+      this.schedulePgReconnect();
     }
   }
 
@@ -387,15 +478,18 @@ export class EngineWsGateway {
   }
 
   public async publish(msg: EngineBroadcastMessage): Promise<void> {
-    if (this.pgNotifyClient) {
-      try {
-        await this.pgNotifyClient.query('SELECT pg_notify($1, $2)', [
-          PG_NOTIFY_CHANNEL,
-          JSON.stringify(msg),
-        ]);
-        return;
-      } catch (err: any) {
-        logger.warn('ws.pg_notify_publish_failed', { message: err?.message });
+    if (this.pgNotifyReady && this.pgNotifyClient) {
+      const pgPool = await this.engineStore.db.getPgPool();
+      if (pgPool) {
+        try {
+          await pgPool.query('SELECT pg_notify($1, $2)', [
+            PG_NOTIFY_CHANNEL,
+            JSON.stringify(msg),
+          ]);
+          return;
+        } catch (err: any) {
+          logger.debug('ws.pg_notify_publish_fallback', { message: err?.message });
+        }
       }
     }
     this.deliverLocally(msg);
@@ -417,14 +511,18 @@ export class EngineWsGateway {
   public async close(): Promise<void> {
     if (this.closing) return;
     this.closing = true;
+    this.clearPgTimers();
     for (const sub of this.subscribers) {
       sub.ws.close(1001, 'Server shutting down');
     }
     this.subscribers.clear();
     await new Promise<void>((resolve) => this.wss.close(() => resolve()));
     if (this.pgNotifyClient) {
-      await this.pgNotifyClient.end().catch(() => undefined);
+      const client = this.pgNotifyClient;
       this.pgNotifyClient = null;
+      this.pgNotifyReady = false;
+      client.removeAllListeners();
+      await client.end().catch(() => undefined);
     }
   }
 }
