@@ -1251,3 +1251,29 @@ export async function downloadUnifiedInstaller(params: {
 
   return { filename, format };
 }
+
+export async function updateAppColorsApi(params: {
+  tenantId: string;
+  appColors?: Record<string, string>;
+  appName?: string;
+  color?: string | null;
+  previewRole?: UserRole;
+}): Promise<{ config: TenantConfig & { aiReportsEnabled: boolean } }> {
+  const res = await fetch('/api/engine/app-colors', {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: buildAuthHeaders({
+      'Content-Type': 'application/json',
+      ...(params.previewRole
+        ? { 'X-OnTrack-Preview-Role': params.previewRole }
+        : {}),
+    }),
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to update application colors');
+  }
+  return res.json();
+}
+

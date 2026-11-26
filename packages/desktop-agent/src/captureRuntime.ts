@@ -8,6 +8,7 @@ import {
   type CapturedEvent,
   type CapturePipelineOptions,
   type CaptureSample,
+  type OpenSegment,
 } from './capture/captureSampler.ts';
 import {
   DEFAULT_TRACKING_CONTROLS,
@@ -83,6 +84,10 @@ export class CaptureRuntime {
     this.recentSamples.push(sample.windowTitle.trim().length > 0 && sample.windowTitle !== sample.app);
     if (this.recentSamples.length > HEALTH_WINDOW) this.recentSamples.shift();
     return this.pipeline.ingest(sample, { extensionConnected });
+  }
+
+  getOpenState(): OpenSegment | null {
+    return this.pipeline.getOpenSegment();
   }
 
   setPlatformFacts(facts: { accessibilityGranted?: boolean; linuxSession?: 'x11' | 'wayland' | 'unknown' }): void {

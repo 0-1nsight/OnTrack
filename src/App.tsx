@@ -36,6 +36,7 @@ import {
   ClientDictionaryEntry,
   DeviceFreshnessRecord,
   EngineTask,
+  LiveActivitySnapshot,
   PrivacyRule,
   ShiftUser,
   SyncConflict,
@@ -55,6 +56,7 @@ import {
   removeTaskCollaboratorApi,
   resolveAttributionApi,
   respondTaskInviteApi,
+  updateAppColorsApi,
   updateEngineTaskApi,
 } from './services/engineClient';
 import {
@@ -315,11 +317,19 @@ export default function App() {
   const [engineAttributions, setEngineAttributions] = useState<AttributionRecord[]>([]);
   const [engineClients, setEngineClients] = useState<ClientDictionaryEntry[]>([]);
   const [engineTaskVersions, setEngineTaskVersions] = useState<Record<string, number>>({});
+  const [appColors, setAppColors] = useState<Record<string, string>>({});
+  const [liveActivity, setLiveActivity] = useState<LiveActivitySnapshot | null>(null);
+  const liveActivityRef = useRef<LiveActivitySnapshot | null>(null);
   const [engineSyncStatus, setEngineSyncStatus] = useState<'idle' | 'syncing' | 'error'>('idle');
   const demoSeedAppliedRef = useRef(false);
   const hierarchyBoardsRef = useRef(workspaceHierarchy.boards);
   const pendingTaskMetaRef = useRef<Map<string, Task>>(new Map());
   const pendingTaskTempBySigRef = useRef<Map<string, string>>(new Map());
+  const wsRef = useRef<WebSocket | null>(null);
+  const lastHydrateTriggerMsRef = useRef<number>(0);
+  useEffect(() => {
+    liveActivityRef.current = liveActivity;
+  }, [liveActivity]);
   useEffect(() => {
     hierarchyBoardsRef.current = workspaceHierarchy.boards;
   }, [workspaceHierarchy.boards]);
@@ -356,6 +366,8 @@ export default function App() {
     setEngineAttributions([]);
     setEngineClients([]);
     setEngineTaskVersions({});
+    setAppColors({});
+    setLiveActivity(null);
     setEngineSyncStatus('idle');
     demoSeedAppliedRef.current = false;
     setTimer((prev) => ({
@@ -537,6 +549,7 @@ export default function App() {
         setEngineSessions(snapshot.sessions || []);
         setEngineAttributions(snapshot.attributions || []);
         setEngineClients(snapshot.clients || []);
+        setAppColors(snapshot.config?.appColors || {});
         const versionMap: Record<string, number> = {};
         for (const t of snapshot.tasks) {
           versionMap[t.id] = t.version;
@@ -797,17 +810,34 @@ export default function App() {
         role: activeRole,
       });
       ws = new WebSocket(`${proto}//${window.location.host}/ws/engine?${qs.toString()}`);
+      wsRef.current = ws;
       ws.onmessage = (evt) => {
         try {
           const msg = JSON.parse(String(evt.data));
+          if (msg.liveActivity && typeof msg.liveActivity === 'object') {
+            setLiveActivity(msg.liveActivity as LiveActivitySnapshot);
+          }
           if (msg.type === 'state:updated' || msg.type === 'activity:updated') {
+            if (msg.livePulseOnly === true) {
+              return;
+            }
+            const nowMs = Date.now();
+            const minGap = msg.type === 'state:updated' ? 200 : 1200;
+            const elapsed = nowMs - lastHydrateTriggerMsRef.current;
+            const delay = elapsed >= minGap ? 150 : minGap - elapsed;
             if (refreshTimer) window.clearTimeout(refreshTimer);
             refreshTimer = window.setTimeout(() => {
+              lastHydrateTriggerMsRef.current = Date.now();
               void hydrateFromEngine(user, activeRole);
-            }, 350);
+            }, delay);
           }
         } catch {
           // ignore malformed WS frames
+        }
+      };
+      ws.onclose = () => {
+        if (wsRef.current === ws) {
+          wsRef.current = null;
         }
       };
     } catch {
@@ -817,11 +847,108 @@ export default function App() {
     return () => {
       window.removeEventListener('online', handleOnline);
       if (refreshTimer) window.clearTimeout(refreshTimer);
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      if (wsRef.current === ws) {
+        wsRef.current = null;
+      }
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         ws.close();
       }
     };
   }, [authReady, user, activeRole, hydrateFromEngine]);
+
+  const emitBrowserLivePulse = useCallback(
+    (
+      appName: string,
+      documentTitle: string,
+      state: LiveActivitySnapshot['state'] = 'active',
+      domainOrPath: string | null = null,
+      source: LiveActivitySnapshot['source'] = 'browser'
+    ) => {
+      if (activeRole === 'client') return;
+      const nowIso = new Date().toISOString();
+      const deviceId = getOrCreateLocalDeviceId();
+      const prev = liveActivityRef.current;
+      const sameOngoing =
+        Boolean(prev) &&
+        prev!.appName === (appName.trim() || 'OnTrack Web') &&
+        prev!.documentTitle === (documentTitle.trim() || appName) &&
+        prev!.state === state &&
+        Date.now() - Date.parse(prev!.lastSeenUtc) < 90_000;
+      const nextSnapshot: LiveActivitySnapshot = {
+        tenantId: user?.tenantId || 'local',
+        userId: user?.userId || 'local',
+        deviceId,
+        appName: appName.trim() || 'OnTrack Web',
+        documentTitle: documentTitle.trim() || appName,
+        domainOrPath,
+        state,
+        startedAtUtc: sameOngoing ? prev!.startedAtUtc : nowIso,
+        lastSeenUtc: nowIso,
+        source,
+      };
+      liveActivityRef.current = nextSnapshot;
+      setLiveActivity(nextSnapshot);
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && user) {
+        try {
+          wsRef.current.send(
+            JSON.stringify({
+              type: 'live:pulse',
+              tenantId: user.tenantId,
+              userId: user.userId,
+              deviceId,
+              liveActivity: nextSnapshot,
+            })
+          );
+        } catch {
+          // ignore transient WS send error
+        }
+      }
+    },
+    [activeRole, user]
+  );
+
+  const handleUpdateAppColors = useCallback(
+    async (params: {
+      appName?: string;
+      color?: string | null;
+      appColors?: Record<string, string>;
+    }) => {
+      if (!user || activeRole === 'client') {
+        showToast('Sign in to save firm application colors.');
+        return;
+      }
+      const prev = appColors;
+      if (params.appColors) {
+        setAppColors(params.appColors);
+      } else if (params.appName) {
+        setAppColors((curr) => {
+          const next = { ...curr };
+          if (!params.color) delete next[params.appName!];
+          else next[params.appName!] = params.color;
+          return next;
+        });
+      }
+      try {
+        const res = await updateAppColorsApi({
+          tenantId: user.tenantId,
+          ...params,
+          previewRole: activeRole,
+        });
+        setAppColors(res.config.appColors || {});
+        showToast(
+          params.appName
+            ? params.color
+              ? `Updated firm color for ${params.appName}.`
+              : `Reset ${params.appName} to auto-assigned color.`
+            : 'Updated firm application palette.'
+        );
+      } catch (err: any) {
+        setAppColors(prev);
+        showToast(err?.message || 'Unable to update application color.');
+      }
+    },
+    [user, activeRole, appColors, showToast]
+  );
 
   // Auth & Account Management Handlers
   const handleLogin = async (payload: {
@@ -1145,9 +1272,47 @@ export default function App() {
         if (recentSame) return prev;
         return [...prev, newDocSeg];
       });
+      emitBrowserLivePulse('OnTrack Web', docTitle, 'active', `ontrack.local/${nextTab}`, 'browser');
     },
-    [activeRole, rolePolicy.label, selectedDate, todayDate, timer.taskId]
+    [activeRole, rolePolicy.label, selectedDate, todayDate, timer.taskId, emitBrowserLivePulse]
   );
+
+  // Sync active browser focus / visibility changes immediately as live capture signals
+  useEffect(() => {
+    if (!authReady || !user || user.mustSetPassword || !user.mfaVerified || activeRole === 'client') {
+      return;
+    }
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        const appName =
+          timer.isRunning && !timer.isPaused
+            ? timer.activeAppName || 'OnTrack Web'
+            : 'OnTrack Web';
+        const docTitle =
+          timer.isRunning && !timer.isPaused
+            ? timer.activeDocumentTitle || timer.customTitle || 'Focused Session'
+            : `OnTrack Workspace (${effectiveTab})`;
+        emitBrowserLivePulse(appName, docTitle, 'active', `ontrack.local/${effectiveTab}`, 'browser');
+      }
+    };
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    return () => {
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    };
+  }, [
+    authReady,
+    user,
+    activeRole,
+    effectiveTab,
+    timer.isRunning,
+    timer.isPaused,
+    timer.activeAppName,
+    timer.activeDocumentTitle,
+    timer.customTitle,
+    emitBrowserLivePulse,
+  ]);
 
   // Timer Handlers
   const handleStartTimer = (taskId?: string | null) => {
@@ -1197,6 +1362,11 @@ export default function App() {
         }
       }
     }
+    const nextLiveApp = timer.activeAppName || 'VS Code';
+    const nextLiveDoc =
+      timer.activeDocumentTitle ||
+      (foundTask ? `${foundTask.title} — Workspace` : 'Active Document');
+    emitBrowserLivePulse(nextLiveApp, nextLiveDoc, 'active', null, 'timer');
     showToast(
       `Stopwatch started: ${
         foundTask ? foundTask.title : timer.customTitle || 'Focused Session'
@@ -1224,6 +1394,13 @@ export default function App() {
       isPaused: false,
       startedAtMs: Date.now(),
     }));
+    emitBrowserLivePulse(
+      timer.activeAppName || 'VS Code',
+      timer.activeDocumentTitle || timer.customTitle || 'Active Document',
+      'active',
+      null,
+      'timer'
+    );
   };
 
   const handleStopAndSaveTimer = () => {
@@ -1350,6 +1527,7 @@ export default function App() {
 
     setAppSegments((prev) => [...prev, newAppSeg]);
     setDocumentSegments((prev) => [...prev, newDocSeg]);
+    emitBrowserLivePulse(cleanApp, cleanDoc, 'active', domainOrPath, 'browser');
     void persistTrackingEvent({
       type: cleanApp === 'Google Chrome' ? 'activity.browser' : 'activity.window',
       priority: 'activity',
@@ -2150,9 +2328,21 @@ export default function App() {
             onPauseTimer={handlePauseTimer}
             onResumeTimer={handleResumeTimer}
             onStopAndSaveTimer={handleStopAndSaveTimer}
-            onUpdateTimerMeta={(updates) =>
-              setTimer((prev) => ({ ...prev, ...updates }))
-            }
+            onUpdateTimerMeta={(updates) => {
+              setTimer((prev) => {
+                const next = { ...prev, ...updates };
+                if (updates.activeAppName || updates.activeDocumentTitle) {
+                  emitBrowserLivePulse(
+                    next.activeAppName || 'OnTrack Web',
+                    next.activeDocumentTitle || next.customTitle || 'Workspace',
+                    'active',
+                    null,
+                    'timer'
+                  );
+                }
+                return next;
+              });
+            }}
             onLogAppDocSwitch={handleLogAppDocSwitch}
             onSimulateIdle={handleSimulateIdle}
             onOpenPreferences={() => setPrefsModalOpen(true)}
@@ -2309,6 +2499,14 @@ export default function App() {
                   : engineDevices
               }
               syncStatus={engineSyncStatus}
+              appColors={appColors}
+              canCustomizeAppColors={activeRole === 'admin_it' || activeRole === 'team_lead'}
+              liveActivity={liveActivity}
+              isTimerRunning={timer.isRunning && !timer.isPaused}
+              activeTimerAppName={timer.activeAppName}
+              activeTimerDocTitle={timer.activeDocumentTitle || timer.customTitle}
+              activeTimerStartedAtMs={timer.startedAtMs}
+              onUpdateAppColors={handleUpdateAppColors}
               onSelectDate={setSelectedDate}
               onOpenQuickLogWithRange={(startTime, endTime) => {
                 setEditingBlock(null);
@@ -2492,6 +2690,7 @@ export default function App() {
               appSegments={appSegments}
               documentSegments={documentSegments}
               reports={reports}
+              appColors={appColors}
               activeRole={activeRole}
               currentUser={user}
               onSaveReport={(newReport) => {
@@ -2509,6 +2708,7 @@ export default function App() {
               appSegments={appSegments}
               documentSegments={documentSegments}
               clients={engineClients}
+              appColors={appColors}
               activeRole={activeRole}
               currentUser={user}
               onSelectDateAndGoToTimeline={(date) => {

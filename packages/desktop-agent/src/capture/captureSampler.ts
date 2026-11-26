@@ -47,7 +47,7 @@ export interface CapturePipelineOptions {
   stateHoldMs?: number;
 }
 
-interface OpenSegment {
+export interface OpenSegment {
   key: string;
   type: ActivityEventType;
   startMs: number;
@@ -82,6 +82,14 @@ export class CapturePipeline {
     return this.lastBlockedReason;
   }
   private lastBlockedReason: ReturnType<typeof evaluateTracking>['reason'] = null;
+
+  getOpenSegment(): OpenSegment | null {
+    if (!this.segment) return null;
+    return {
+      ...this.segment,
+      payload: { ...this.segment.payload },
+    };
+  }
 
   ingest(sample: CaptureSample, ctx: { extensionConnected: boolean }): CapturedEvent[] {
     const decision = evaluateTracking(this.getControls(), new Date(sample.atMs));

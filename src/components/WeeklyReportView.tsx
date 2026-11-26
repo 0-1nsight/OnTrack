@@ -24,10 +24,10 @@ import {
   WorkCategory,
 } from '../types';
 import {
-  APP_COLORS,
   CATEGORY_LABELS,
   PROJECT_COLORS,
   formatDuration,
+  getAppColorTokens,
 } from '../utils/workspaceConstants';
 
 interface WeeklyReportViewProps {
@@ -37,6 +37,7 @@ interface WeeklyReportViewProps {
   appSegments: ApplicationUsageSegment[];
   documentSegments: DocumentUsageSegment[];
   reports: WeeklyReport[];
+  appColors?: Record<string, string>;
   activeRole?: UserRole;
   currentUser?: AuthUser | null;
   onSaveReport: (report: WeeklyReport) => void;
@@ -49,6 +50,7 @@ export const WeeklyReportView: React.FC<WeeklyReportViewProps> = ({
   appSegments,
   documentSegments,
   reports,
+  appColors = {},
   activeRole = 'accountant',
   currentUser = null,
   onSaveReport,
@@ -997,22 +999,29 @@ ${currentReport.nextWeekFocus.map((n) => `- ${n}`).join('\n')}
                 ) : (
                   <div className="space-y-2.5">
                     {appBreakdown.map((app) => {
-                      const style =
-                        APP_COLORS[app.appName] || APP_COLORS['Google Chrome'];
+                      const tokens = getAppColorTokens(app.appName, appColors);
                       return (
                         <div key={app.appName} className="space-y-1">
                           <div className="flex items-center justify-between text-xs">
-                            <span className="font-medium text-slate-800 dark:text-slate-200">
-                              {app.appName}
+                            <span className="inline-flex items-center gap-2 font-medium text-slate-800 dark:text-slate-200 min-w-0 truncate">
+                              <span
+                                aria-hidden="true"
+                                style={tokens.customHex ? { backgroundColor: tokens.customHex } : undefined}
+                                className={`w-2.5 h-2.5 rounded-xs shrink-0 ${tokens.customHex ? '' : tokens.bar}`}
+                              />
+                              <span className="truncate">{app.appName}</span>
                             </span>
-                            <span className="font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                            <span className="font-mono tabular-nums text-slate-600 dark:text-slate-400 shrink-0">
                               {formatDuration(app.minutes)} ({app.share}%)
                             </span>
                           </div>
                           <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
                             <div
-                              style={{ width: `${app.share}%` }}
-                              className={`h-full rounded-full ${style.bar}`}
+                              style={{
+                                width: `${app.share}%`,
+                                ...(tokens.customHex ? { backgroundColor: tokens.customHex } : {}),
+                              }}
+                              className={`h-full rounded-full ${tokens.customHex ? '' : tokens.bar}`}
                             />
                           </div>
                         </div>

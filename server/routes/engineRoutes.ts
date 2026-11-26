@@ -166,6 +166,31 @@ const PrivacyRuleToggleSchema = z.object({
   enabled: z.boolean(),
 });
 
+const VALID_APP_COLOR_PRESET_IDS = new Set([
+  'sky', 'emerald', 'teal', 'indigo', 'slate', 'fuchsia',
+  'violet', 'rose', 'amber', 'orange', 'cyan', 'blue',
+  'lime', 'crimson', 'ochre', 'plum', 'cobalt', 'mint',
+]);
+const HEX_COLOR_VALUE_REGEX = /^#[0-9a-fA-F]{6}$/;
+
+const AppColorValueSchema = z
+  .string()
+  .trim()
+  .refine(
+    (v) => VALID_APP_COLOR_PRESET_IDS.has(v) || HEX_COLOR_VALUE_REGEX.test(v),
+    'Color must be a valid palette preset ID or #RRGGBB hex code.'
+  );
+
+const AppColorsMapSchema = z
+  .record(z.string().trim().min(1).max(120), AppColorValueSchema)
+  .refine((obj) => Object.keys(obj).length <= 200, 'Maximum 200 custom app color entries.');
+
+const AppColorsPatchSchema = z.object({
+  appColors: AppColorsMapSchema.optional(),
+  appName: z.string().trim().min(1).max(120).optional(),
+  color: AppColorValueSchema.nullable().optional(),
+});
+
 const TenantConfigPatchSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   aiReportsEnabled: z.boolean().optional(),
@@ -175,6 +200,7 @@ const TenantConfigPatchSchema = z.object({
   retentionDays: z.number().int().min(7).max(365).optional(),
   monitoringPolicy: z.enum(['mandatory', 'opt_in']).optional(),
   serverUrl: z.string().trim().url().optional(),
+  appColors: AppColorsMapSchema.optional(),
   confidenceThresholds: z
     .object({
       detected: z.number().finite().min(0.1).max(1).optional(),
@@ -335,6 +361,7 @@ export function createEngineRouter(deps: {
           meta: {
             lastAckSeq: result.lastAckSeq,
             lateBacklogUpdated: result.lateBacklogUpdated,
+            ...(result.liveActivity ? { liveActivity: result.liveActivity } : {}),
           },
         });
       } else if (result.acceptedCount > 0) {
@@ -345,6 +372,7 @@ export function createEngineRouter(deps: {
           eventType: 'activity:updated',
           meta: {
             lastAckSeq: result.lastAckSeq,
+            ...(result.liveActivity ? { liveActivity: result.liveActivity } : {}),
           },
         });
       }
@@ -679,6 +707,57 @@ export function createEngineRouter(deps: {
         tenantId: authCtx.tenantId,
         affectedUserId: authCtx.userId,
         eventType: 'state:updated',
+        meta: { broadcastTenantConfig: true, kind: 'tenant_config_updated' },
+      });
+      res.json({ config: updated });
+    })
+  );
+
+  router.patch(
+    '/app-colors',
+    asyncHandler(async (req, res) => {
+      const authCtx = await requireStaff(req);
+      if (authCtx.role !== 'admin_it' && authCtx.role !== 'team_lead') {
+        throw new HttpError(
+          403,
+          'FORBIDDEN',
+          'Only Admin/IT or Team Leads can customize firm application colors.'
+        );
+      }
+      const parsed = AppColorsPatchSchema.parse(req.body || {});
+      const current = await deps.engineStore.getTenantConfig(authCtx.tenantId);
+      const nextColors: Record<string, string> = parsed.appColors
+        ? { ...parsed.appColors }
+        : { ...(current.appColors || {}) };
+
+      if (parsed.appName) {
+        if (parsed.color === null || parsed.color === undefined) {
+          delete nextColors[parsed.appName];
+        } else {
+          nextColors[parsed.appName] = parsed.color;
+        }
+      }
+
+      const updated = await deps.engineStore.updateTenantConfig(authCtx.tenantId, {
+        appColors: nextColors,
+      });
+
+      await deps.engineStore.recordAuditLog({
+        tenantId: authCtx.tenantId,
+        actorUserId: authCtx.userId,
+        actorRole: authCtx.role,
+        targetUserId: null,
+        action: 'tenant.app_colors_updated',
+        details: parsed.appName
+          ? `Updated firm color for "${parsed.appName}" to ${parsed.color ?? 'auto'}`
+          : `Updated firm application palette (${Object.keys(updated.appColors || {}).length} overrides)`,
+      });
+
+      await deps.wsGateway.publish({
+        tenantId: authCtx.tenantId,
+        affectedUserId: authCtx.userId,
+        eventType: 'state:updated',
+        meta: { broadcastTenantConfig: true, kind: 'app_colors_updated' },
       });
       res.json({ config: updated });
     })

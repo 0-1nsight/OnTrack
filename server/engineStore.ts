@@ -26,6 +26,7 @@ import {
   FleetFreshnessSummary,
   FreshnessStatus,
   LearnedRule,
+  LiveActivitySnapshot,
   PortalAccentTheme,
   PortalBrandingConfig,
   PrivacyRule,
@@ -1130,6 +1131,32 @@ export class EngineSQLStore {
     );
   }
 
+  private sanitizeAppColorsMap(raw: unknown): Record<string, string> {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    const validPresets = new Set([
+      'sky', 'emerald', 'teal', 'indigo', 'slate', 'fuchsia',
+      'violet', 'rose', 'amber', 'orange', 'cyan', 'blue',
+      'lime', 'crimson', 'ochre', 'plum', 'cobalt', 'mint',
+    ]);
+    const hexRegex = /^#[0-9a-fA-F]{6}$/;
+    const clean: Record<string, string> = {};
+    let count = 0;
+    for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+      if (count >= 200) break;
+      const appKey = String(key || '').trim().slice(0, 120);
+      const colorVal = typeof val === 'string' ? val.trim() : '';
+      if (!appKey || !colorVal) continue;
+      if (validPresets.has(colorVal)) {
+        clean[appKey] = colorVal;
+        count += 1;
+      } else if (hexRegex.test(colorVal)) {
+        clean[appKey] = colorVal.toLowerCase();
+        count += 1;
+      }
+    }
+    return clean;
+  }
+
   public async getTenantConfig(tenantId: string): Promise<TenantConfig & { aiReportsEnabled: boolean }> {
     await this.ready();
     const row = await this.db.withTenantTransaction(
@@ -1151,6 +1178,7 @@ export class EngineSQLStore {
     return {
       ...parsed,
       focusFactor,
+      appColors: this.sanitizeAppColorsMap(parsed.appColors),
       aiReportsEnabled: Boolean(row.ai_reports_enabled),
     };
   }
@@ -1171,6 +1199,11 @@ export class EngineSQLStore {
       ? Math.min(1, Math.max(0.5, Number(rawFocus.toFixed(2))))
       : 0.85;
 
+    const nextAppColors =
+      partial.appColors !== undefined
+        ? this.sanitizeAppColorsMap(partial.appColors)
+        : this.sanitizeAppColorsMap(curr.appColors);
+
     const next: TenantConfig = {
       id: curr.id,
       name: partial.name ?? curr.name,
@@ -1188,6 +1221,7 @@ export class EngineSQLStore {
       focusFactor,
       monitoringPolicy: partial.monitoringPolicy ?? curr.monitoringPolicy,
       serverUrl: partial.serverUrl ?? curr.serverUrl,
+      appColors: nextAppColors,
     };
 
     await this.db.withTenantTransaction(
@@ -2494,6 +2528,157 @@ export class EngineSQLStore {
     });
   }
 
+  private buildLiveActivityFromEvent(
+    ev: TrackingEvent,
+    tenantId: string,
+    userId: string,
+    deviceId: string,
+    nowMs: number
+  ): LiveActivitySnapshot | null {
+    if (!ev.type.startsWith('activity.') || ev.type === 'activity.heartbeat') {
+      return null;
+    }
+    const appRaw = String(ev.payload.app || '').trim();
+    if (appRaw === 'ontrack-agent') return null;
+
+    const evMsRaw = Date.parse(ev.event_time_utc);
+    const startMs = Number.isNaN(evMsRaw) ? nowMs : evMsRaw;
+    const durMs = Math.max(0, Number(ev.payload.duration_ms || 0));
+    const endMs = Math.max(startMs, Math.min(nowMs, startMs + durMs));
+
+    const rawState = String(ev.payload.activity_state || '').toLowerCase();
+    const state: LiveActivitySnapshot['state'] =
+      rawState === 'idle' || rawState === 'away' || rawState === 'meeting' || rawState === 'locked' || rawState === 'sleeping'
+        ? rawState
+        : ev.type === 'activity.idle' || ev.payload.idle
+        ? 'idle'
+        : ev.type === 'activity.meeting' || ev.payload.meeting_active
+        ? 'meeting'
+        : 'active';
+
+    const appName =
+      appRaw ||
+      (state === 'locked'
+        ? 'Lock screen'
+        : state === 'sleeping'
+        ? 'System sleep'
+        : state === 'idle' || state === 'away'
+        ? 'Idle'
+        : 'Workstation');
+
+    const documentTitle = String(
+      ev.payload.document_name ||
+        ev.payload.window_title ||
+        ev.payload.entry_title ||
+        appName
+    ).slice(0, 220);
+
+    const domainOrPath = ev.payload.domain
+      ? String(ev.payload.domain).slice(0, 180)
+      : ev.payload.file_path
+      ? String(ev.payload.file_path).slice(0, 220)
+      : ev.payload.url
+      ? String(ev.payload.url).slice(0, 220)
+      : null;
+
+    const source: LiveActivitySnapshot['source'] =
+      ev.payload.capture_source && ev.payload.capture_source !== 'fallback'
+        ? 'agent'
+        : ev.type === 'activity.browser'
+        ? 'browser'
+        : deviceId === 'dev-web-client'
+        ? 'timer'
+        : 'agent';
+
+    return {
+      tenantId,
+      userId,
+      deviceId,
+      appName,
+      documentTitle,
+      domainOrPath,
+      state,
+      startedAtUtc: new Date(startMs).toISOString(),
+      lastSeenUtc: new Date(Math.max(nowMs, endMs)).toISOString(),
+      source,
+    };
+  }
+
+  public async validateLivePulse(params: {
+    tenantId: string;
+    userId: string;
+    deviceId: string;
+    rawPulse: Record<string, unknown>;
+  }): Promise<{ allowed: boolean; liveActivity: LiveActivitySnapshot | null }> {
+    await this.ready();
+    const { tenantId, userId, deviceId, rawPulse } = params;
+    if (hasForbiddenPayloadFields(rawPulse)) {
+      return { allowed: false, liveActivity: null };
+    }
+    const privacyRules = await this.getPrivacyRules(tenantId);
+    const nowIso = new Date().toISOString();
+    const appName = String(rawPulse.appName || 'Workstation').trim().slice(0, 120) || 'Workstation';
+    const documentTitle = String(rawPulse.documentTitle || appName).trim().slice(0, 220) || appName;
+    const domainOrPath =
+      typeof rawPulse.domainOrPath === 'string' && rawPulse.domainOrPath.trim()
+        ? rawPulse.domainOrPath.trim().slice(0, 220)
+        : null;
+    const rawState = String(rawPulse.state || 'active').toLowerCase();
+    const state: LiveActivitySnapshot['state'] =
+      rawState === 'idle' || rawState === 'away' || rawState === 'meeting' || rawState === 'locked' || rawState === 'sleeping'
+        ? rawState
+        : 'active';
+
+    const syntheticEvent: TrackingEvent = {
+      event_id: 'live-pulse',
+      schema_version: 1,
+      tenant_id: tenantId,
+      user_id: userId,
+      device_id: deviceId,
+      seq: 0,
+      type: state === 'meeting' ? 'activity.meeting' : state === 'active' ? 'activity.window' : 'activity.idle',
+      priority: 'activity',
+      event_time_utc: nowIso,
+      received_at: nowIso,
+      payload: {
+        app: appName,
+        window_title: documentTitle,
+        domain: domainOrPath && !domainOrPath.includes('\\') && !domainOrPath.startsWith('/') ? domainOrPath : undefined,
+        file_path: domainOrPath && (domainOrPath.includes('\\') || domainOrPath.startsWith('/')) ? domainOrPath : undefined,
+        idle: state !== 'active' && state !== 'meeting',
+        activity_state: state,
+        incognito: Boolean(rawPulse.incognito),
+      },
+    };
+
+    const filtered = sanitizeAndFilterEvent(syntheticEvent, privacyRules);
+    if (!filtered.allowed || !filtered.sanitizedEvent) {
+      return { allowed: false, liveActivity: null };
+    }
+
+    const parsedStart = typeof rawPulse.startedAtUtc === 'string' ? Date.parse(rawPulse.startedAtUtc) : NaN;
+    const startedAtUtc = !Number.isNaN(parsedStart) ? new Date(parsedStart).toISOString() : nowIso;
+    const sourceRaw = String(rawPulse.source || 'agent');
+    const source: LiveActivitySnapshot['source'] =
+      sourceRaw === 'browser' || sourceRaw === 'timer' ? sourceRaw : 'agent';
+
+    return {
+      allowed: true,
+      liveActivity: {
+        tenantId,
+        userId,
+        deviceId,
+        appName,
+        documentTitle,
+        domainOrPath,
+        state,
+        startedAtUtc,
+        lastSeenUtc: nowIso,
+        source,
+      },
+    };
+  }
+
   public async ingestEventBatch(params: {
     tenantId: string;
     userId: string;
@@ -2528,6 +2713,8 @@ export class EngineSQLStore {
       let clockOffsetMs = devRow ? Number(devRow.clock_offset_ms) : 0;
       let latestOs = devRow ? devRow.os_platform : 'web';
       let extConnected = devRow ? Boolean(devRow.extension_connected) : true;
+      let latestLiveActivity: LiveActivitySnapshot | null = null;
+      let latestLiveScore = -Infinity;
 
       for (const rawEv of ordered) {
         if (hasForbiddenPayloadFields(rawEv.payload)) {
@@ -2561,6 +2748,15 @@ export class EngineSQLStore {
           clockOffsetMs = nowMs - evMs;
           if (clockOffsetMs > 60_000 && ev.type !== 'activity.heartbeat') {
             lateBacklogUpdated = true;
+          }
+        }
+
+        const candidateLive = this.buildLiveActivityFromEvent(ev, tenantId, userId, deviceId, nowMs);
+        if (candidateLive) {
+          const score = (Number.isNaN(evMs) ? nowMs : evMs) + Math.max(0, Number(ev.payload.duration_ms || 0));
+          if (score >= latestLiveScore) {
+            latestLiveScore = score;
+            latestLiveActivity = candidateLive;
           }
         }
 
@@ -2682,6 +2878,7 @@ export class EngineSQLStore {
         serverTimeUtc: nowIso,
         lateBacklogUpdated,
         conflictsCreated,
+        liveActivity: latestLiveActivity,
         stateChanged: ordered.some((e) => e.priority === 'state') || lateBacklogUpdated,
       };
     });

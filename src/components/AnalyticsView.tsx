@@ -19,8 +19,8 @@ import {
   deriveDynamicWorkstreams,
 } from '../utils/analyticsMetrics';
 import {
-  APP_COLORS,
   formatDuration,
+  getAppColorTokens,
 } from '../utils/workspaceConstants';
 
 interface AnalyticsViewProps {
@@ -31,6 +31,7 @@ interface AnalyticsViewProps {
   appSegments: ApplicationUsageSegment[];
   documentSegments: DocumentUsageSegment[];
   clients?: ClientDictionaryEntry[];
+  appColors?: Record<string, string>;
   activeRole?: UserRole;
   currentUser?: AuthUser | null;
   onSelectDateAndGoToTimeline: (date: string) => void;
@@ -44,6 +45,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   appSegments,
   documentSegments,
   clients = [],
+  appColors = {},
   activeRole = 'accountant',
   currentUser = null,
   onSelectDateAndGoToTimeline,
@@ -785,22 +787,29 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           ) : (
             <div className="space-y-3 pt-1">
               {weeklyAppSummary.map((item) => {
-                const style =
-                  APP_COLORS[item.appName] || APP_COLORS['Google Chrome'];
+                const tokens = getAppColorTokens(item.appName, appColors);
                 return (
                   <div key={item.appName} className="space-y-1.5">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="font-medium text-slate-800 dark:text-slate-200">
-                        {item.appName}
+                      <span className="inline-flex items-center gap-2 font-medium text-slate-800 dark:text-slate-200 min-w-0 truncate">
+                        <span
+                          aria-hidden="true"
+                          style={tokens.customHex ? { backgroundColor: tokens.customHex } : undefined}
+                          className={`w-2.5 h-2.5 rounded-xs shrink-0 ${tokens.customHex ? '' : tokens.bar}`}
+                        />
+                        <span className="truncate">{item.appName}</span>
                       </span>
-                      <span className="font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                      <span className="font-mono tabular-nums text-slate-600 dark:text-slate-400 shrink-0">
                         {formatDuration(item.mins)} ({item.sharePct}%)
                       </span>
                     </div>
                     <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
                       <div
-                        style={{ width: `${Math.max(4, item.sharePct)}%` }}
-                        className={`h-full rounded-full ${style.bar}`}
+                        style={{
+                          width: `${Math.max(4, item.sharePct)}%`,
+                          ...(tokens.customHex ? { backgroundColor: tokens.customHex } : {}),
+                        }}
+                        className={`h-full rounded-full ${tokens.customHex ? '' : tokens.bar}`}
                       />
                     </div>
                   </div>

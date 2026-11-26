@@ -101,6 +101,7 @@ export interface TenantConfig {
   focusFactor?: number; // default 0.85 (effective productive hours ratio)
   monitoringPolicy: 'mandatory' | 'opt_in';
   serverUrl: string;
+  appColors?: Record<string, string>;
 }
 
 export type PortalAccentTheme = 'indigo' | 'emerald' | 'blue' | 'slate' | 'amber' | 'rose';
@@ -452,3 +453,15 @@ export interface LatencyStats {
   sampleCount: number;
 }
 
+export interface LiveActivitySnapshot {
+  tenantId: string;
+  userId: string;
+  deviceId: string;
+  appName: string;
+  documentTitle: string;
+  domainOrPath: string | null;
+  state: 'active' | 'idle' | 'away' | 'meeting' | 'locked' | 'sleeping';
+  startedAtUtc: string;
+  lastSeenUtc: string;
+  source: 'agent' | 'browser' | 'timer';
+}

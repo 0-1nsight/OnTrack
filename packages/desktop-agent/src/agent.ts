@@ -118,6 +118,7 @@ const runtime = new CaptureRuntime({
   },
   onEvents: (events) => enqueueCaptured(events),
   pipeline: {
+    segmentMaxMs: 5_000,
     activity: {
       idleThresholdSeconds: config.idleThresholdSeconds,
       awayThresholdSeconds: Math.max(config.idleThresholdSeconds * 5, 900),
@@ -137,6 +138,9 @@ let wsClient: WebSocket | null = null;
 let wsConnected = false;
 let inFlightWsEventIds = new Set<string>();
 let pendingWsAckTimer: ReturnType<typeof setTimeout> | null = null;
+let activityFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let lastLivePulseKey = '';
+let lastLivePulseAtMs = 0;
 
 function authHeaders(): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -233,6 +237,7 @@ function connectWebSocket() {
     ws.onopen = () => {
       wsConnected = true;
       void flushQueue();
+      emitLivePulse(true);
     };
     ws.onmessage = (evt) => {
       try {
@@ -355,6 +360,64 @@ async function flushQueue() {
   }
 }
 
+function scheduleActivityFlush() {
+  if (activityFlushTimer) return;
+  activityFlushTimer = setTimeout(() => {
+    activityFlushTimer = null;
+    void flushQueue();
+  }, 120);
+}
+
+function emitLivePulse(force = false) {
+  if (!wsClient || !wsConnected || wsClient.readyState !== globalThis.WebSocket.OPEN) return;
+  if (!config.tenantId && !config.deviceToken) return;
+  const controls = runtime.getControls();
+  if (!controls.allowedNow) return;
+  const open = runtime.getOpenState();
+  if (!open) return;
+  if (isExcluded(open.payload as Record<string, any>)) return;
+
+  const nowMs = Date.now();
+  const pulseKey = `${open.key}|${open.startMs}`;
+  if (!force && pulseKey === lastLivePulseKey && nowMs - lastLivePulseAtMs < 4_000) {
+    return;
+  }
+
+  lastLivePulseKey = pulseKey;
+  lastLivePulseAtMs = nowMs;
+
+  const appName = String(open.payload.app || 'Workstation');
+  const documentTitle = String(
+    open.payload.document_name || open.payload.window_title || appName
+  );
+  const domainOrPath = open.payload.domain
+    ? String(open.payload.domain)
+    : open.payload.file_path
+    ? String(open.payload.file_path)
+    : null;
+
+  try {
+    wsClient.send(
+      JSON.stringify({
+        type: 'live:pulse',
+        tenantId: config.tenantId,
+        userId: config.userId,
+        deviceId: config.deviceId,
+        liveActivity: {
+          appName,
+          documentTitle,
+          domainOrPath,
+          state: open.state,
+          startedAtUtc: new Date(open.startMs + clockSkewMs).toISOString(),
+          source: 'agent',
+        },
+      })
+    );
+  } catch {
+    // Ignore transient WS send error; queue flush handles persisted segments
+  }
+}
+
 function enqueueEvent(
   type: string,
   priority: 'state' | 'activity',
@@ -382,6 +445,9 @@ function enqueueEvent(
   appendOfflineQueue(event, timeMs);
   if (type !== 'activity.heartbeat') {
     runtime.recordQueued(type, timeMs, payload);
+    if (priority === 'activity') {
+      scheduleActivityFlush();
+    }
   }
   if (priority === 'state') {
     void flushQueue();
@@ -531,6 +597,7 @@ function startPolling(mode: 'polling' | 'fallback') {
         return;
       }
       enqueueCaptured(runtime.handleSample(toCaptureSample(sample, mode), extensionIsConnected()));
+      emitLivePulse();
     } catch {
       runtime.recordCollectorError();
     }
@@ -576,6 +643,7 @@ function startCollector() {
           extensionIsConnected()
         )
       );
+      emitLivePulse();
     },
     onError: (message) => {
       console.warn(`[OnTrack Agent] focus watcher: ${message}`);
@@ -629,8 +697,11 @@ setTimeout(() => {
   emitHeartbeat();
 }, 1500);
 
-// Heartbeat + Flush Loop (12s)
+// Heartbeat + Flush Loop (12s) + Live Presence Pulse (4s)
 setInterval(emitHeartbeat, config.heartbeatSeconds * 1000);
+setInterval(() => {
+  emitLivePulse();
+}, 4_000);
 
 // Periodic local SQLite cleanup & WAL compaction so the agent never bogs down the user's machine
 const cleanupMs = Math.max(1, config.localCleanupMinutes) * 60_000;

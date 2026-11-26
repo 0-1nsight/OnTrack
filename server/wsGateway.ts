@@ -52,6 +52,9 @@ export function isSubscriberPermittedForEvent(
   msg: EngineBroadcastMessage
 ): boolean {
   if (sub.tenantId !== msg.tenantId) return false;
+  if (msg.eventType === 'state:updated' && msg.meta?.broadcastTenantConfig === true) {
+    return sub.role !== 'client';
+  }
   const isSelf =
     sub.userId === msg.affectedUserId ||
     Boolean(msg.affectedUserIds?.includes(sub.userId));
@@ -423,6 +426,7 @@ export class EngineWsGateway {
                 meta: {
                   lastAckSeq: result.lastAckSeq,
                   lateBacklogUpdated: result.lateBacklogUpdated,
+                  ...(result.liveActivity ? { liveActivity: result.liveActivity } : {}),
                 },
               });
             } else if (result.acceptedCount > 0) {
@@ -433,6 +437,37 @@ export class EngineWsGateway {
                 eventType: 'activity:updated',
                 meta: {
                   lastAckSeq: result.lastAckSeq,
+                  ...(result.liveActivity ? { liveActivity: result.liveActivity } : {}),
+                },
+              });
+            }
+          } else if (
+            msg.type === 'live:pulse' &&
+            msg.liveActivity &&
+            typeof msg.liveActivity === 'object'
+          ) {
+            const targetUserId =
+              authCtx!.mode === 'device'
+                ? authCtx!.userId
+                : authCtx!.isDemoSandbox && typeof msg.userId === 'string'
+                ? msg.userId
+                : authCtx!.userId;
+
+            const pulseCheck = await this.engineStore.validateLivePulse({
+              tenantId: authCtx!.tenantId,
+              userId: targetUserId,
+              deviceId: authCtx!.deviceId || String(msg.deviceId || 'dev-web-client'),
+              rawPulse: msg.liveActivity as Record<string, unknown>,
+            });
+            if (pulseCheck.allowed && pulseCheck.liveActivity) {
+              await this.publish({
+                tenantId: authCtx!.tenantId,
+                affectedUserId: targetUserId,
+                affectedTeamId: authCtx!.teamId,
+                eventType: 'activity:updated',
+                meta: {
+                  livePulseOnly: true,
+                  liveActivity: pulseCheck.liveActivity,
                 },
               });
             }

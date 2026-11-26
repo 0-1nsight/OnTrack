@@ -15,11 +15,15 @@ import {
   Check,
   X,
   Sparkles,
+  Palette,
+  RotateCcw,
+  Radio,
 } from 'lucide-react';
 import {
   AttributionRecord,
   ClientDictionaryEntry,
   DeviceFreshnessRecord,
+  LiveActivitySnapshot,
   WorkSession,
 } from '../engine/types';
 import {
@@ -30,12 +34,16 @@ import {
   TimeBlock,
 } from '../types';
 import {
+  APP_PALETTE_PRESETS,
   PROJECT_COLORS,
-  APP_COLORS,
+  TRACKED_APPS,
   CATEGORY_LABELS,
   CATEGORY_RIBBON_STYLES,
+  canonicalizeAppName,
   formatMinutesToHHMM,
   formatDuration,
+  formatSecondsToStopwatch,
+  getAppColorTokens,
 } from '../utils/workspaceConstants';
 import { toLocalDateString } from '../utils/engineWorkspaceAdapter';
 import { WorkstationCapturePanel } from './WorkstationCapturePanel';
@@ -53,6 +61,18 @@ interface TimelineViewProps {
   engineAttributions?: AttributionRecord[];
   workstationDevices?: DeviceFreshnessRecord[];
   syncStatus?: 'idle' | 'syncing' | 'error';
+  appColors?: Record<string, string>;
+  canCustomizeAppColors?: boolean;
+  liveActivity?: LiveActivitySnapshot | null;
+  isTimerRunning?: boolean;
+  activeTimerAppName?: string;
+  activeTimerDocTitle?: string;
+  activeTimerStartedAtMs?: number | null;
+  onUpdateAppColors?: (params: {
+    appName?: string;
+    color?: string | null;
+    appColors?: Record<string, string>;
+  }) => Promise<void> | void;
   onSelectDate: (date: string) => void;
   onOpenQuickLogWithRange: (startTime: number, endTime: number) => void;
   onConvertAppDocToBlock: (doc: {
@@ -89,6 +109,14 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   engineAttributions = [],
   workstationDevices = [],
   syncStatus = 'idle',
+  appColors = {},
+  canCustomizeAppColors = false,
+  liveActivity = null,
+  isTimerRunning = false,
+  activeTimerAppName,
+  activeTimerDocTitle,
+  activeTimerStartedAtMs = null,
+  onUpdateAppColors,
   onSelectDate,
   onOpenQuickLogWithRange,
   onConvertAppDocToBlock,
@@ -116,24 +144,97 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   const [nowDate, setNowDate] = useState<Date>(() => new Date());
   const [reviewTrayExpanded, setReviewTrayExpanded] = useState<boolean>(false);
   const [suggestedTaskDraft, setSuggestedTaskDraft] = useState<Record<string, string>>({});
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setNowDate(new Date());
-    }, 30_000);
-    return () => window.clearInterval(timer);
-  }, []);
+  const [paletteOpen, setPaletteOpen] = useState<boolean>(false);
+  const [customAppDraft, setCustomAppDraft] = useState<string>('');
 
   const todayDateStr = toLocalDateString(nowDate);
+  const isTodaySelected = selectedDate === todayDateStr;
+
+  useEffect(() => {
+    const intervalMs = isTodaySelected ? 1_000 : 30_000;
+    const timer = window.setInterval(() => {
+      setNowDate(new Date());
+    }, intervalMs);
+    return () => window.clearInterval(timer);
+  }, [isTodaySelected]);
+
   const nowMinutes = nowDate.getHours() * 60 + nowDate.getMinutes();
+  const nowMinutesFloat =
+    nowDate.getHours() * 60 + nowDate.getMinutes() + nowDate.getSeconds() / 60;
+  const nowHHMMSS = `${String(nowDate.getHours()).padStart(2, '0')}:${String(
+    nowDate.getMinutes()
+  ).padStart(2, '0')}:${String(nowDate.getSeconds()).padStart(2, '0')}`;
 
   const rangeStartMin = zoomMode === 'workday' ? 8 * 60 : 0; // 08:00 or 00:00
   const rangeEndMin = zoomMode === 'workday' ? 20 * 60 : 24 * 60; // 20:00 or 24:00
   const totalRangeMins = rangeEndMin - rangeStartMin;
-  const isTodaySelected = selectedDate === todayDateStr;
   const showDayNowLine =
-    isTodaySelected && nowMinutes >= rangeStartMin && nowMinutes <= rangeEndMin;
-  const dayNowLeftPct = ((nowMinutes - rangeStartMin) / totalRangeMins) * 100;
+    isTodaySelected && nowMinutesFloat >= rangeStartMin && nowMinutesFloat <= rangeEndMin;
+  const dayNowLeftPct = ((nowMinutesFloat - rangeStartMin) / totalRangeMins) * 100;
+
+  const effectiveLiveCapture = useMemo(() => {
+    if (!isTodaySelected) return null;
+    const nowMs = nowDate.getTime();
+    if (liveActivity) {
+      const lastSeenMs = Date.parse(liveActivity.lastSeenUtc);
+      if (!Number.isNaN(lastSeenMs) && nowMs - lastSeenMs <= 90_000) {
+        const startMsRaw = Date.parse(liveActivity.startedAtUtc);
+        const startMs = Number.isNaN(startMsRaw) ? nowMs : Math.min(nowMs, startMsRaw);
+        return {
+          ...liveActivity,
+          canonicalAppName: canonicalizeAppName(liveActivity.appName),
+          startMs,
+          elapsedSeconds: Math.max(1, Math.floor((nowMs - startMs) / 1000)),
+        };
+      }
+    }
+    if (isTimerRunning && activeTimerAppName) {
+      const startMs = activeTimerStartedAtMs ?? nowMs - 5_000;
+      const appName = activeTimerAppName;
+      return {
+        tenantId: 'local',
+        userId: 'local',
+        deviceId: 'timer',
+        appName,
+        canonicalAppName: canonicalizeAppName(appName),
+        documentTitle: activeTimerDocTitle || `${appName} Active Window`,
+        domainOrPath: null,
+        state: 'active' as const,
+        startedAtUtc: new Date(startMs).toISOString(),
+        lastSeenUtc: new Date(nowMs).toISOString(),
+        source: 'timer' as const,
+        startMs,
+        elapsedSeconds: Math.max(1, Math.floor((nowMs - startMs) / 1000)),
+      };
+    }
+    return null;
+  }, [
+    isTodaySelected,
+    nowDate,
+    liveActivity,
+    isTimerRunning,
+    activeTimerAppName,
+    activeTimerDocTitle,
+    activeTimerStartedAtMs,
+  ]);
+
+  const liveTrackRange = useMemo(() => {
+    if (!effectiveLiveCapture || !showDayNowLine) return null;
+    const startDt = new Date(effectiveLiveCapture.startMs);
+    const sameDay = toLocalDateString(startDt) === selectedDate;
+    const rawStartMin = sameDay
+      ? startDt.getHours() * 60 + startDt.getMinutes() + startDt.getSeconds() / 60
+      : rangeStartMin;
+    const startMinFloat = Math.max(
+      rangeStartMin,
+      Math.min(nowMinutesFloat - 0.15, rawStartMin)
+    );
+    if (nowMinutesFloat <= startMinFloat) return null;
+    return {
+      startMinFloat,
+      endMinFloat: nowMinutesFloat,
+    };
+  }, [effectiveLiveCapture, showDayNowLine, selectedDate, rangeStartMin, nowMinutesFloat]);
 
   const dayBlocks = useMemo(() => {
     return timeBlocks
@@ -219,7 +320,8 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
     let totalAppMins = 0;
     for (const seg of dayApps) {
       const dur = Math.max(1, seg.endTime - seg.startTime);
-      map.set(seg.appName, (map.get(seg.appName) || 0) + dur);
+      const canonical = canonicalizeAppName(seg.appName);
+      map.set(canonical, (map.get(canonical) || 0) + dur);
       totalAppMins += dur;
     }
     return Array.from(map.entries())
@@ -231,6 +333,24 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
       }))
       .sort((a, b) => b.minutes - a.minutes);
   }, [dayApps]);
+
+  const paletteApps = useMemo(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    const add = (name?: string | null) => {
+      if (!name) return;
+      const canonical = canonicalizeAppName(name);
+      if (canonical && !seen.has(canonical)) {
+        seen.add(canonical);
+        list.push(canonical);
+      }
+    };
+    if (effectiveLiveCapture?.appName) add(effectiveLiveCapture.appName);
+    for (const a of appSummary) add(a.appName);
+    for (const key of Object.keys(appColors || {})) add(key);
+    for (const t of TRACKED_APPS) add(t.name);
+    return list;
+  }, [effectiveLiveCapture, appSummary, appColors]);
 
   // Aggregated Document Usage Summary
   const docSummary = useMemo(() => {
@@ -803,8 +923,8 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
         <>
       {/* OnTrack Multi-Track Synchronized Timeline Instrument */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-          <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600 dark:text-slate-400">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 dark:text-slate-400">
             <span className="font-semibold text-slate-900 dark:text-white">
               Synchronized OnTrack Activity Tracks
             </span>
@@ -812,15 +932,260 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
               Click any document or app segment to tag it as a task block, or click Track 4 to log time
             </span>
           </div>
-          <button
-            type="button"
-            onClick={() => onOpenQuickLogWithRange(9 * 60, 10 * 60)}
-            className="flex items-center gap-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Add Manual Time Block</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setPaletteOpen((prev) => !prev)}
+              data-testid="toggle-app-colors-panel"
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                paletteOpen
+                  ? 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
+                  : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+              }`}
+            >
+              <Palette className="w-3.5 h-3.5" />
+              <span>App Colors</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onOpenQuickLogWithRange(9 * 60, 10 * 60)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add Manual Time Block</span>
+            </button>
+          </div>
         </div>
+
+        {/* Live ManicTime-Grade Capture Strip */}
+        {isTodaySelected && (
+          <div
+            data-testid="live-capture-readout"
+            className="mb-3 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/40 flex flex-wrap items-center justify-between gap-3 text-xs"
+          >
+            {effectiveLiveCapture ? (
+              (() => {
+                const liveTokens = getAppColorTokens(
+                  effectiveLiveCapture.appName,
+                  appColors
+                );
+                const stateLabel =
+                  effectiveLiveCapture.state === 'meeting'
+                    ? 'In Meeting'
+                    : effectiveLiveCapture.state === 'active'
+                    ? 'Capturing Live'
+                    : effectiveLiveCapture.state === 'locked'
+                    ? 'Screen Locked'
+                    : effectiveLiveCapture.state === 'sleeping'
+                    ? 'System Sleep'
+                    : 'Idle / Away';
+                return (
+                  <>
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <Radio className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      <span className="font-semibold text-emerald-700 dark:text-emerald-400 whitespace-nowrap shrink-0">
+                        {stateLabel}
+                      </span>
+                      <span className="text-slate-300 dark:text-slate-700" aria-hidden="true">
+                        ·
+                      </span>
+                      <span
+                        aria-hidden="true"
+                        style={
+                          liveTokens.customHex
+                            ? { backgroundColor: liveTokens.customHex }
+                            : undefined
+                        }
+                        className={`w-2.5 h-2.5 rounded-xs shrink-0 ${
+                          liveTokens.customHex ? '' : liveTokens.bar
+                        }`}
+                      />
+                      <span className="font-semibold text-slate-900 dark:text-white whitespace-nowrap shrink-0">
+                        {liveTokens.canonicalName}
+                      </span>
+                      <span className="text-slate-400" aria-hidden="true">
+                        —
+                      </span>
+                      <span
+                        title={effectiveLiveCapture.documentTitle}
+                        className="text-slate-700 dark:text-slate-300 truncate"
+                      >
+                        {effectiveLiveCapture.documentTitle}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 font-mono tabular-nums shrink-0 text-slate-700 dark:text-slate-300">
+                      <span>{formatSecondsToStopwatch(effectiveLiveCapture.elapsedSeconds)}</span>
+                      <span className="text-slate-300 dark:text-slate-700" aria-hidden="true">
+                        ·
+                      </span>
+                      <span className="text-rose-600 dark:text-rose-400 font-semibold">
+                        {nowHHMMSS}
+                      </span>
+                    </div>
+                  </>
+                );
+              })()
+            ) : (
+              <div className="flex items-center justify-between w-full text-slate-500 dark:text-slate-400">
+                <span>
+                  Live workstation stream listening — switch an app, start a task stopwatch, or connect your workstation agent to stream real-time bars.
+                </span>
+                <span className="font-mono tabular-nums text-rose-600 dark:text-rose-400 font-semibold shrink-0">
+                  {nowHHMMSS}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Firm Application Color Coding Customization Drawer */}
+        {paletteOpen && (
+          <div
+            data-testid="app-colors-manager"
+            className="mb-4 p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/30 space-y-3"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-xs font-semibold text-slate-900 dark:text-white">
+                  Firm Application Color Coding
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {canCustomizeAppColors
+                    ? 'Unlisted applications auto-receive distinct high-contrast hues. Pick a swatch or custom hex to override firm-wide.'
+                    : 'Each application receives a unique deterministic color. Overrides are managed by Admin/IT and Team Leads.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPaletteOpen(false)}
+                className="text-xs font-medium text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+
+            {canCustomizeAppColors && onUpdateAppColors && (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <input
+                  type="text"
+                  value={customAppDraft}
+                  onChange={(e) => setCustomAppDraft(e.target.value)}
+                  placeholder="Add application name (e.g. CCH Axcess, UltraTax)..."
+                  className="px-3 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white w-72"
+                />
+                <button
+                  type="button"
+                  disabled={!customAppDraft.trim()}
+                  onClick={() => {
+                    const clean = customAppDraft.trim();
+                    if (!clean) return;
+                    const tokens = getAppColorTokens(clean, appColors);
+                    void onUpdateAppColors({ appName: tokens.canonicalName, color: tokens.hex });
+                    setCustomAppDraft('');
+                  }}
+                  className="px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded-lg cursor-pointer whitespace-nowrap"
+                >
+                  Save App Color Entry
+                </button>
+              </div>
+            )}
+
+            <div className="divide-y divide-slate-200/80 dark:divide-slate-800 max-h-72 overflow-y-auto pr-1">
+              {paletteApps.map((appName) => {
+                const tokens = getAppColorTokens(appName, appColors);
+                return (
+                  <div
+                    key={appName}
+                    className="py-2 flex flex-wrap items-center justify-between gap-3 text-xs"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-[180px]">
+                      <span
+                        aria-hidden="true"
+                        style={
+                          tokens.customHex
+                            ? { backgroundColor: tokens.customHex }
+                            : undefined
+                        }
+                        className={`w-3.5 h-3.5 rounded-xs shrink-0 ${
+                          tokens.customHex ? '' : tokens.bar
+                        }`}
+                      />
+                      <span className="font-medium text-slate-900 dark:text-white">
+                        {appName}
+                      </span>
+                      <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                        {tokens.isCustom ? 'Custom' : 'Auto'} · {tokens.hex}
+                      </span>
+                    </div>
+
+                    {canCustomizeAppColors && onUpdateAppColors && (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {APP_PALETTE_PRESETS.slice(0, 12).map((preset) => {
+                          const isSelected = tokens.presetId === preset.id;
+                          return (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              title={`Set ${appName} to ${preset.label}`}
+                              aria-label={`Set ${appName} to ${preset.label}`}
+                              onClick={() =>
+                                void onUpdateAppColors({
+                                  appName,
+                                  color: preset.id,
+                                })
+                              }
+                              className={`w-4 h-4 rounded-xs ${preset.swatchClass} flex items-center justify-center cursor-pointer transition-transform hover:scale-110 ${
+                                isSelected
+                                  ? 'ring-2 ring-offset-1 ring-slate-900 dark:ring-white'
+                                  : ''
+                              }`}
+                            >
+                              {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
+                            </button>
+                          );
+                        })}
+                        <label
+                          title={`Pick custom hex color for ${appName}`}
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-900 text-[11px] text-slate-600 dark:text-slate-300 cursor-pointer"
+                        >
+                          <input
+                            type="color"
+                            value={tokens.hex}
+                            aria-label={`Custom hex color for ${appName}`}
+                            onChange={(e) =>
+                              void onUpdateAppColors({
+                                appName,
+                                color: e.target.value,
+                              })
+                            }
+                            className="w-4 h-4 p-0 border-0 bg-transparent cursor-pointer"
+                          />
+                          <span>Hex</span>
+                        </label>
+                        {tokens.isCustom && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void onUpdateAppColors({
+                                appName,
+                                color: null,
+                              })
+                            }
+                            title={`Reset ${appName} to auto color`}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-900 cursor-pointer"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>Reset</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Synchronized Time Ruler + 5 Activity Tracks Container (shared coordinates for Now Line) */}
         <div className="relative">
@@ -832,11 +1197,11 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
               <div />
               <div className="relative h-full">
                 <div
-                  style={{ left: `${dayNowLeftPct.toFixed(2)}%` }}
+                  style={{ left: `${dayNowLeftPct.toFixed(3)}%` }}
                   className="absolute top-0 bottom-0 -translate-x-1/2 flex flex-col items-center"
                 >
                   <span className="px-1.5 py-0.5 rounded bg-rose-500 text-white font-mono text-[10px] font-bold tabular-nums leading-none shadow-xs whitespace-nowrap">
-                    {formatMinutesToHHMM(nowMinutes)}
+                    {nowHHMMSS}
                   </span>
                   <div className="w-[2.5px] flex-1 bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.5)]" />
                 </div>
@@ -917,6 +1282,34 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
                 </button>
               );
             })}
+            {liveTrackRange && effectiveLiveCapture && (
+              <div
+                data-testid="live-track1-segment"
+                style={{
+                  left: `${(((liveTrackRange.startMinFloat - rangeStartMin) / totalRangeMins) * 100).toFixed(3)}%`,
+                  width: `${Math.max(
+                    0.55,
+                    ((liveTrackRange.endMinFloat - liveTrackRange.startMinFloat) / totalRangeMins) * 100
+                  ).toFixed(3)}%`,
+                }}
+                title={`Live Now: ${effectiveLiveCapture.state} (${formatSecondsToStopwatch(effectiveLiveCapture.elapsedSeconds)})`}
+                className={`absolute top-1 bottom-1 rounded px-1.5 flex items-center text-[10px] font-semibold truncate ring-1 ring-white/60 ${
+                  effectiveLiveCapture.state === 'active' || effectiveLiveCapture.state === 'meeting'
+                    ? 'bg-emerald-500 text-white'
+                    : effectiveLiveCapture.state === 'idle'
+                    ? 'bg-amber-400 text-slate-950'
+                    : 'bg-slate-400 text-slate-950'
+                }`}
+              >
+                <span className="truncate">
+                  {effectiveLiveCapture.state === 'meeting'
+                    ? 'Meeting'
+                    : effectiveLiveCapture.state === 'active'
+                    ? 'Live'
+                    : 'Idle'}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -934,30 +1327,68 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
             {dayApps.map((appSeg) => {
               const geom = getTrackGeometry(appSeg.startTime, appSeg.endTime);
               if (!geom) return null;
-              const style =
-                APP_COLORS[appSeg.appName] || APP_COLORS['Google Chrome'];
+              const tokens = getAppColorTokens(appSeg.appName, appColors);
               const dur = Math.max(1, appSeg.endTime - appSeg.startTime);
 
               return (
                 <button
                   key={appSeg.id}
                   type="button"
-                  style={geom}
+                  style={{
+                    ...geom,
+                    ...(tokens.customHex
+                      ? { backgroundColor: tokens.customHex, color: tokens.barTextColor }
+                      : {}),
+                  }}
                   onClick={() => {
                     setDetailsTab('apps');
-                    setDetailsSearch(appSeg.appName);
+                    setDetailsSearch(tokens.canonicalName);
                   }}
-                  title={`${appSeg.appName} (${formatMinutesToHHMM(
+                  title={`${tokens.canonicalName} (${formatMinutesToHHMM(
                     appSeg.startTime
                   )}–${formatMinutesToHHMM(appSeg.endTime)} · ${formatDuration(
                     dur
                   )})`}
-                  className={`absolute top-1 bottom-1 rounded px-2 flex items-center text-[11px] font-semibold text-white truncate transition-opacity hover:opacity-90 cursor-pointer ${style.bar}`}
+                  className={`absolute top-1 bottom-1 rounded px-2 flex items-center text-[11px] font-semibold truncate transition-opacity hover:opacity-90 cursor-pointer ${
+                    tokens.customHex ? '' : `${tokens.bar} text-white`
+                  }`}
                 >
-                  <span className="truncate">{appSeg.appName}</span>
+                  <span className="truncate">{tokens.canonicalName}</span>
                 </button>
               );
             })}
+            {liveTrackRange && effectiveLiveCapture && (() => {
+              const liveTokens = getAppColorTokens(effectiveLiveCapture.appName, appColors);
+              return (
+                <button
+                  key="live-app-tail"
+                  type="button"
+                  data-testid="live-track2-segment"
+                  style={{
+                    left: `${(((liveTrackRange.startMinFloat - rangeStartMin) / totalRangeMins) * 100).toFixed(3)}%`,
+                    width: `${Math.max(
+                      0.55,
+                      ((liveTrackRange.endMinFloat - liveTrackRange.startMinFloat) / totalRangeMins) * 100
+                    ).toFixed(3)}%`,
+                    ...(liveTokens.customHex
+                      ? { backgroundColor: liveTokens.customHex, color: liveTokens.barTextColor }
+                      : {}),
+                  }}
+                  onClick={() => {
+                    setDetailsTab('apps');
+                    setDetailsSearch(liveTokens.canonicalName);
+                  }}
+                  title={`Live Now: ${liveTokens.canonicalName} (${formatSecondsToStopwatch(
+                    effectiveLiveCapture.elapsedSeconds
+                  )})`}
+                  className={`absolute top-1 bottom-1 rounded px-2 flex items-center text-[11px] font-semibold truncate ring-1 ring-white/70 cursor-pointer ${
+                    liveTokens.customHex ? '' : `${liveTokens.bar} text-white`
+                  }`}
+                >
+                  <span className="truncate">{liveTokens.canonicalName}</span>
+                </button>
+              );
+            })()}
           </div>
         </div>
 
@@ -975,8 +1406,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
             {dayDocs.map((docSeg) => {
               const geom = getTrackGeometry(docSeg.startTime, docSeg.endTime);
               if (!geom) return null;
-              const style =
-                APP_COLORS[docSeg.appName] || APP_COLORS['Google Chrome'];
+              const tokens = getAppColorTokens(docSeg.appName, appColors);
               const isSelected = selectedDocId === docSeg.id;
               const dur = Math.max(1, docSeg.endTime - docSeg.startTime);
 
@@ -984,31 +1414,96 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
                 <button
                   key={docSeg.id}
                   type="button"
-                  style={geom}
+                  style={{
+                    ...geom,
+                    ...(tokens.customHex
+                      ? {
+                          backgroundColor: `${tokens.customHex}1a`,
+                          borderColor: `${tokens.customHex}66`,
+                        }
+                      : {}),
+                  }}
                   onClick={() => {
                     setSelectedBlockId(null);
                     setSelectedDocId(selectedDocId === docSeg.id ? null : docSeg.id);
                   }}
-                  title={`${docSeg.appName}: ${docSeg.documentTitle}\n${
+                  title={`${tokens.canonicalName}: ${docSeg.documentTitle}\n${
                     docSeg.domainOrPath
                   }\n${formatMinutesToHHMM(docSeg.startTime)}–${formatMinutesToHHMM(
                     docSeg.endTime
                   )} (${formatDuration(dur)})`}
                   className={`absolute top-1 bottom-1 rounded px-2 flex flex-col justify-center text-left overflow-hidden border transition-all cursor-pointer ${
-                    style.bg
-                  } ${style.border} ${style.text} ${
-                    isSelected ? 'ring-2 ring-indigo-600 z-10' : 'hover:opacity-90'
-                  }`}
+                    tokens.customHex
+                      ? 'text-slate-900 dark:text-slate-100'
+                      : `${tokens.bg} ${tokens.border} ${tokens.text}`
+                  } ${isSelected ? 'ring-2 ring-indigo-600 z-10' : 'hover:opacity-90'}`}
                 >
                   <div className="text-[11px] font-semibold truncate leading-tight">
                     {docSeg.documentTitle}
                   </div>
-                  <div className="text-[10px] opacity-80 truncate leading-tight">
-                    {docSeg.appName}
+                  <div className="flex items-center gap-1 text-[10px] opacity-85 truncate leading-tight">
+                    <span
+                      aria-hidden="true"
+                      style={tokens.customHex ? { backgroundColor: tokens.customHex } : undefined}
+                      className={`w-1.5 h-1.5 rounded-xs shrink-0 ${tokens.customHex ? '' : tokens.bar}`}
+                    />
+                    <span className="truncate">{tokens.canonicalName}</span>
                   </div>
                 </button>
               );
             })}
+            {liveTrackRange && effectiveLiveCapture && (() => {
+              const liveTokens = getAppColorTokens(effectiveLiveCapture.appName, appColors);
+              return (
+                <button
+                  key="live-doc-tail"
+                  type="button"
+                  data-testid="live-track3-segment"
+                  style={{
+                    left: `${(((liveTrackRange.startMinFloat - rangeStartMin) / totalRangeMins) * 100).toFixed(3)}%`,
+                    width: `${Math.max(
+                      0.55,
+                      ((liveTrackRange.endMinFloat - liveTrackRange.startMinFloat) / totalRangeMins) * 100
+                    ).toFixed(3)}%`,
+                    ...(liveTokens.customHex
+                      ? {
+                          backgroundColor: `${liveTokens.customHex}22`,
+                          borderColor: liveTokens.customHex,
+                        }
+                      : {}),
+                  }}
+                  onClick={() =>
+                    onConvertAppDocToBlock({
+                      appName: liveTokens.canonicalName,
+                      documentTitle: effectiveLiveCapture.documentTitle,
+                      startTime: Math.floor(liveTrackRange.startMinFloat),
+                      endTime: Math.max(
+                        Math.floor(liveTrackRange.startMinFloat) + 15,
+                        Math.ceil(liveTrackRange.endMinFloat)
+                      ),
+                    })
+                  }
+                  title={`Capturing Live: ${effectiveLiveCapture.documentTitle} (${liveTokens.canonicalName})`}
+                  className={`absolute top-1 bottom-1 rounded px-2 flex flex-col justify-center text-left overflow-hidden border cursor-pointer ${
+                    liveTokens.customHex
+                      ? 'text-slate-900 dark:text-slate-100'
+                      : `${liveTokens.bg} ${liveTokens.border} ${liveTokens.text}`
+                  }`}
+                >
+                  <div className="text-[11px] font-semibold truncate leading-tight">
+                    {effectiveLiveCapture.documentTitle}
+                  </div>
+                  <div className="flex items-center gap-1 text-[10px] opacity-85 truncate leading-tight">
+                    <span
+                      aria-hidden="true"
+                      style={liveTokens.customHex ? { backgroundColor: liveTokens.customHex } : undefined}
+                      className={`w-1.5 h-1.5 rounded-xs shrink-0 ${liveTokens.customHex ? '' : liveTokens.bar}`}
+                    />
+                    <span className="truncate">{liveTokens.canonicalName}</span>
+                  </div>
+                </button>
+              );
+            })()}
           </div>
         </div>
 
@@ -1151,7 +1646,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
                 <span>·</span>
                 <span className="inline-flex items-center gap-1.5 font-mono tabular-nums text-rose-600 dark:text-rose-400 font-semibold">
                   <span className="inline-block w-0.5 h-3 bg-rose-400" aria-hidden="true" />
-                  <span>Now {formatMinutesToHHMM(nowMinutes)}</span>
+                  <span>Now {nowHHMMSS}</span>
                 </span>
               </>
             )}
@@ -1674,22 +2169,48 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-xs">
                     {filteredAppSummary.map((app) => {
-                      const style =
-                        APP_COLORS[app.appName] || APP_COLORS['Google Chrome'];
+                      const tokens = getAppColorTokens(app.appName, appColors);
+                      const isLiveApp =
+                        effectiveLiveCapture?.canonicalAppName === tokens.canonicalName;
                       return (
                         <tr
                           key={app.appName}
                           className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40"
                         >
                           <td className="py-3 px-4 font-semibold text-slate-900 dark:text-white">
-                            {app.appName}
+                            <span className="inline-flex items-center gap-2">
+                              <span
+                                aria-hidden="true"
+                                style={
+                                  tokens.customHex
+                                    ? { backgroundColor: tokens.customHex }
+                                    : undefined
+                                }
+                                className={`w-2.5 h-2.5 rounded-xs shrink-0 ${
+                                  tokens.customHex ? '' : tokens.bar
+                                }`}
+                              />
+                              <span>{app.appName}</span>
+                              {isLiveApp && (
+                                <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                                  · Live
+                                </span>
+                              )}
+                            </span>
                           </td>
                           <td className="py-3 px-4 w-56">
                             <div className="flex items-center gap-2">
                               <div className="flex-1 h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
                                 <div
-                                  style={{ width: `${app.percent}%` }}
-                                  className={`h-full rounded-full ${style.bar}`}
+                                  style={{
+                                    width: `${app.percent}%`,
+                                    ...(tokens.customHex
+                                      ? { backgroundColor: tokens.customHex }
+                                      : {}),
+                                  }}
+                                  className={`h-full rounded-full ${
+                                    tokens.customHex ? '' : tokens.bar
+                                  }`}
                                 />
                               </div>
                               <span className="font-mono tabular-nums text-[11px] text-slate-500 w-9 text-right">
@@ -1741,6 +2262,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
                   <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-xs">
                     {filteredDayDocs.map((doc) => {
                       const dur = Math.max(1, doc.endTime - doc.startTime);
+                      const docTokens = getAppColorTokens(doc.appName, appColors);
                       return (
                         <tr
                           key={doc.id}
@@ -1759,7 +2281,20 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
                             </div>
                           </td>
                           <td className="py-3 px-4 text-slate-700 dark:text-slate-300 whitespace-nowrap">
-                            {doc.appName}
+                            <span className="inline-flex items-center gap-2">
+                              <span
+                                aria-hidden="true"
+                                style={
+                                  docTokens.customHex
+                                    ? { backgroundColor: docTokens.customHex }
+                                    : undefined
+                                }
+                                className={`w-2 h-2 rounded-xs shrink-0 ${
+                                  docTokens.customHex ? '' : docTokens.bar
+                                }`}
+                              />
+                              <span>{docTokens.canonicalName}</span>
+                            </span>
                           </td>
                           <td className="py-3 px-4 text-right font-mono font-semibold tabular-nums text-slate-900 dark:text-white whitespace-nowrap">
                             {formatDuration(dur)}
@@ -1812,22 +2347,46 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
             ) : (
               <div className="space-y-3">
                 {appSummary.map((app) => {
-                  const style =
-                    APP_COLORS[app.appName] || APP_COLORS['Google Chrome'];
+                  const tokens = getAppColorTokens(app.appName, appColors);
+                  const isLiveApp =
+                    effectiveLiveCapture?.canonicalAppName === tokens.canonicalName;
                   return (
                     <div key={app.appName} className="space-y-1">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-medium text-slate-800 dark:text-slate-200">
-                          {app.appName}
+                      <div className="flex items-center justify-between text-xs gap-2">
+                        <span className="inline-flex items-center gap-2 font-medium text-slate-800 dark:text-slate-200 min-w-0 truncate">
+                          <span
+                            aria-hidden="true"
+                            style={
+                              tokens.customHex
+                                ? { backgroundColor: tokens.customHex }
+                                : undefined
+                            }
+                            className={`w-2.5 h-2.5 rounded-xs shrink-0 ${
+                              tokens.customHex ? '' : tokens.bar
+                            }`}
+                          />
+                          <span className="truncate">{app.appName}</span>
+                          {isLiveApp && (
+                            <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400 shrink-0">
+                              · Live
+                            </span>
+                          )}
                         </span>
-                        <span className="font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                        <span className="font-mono tabular-nums text-slate-600 dark:text-slate-400 shrink-0">
                           {formatDuration(app.minutes)} ({app.percent}%)
                         </span>
                       </div>
                       <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
                         <div
-                          style={{ width: `${app.percent}%` }}
-                          className={`h-full rounded-full ${style.bar}`}
+                          style={{
+                            width: `${app.percent}%`,
+                            ...(tokens.customHex
+                              ? { backgroundColor: tokens.customHex }
+                              : {}),
+                          }}
+                          className={`h-full rounded-full ${
+                            tokens.customHex ? '' : tokens.bar
+                          }`}
                         />
                       </div>
                     </div>
